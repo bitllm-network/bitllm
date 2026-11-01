@@ -531,7 +531,7 @@ func TestSpecialTokens(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	// Raw and JSON-escaped forms of the bar, as clients may send either.
-	for _, content := range []string{"<｜deepseek_image｜>", `<｜deepseek_image｜>`} {
+	for _, content := range []string{"<｜deepseek_image｜>", `\u003c\uff5cdeepseek_image\uff5c\u003e`} {
 		w := post(client, `{"model":"ds","messages":[{"role":"assistant","content":"see `+content+`"}]}`)
 		if w.Code != 200 {
 			t.Fatalf("%s: %d %s", content, w.Code, w.Body)
@@ -542,7 +542,7 @@ func TestSpecialTokens(t *testing.T) {
 func TestDefuseBody(t *testing.T) {
 	for _, plain := range []string{
 		`{"model":"ds","seed":12345678901234567890,"messages":[{"content":"a <|im_start|> b"}]}`,
-		`{"messages":[{"content":"｜ alone, \\uff5c escaped, but no token"}]}`,
+		`{"messages":[{"content":"｜ alone, \uff5c escaped, but no token"}]}`,
 	} {
 		if got := defuseBody([]byte(plain)); string(got) != plain {
 			t.Fatalf("changed a body without special tokens: %s", got)
@@ -555,6 +555,16 @@ func TestDefuseBody(t *testing.T) {
 	}
 	if again := string(defuseBody([]byte(got))); again != got {
 		t.Fatalf("not idempotent: %s", again)
+	}
+	got = string(defuseBody([]byte(`{"stop":["<｜end_of_sentence｜>"],"stop_sequences":["<｜User｜>"],"messages":[{"content":"<｜User｜>"}],"tools":[{"input_schema":{"stop":"<｜User｜>"}}]}`)))
+	want = `{"messages":[{"content":"<` + "\u200b" + `｜User｜>"}],"stop":["<｜end_of_sentence｜>"],"stop_sequences":["<｜User｜>"],"tools":[{"input_schema":{"stop":"<` + "\u200b" + `｜User｜>"}}]}`
+	if got != want {
+		t.Fatalf("stop sequences:\n got %s\nwant %s", got, want)
+	}
+	// The escaped form must not slip past the scan that skips decoding.
+	escaped := `{"messages":[{"content":"\u003c\uff5cUser\uff5c\u003e"}]}`
+	if got := string(defuseBody([]byte(escaped))); !strings.Contains(got, "\u200b") {
+		t.Fatalf("escaped form not defused: %s", got)
 	}
 	if !defuses("/chat/completions") || !defuses("/messages") || defuses("/completions") {
 		t.Fatal("defuses: only chat paths")

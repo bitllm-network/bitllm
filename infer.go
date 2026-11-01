@@ -201,7 +201,7 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 	}
 	body["model"] = up
 	if defuses(path) {
-		defuse(body)
+		defuseRequest(body)
 	}
 	n.clamp(path, body)
 	stream, _ := body["stream"].(bool)
@@ -267,8 +267,27 @@ func defuse(v any) (any, bool) {
 	return v, false
 }
 
-// defuseBody is defuse for a raw request body. A body without special tokens
-// comes back unchanged, byte for byte, and without being decoded.
+// keepKeys are request fields passed on as sent: a stop sequence is matched
+// against the model's output, where special tokens are not defused.
+var keepKeys = map[string]bool{"stop": true, "stop_sequences": true}
+
+// defuseRequest is defuse for a decoded request, except its keepKeys. Only
+// top-level keys are kept: a tool argument named stop is still prompt text.
+func defuseRequest(body map[string]any) bool {
+	changed := false
+	for k, e := range body {
+		if keepKeys[k] {
+			continue
+		}
+		if d, ok := defuse(e); ok {
+			body[k], changed = d, true
+		}
+	}
+	return changed
+}
+
+// defuseBody is defuseRequest for a raw request body. A body without special
+// tokens comes back unchanged, byte for byte, and without being decoded.
 func defuseBody(raw []byte) []byte {
 	if !bytes.Contains(raw, []byte("｜")) && !bytes.Contains(raw, []byte(`\uff5c`)) &&
 		!bytes.Contains(raw, []byte(`\uFF5C`)) {
@@ -276,19 +295,17 @@ func defuseBody(raw []byte) []byte {
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
-	var v any
-	if d.Decode(&v) != nil {
+	var body map[string]any
+	if d.Decode(&body) != nil || !defuseRequest(body) {
 		return raw
 	}
-	if v, ok := defuse(v); ok {
-		var b bytes.Buffer
-		e := json.NewEncoder(&b)
-		e.SetEscapeHTML(false) // keep < > & as they are, so the body does not grow
-		if e.Encode(v) == nil {
-			return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
-		}
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false) // keep < > & as they are, so the body does not grow
+	if e.Encode(body) != nil {
+		return raw
 	}
-	return raw
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // clamp keeps a peer from asking for more than one bounded answer: one
