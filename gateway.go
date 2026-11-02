@@ -151,7 +151,10 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			for _, p := range cands[:min(len(cands), 3)] {
 				started, err := n.infer(r.Context(), p, path, body, req.Stream, w)
 				if started {
-					if err != nil {
+					// A local client that hangs up mid-response (the user
+					// stopped the answer, or the agent closed the request)
+					// resets our stream; that is not the peer's failure.
+					if err != nil && r.Context().Err() == nil {
 						log.Printf("peer %s broke mid-response: %v", p, err)
 					}
 					return
