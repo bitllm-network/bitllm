@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -299,14 +300,28 @@ func (n *Node) sendReceipt(p peer.ID, job, model string, m meter) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sr := SignedReceipt{Receipt: r, ClientSig: sig}
+	// A client can see the last SSE event and hang up before the server's
+	// upstream body ends, so the job may not be in the server's pending set
+	// yet when the receipt arrives. Wait a little for it to be registered.
+	for attempt := 0; ; attempt++ {
+		err = n.deliverReceipt(p, sr)
+		if err == nil || !strings.Contains(err.Error(), "unknown job") || attempt == 5 {
+			return err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func (n *Node) deliverReceipt(p peer.ID, sr SignedReceipt) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "receipt"), p, ReceiptProto)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	if err := json.NewEncoder(s).Encode(SignedReceipt{Receipt: r, ClientSig: sig}); err != nil {
+	if err := json.NewEncoder(s).Encode(sr); err != nil {
 		return err
 	}
 	s.CloseWrite()

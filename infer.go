@@ -57,6 +57,7 @@ type meter struct {
 	prompt, completion int64
 	chars              int64
 	reported           bool
+	done               bool      // the stream reached its terminal event
 	out                hash.Hash // sha256 of the exact response bytes, for the receipt
 }
 
@@ -101,17 +102,20 @@ func (m *meter) usage(u *usage) {
 }
 
 type usageDoc struct {
+	Type    string `json:"type"` // Anthropic message_stop
 	Usage   *usage `json:"usage"`
 	Message *struct {
 		Usage *usage `json:"usage"`
 	} `json:"message"` // Anthropic message_start
 	Delta struct {
-		Text string `json:"text"`
+		Text       string  `json:"text"`
+		StopReason *string `json:"stop_reason"`
 	} `json:"delta"` // Anthropic content_block_delta
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 }
 
@@ -120,9 +124,20 @@ func (m *meter) sseLine(line []byte) {
 	if !ok {
 		return
 	}
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("[DONE]")) {
+		m.done = true
+		return
+	}
 	var d usageDoc
 	if json.Unmarshal(data, &d) != nil {
 		return
+	}
+	if d.Type == "message_stop" {
+		m.done = true
+	}
+	if d.Delta.StopReason != nil && *d.Delta.StopReason != "" {
+		m.done = true
 	}
 	m.usage(d.Usage)
 	if d.Message != nil {
@@ -130,6 +145,9 @@ func (m *meter) sseLine(line []byte) {
 	}
 	m.chars += int64(len(d.Delta.Text))
 	for _, c := range d.Choices {
+		if c.FinishReason != nil && *c.FinishReason != "" {
+			m.done = true
+		}
 		m.chars += int64(len(c.Delta.Content))
 	}
 }
@@ -325,6 +343,12 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	}
 	var m meter
 	err = pipe(w, writeHead(w, stream, p), r, stream, &m)
+	if m.done {
+		// The response reached its last event. A client that hangs up here
+		// (agents close the request once they see [DONE]) resets the stream
+		// while we wait for EOF; the peer did not fail.
+		err = nil
+	}
 	n.ledger.Received(p, m.credits())
 	if err == nil {
 		var model struct{ Model string }
