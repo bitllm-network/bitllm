@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -217,6 +218,9 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 		return nil, false, &peerError{404, fmt.Sprintf("model %q not served here", model)}
 	}
 	body["model"] = up
+	if defuses(path) {
+		defuseRequest(body)
+	}
 	n.clamp(path, body)
 	stream, _ := body["stream"].(bool)
 	if stream && path != "/messages" { // Anthropic streams always carry usage
@@ -241,6 +245,85 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 		return nil, false, &peerError{resp.StatusCode, string(msg)}
 	}
 	return resp, stream, nil
+}
+
+// specialOpen starts every DeepSeek chat-template token (<｜User｜>,
+// <｜deepseek_image｜>, ...). Its bar is the full-width U+FF5C.
+const specialOpen = "<｜"
+
+// defuses reports whether requests on path get defused. Legacy /completions
+// is left alone: a raw prompt may spell its template tokens on purpose.
+func defuses(path string) bool { return path != "/completions" }
+
+// defuse puts a zero-width space after the '<' of every special token in the
+// strings of a decoded chat request, so the tokenizer reads them as plain text.
+// vLLM refuses a request whose text holds <｜deepseek_image｜>, and a model can
+// echo such a token into the history an agent resends on every turn.
+func defuse(v any) (any, bool) {
+	switch x := v.(type) {
+	case string:
+		if strings.Contains(x, specialOpen) {
+			return strings.ReplaceAll(x, specialOpen, "<\u200b｜"), true
+		}
+	case map[string]any:
+		changed := false
+		for k, e := range x {
+			if d, ok := defuse(e); ok {
+				x[k], changed = d, true
+			}
+		}
+		return x, changed
+	case []any:
+		changed := false
+		for i, e := range x {
+			if d, ok := defuse(e); ok {
+				x[i], changed = d, true
+			}
+		}
+		return x, changed
+	}
+	return v, false
+}
+
+// keepKeys are request fields passed on as sent: a stop sequence is matched
+// against the model's output, where special tokens are not defused.
+var keepKeys = map[string]bool{"stop": true, "stop_sequences": true}
+
+// defuseRequest is defuse for a decoded request, except its keepKeys. Only
+// top-level keys are kept: a tool argument named stop is still prompt text.
+func defuseRequest(body map[string]any) bool {
+	changed := false
+	for k, e := range body {
+		if keepKeys[k] {
+			continue
+		}
+		if d, ok := defuse(e); ok {
+			body[k], changed = d, true
+		}
+	}
+	return changed
+}
+
+// defuseBody is defuseRequest for a raw request body. A body without special
+// tokens comes back unchanged, byte for byte, and without being decoded.
+func defuseBody(raw []byte) []byte {
+	if !bytes.Contains(raw, []byte("｜")) && !bytes.Contains(raw, []byte(`\uff5c`)) &&
+		!bytes.Contains(raw, []byte(`\uFF5C`)) {
+		return raw
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	var body map[string]any
+	if d.Decode(&body) != nil || !defuseRequest(body) {
+		return raw
+	}
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false) // keep < > & as they are, so the body does not grow
+	if e.Encode(body) != nil {
+		return raw
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // clamp keeps a peer from asking for more than one bounded answer: one
