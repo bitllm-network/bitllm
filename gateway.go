@@ -124,6 +124,13 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			jsonErr(w, 400, "bad json")
 			return
 		}
+		// Servers reject a prompt with more images than their limit, and an
+		// agent re-sends a session's screenshots every turn, so keep only the
+		// newest few rather than fail every request from here on.
+		if b, dropped := trimImages(body, n.cfg.MaxImages); dropped > 0 {
+			body = b
+			log.Printf("dropped %d older image(s) from a %s request, keeping the newest %d", dropped, req.Model, n.cfg.MaxImages)
+		}
 
 		// Our own model: private and free, no network hop. While our server
 		// is down, peers serving the same model answer instead.
