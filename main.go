@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Version is set at release time with -ldflags "-X main.Version=v0.1.3".
@@ -58,6 +60,7 @@ func main() {
 		models, boot listFlag
 		announce     listFlag
 		roots        listFlag
+		allow        listFlag
 		wsPort       int
 		gateway      string
 		port         int
@@ -80,6 +83,7 @@ func main() {
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 32768, "most new tokens a peer may ask for in one request (0: no limit)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Var(&allow, "allow", "peer id to serve (repeatable). With any --allow, this server serves only the listed peers, on any free slot like members, and refuses every other peer with a clear error")
 	flag.BoolVar(&cfg.Open, "open", false, "serve uninvited nodes like members (any free slot, --free-daily per node), not only when idle")
 	flag.IntVar(&cfg.OpenSlots, "open-slots", 0, "with --open: most slots uninvited nodes may hold at once (default: half of --concurrency, at least 1)")
 	flag.Int64Var(&cfg.OpenDaily, "open-daily", 0, "with --open: credits all uninvited nodes together may use per UTC day, after which they are served only when idle (default 0: no limit)")
@@ -106,6 +110,17 @@ func main() {
 	cfg.Private = !cfg.DHTServer
 	cfg.AnnounceEvery = 10 * time.Second
 	cfg.Listen = listenAddrs(port, ipv6)
+	if len(allow) > 0 {
+		cfg.Allow = map[peer.ID]bool{}
+		for _, s := range allow {
+			id, err := peer.Decode(s)
+			if err != nil {
+				log.Fatalf("--allow %s: not a peer id (bitllm prints its own at startup, and GET /status shows it)", s)
+			}
+			cfg.Allow[id] = true
+		}
+		log.Printf("serving only %d allowed peer(s)", len(cfg.Allow))
+	}
 	if wsPort > 0 {
 		// Peers arriving through the tunnel all come from 127.0.0.1.
 		cfg.RelayBehindProxy = true
