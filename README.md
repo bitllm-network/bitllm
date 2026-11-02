@@ -29,7 +29,7 @@ message. Prefer to download by hand? Get the file for your system from [Releases
 (use curl, not a browser, on macOS to avoid the quarantine flag).
 中文说明见 [JOIN.zh.md](JOIN.zh.md)。
 
-While it runs, `bitllm top` in another terminal shows peers, work exchanged and the log — see
+While it runs, `bitllm top` in another terminal shows peers, work exchanged and the log; see
 [Watch and manage your node](#watch-and-manage-your-node).
 
 ## Share a model
@@ -97,8 +97,8 @@ bitllm top --gateway 127.0.0.1:9000
 q                               # quit; the node keeps running
 ```
 
-It only reads the local gateway over HTTP, so it watches a node started any way you like — from
-another terminal, from tmux, or as a service — and it never touches the node's state. If the
+It only reads the local gateway over HTTP, so it watches a node started any way you like: from
+another terminal, from tmux, or as a service, and it never touches the node's state. If the
 node stops it shows why and keeps retrying, so you can leave it open while you restart. In a
 pipe (`bitllm top | cat`) it prints one frame and exits, which is handy over `ssh` or in a log.
 

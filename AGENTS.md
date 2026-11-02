@@ -6,7 +6,7 @@ Instructions for AI agents working in this repository.
 https://bitllm.org/llms.txt (the same file is `site/llms.txt` here). It has the install command, the
 checks to run, and how to point Claude Code or an OpenAI client at the node.
 
-**Changing the code?** Read on.
+**Changing the code?** Read on, and see [CONTRIBUTING.md](CONTRIBUTING.md) for how PRs are reviewed and merged.
 
 ## Build and test
 
@@ -41,6 +41,7 @@ One `main` package, one binary.
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
+| `.github/workflows/test.yml` | gofmt, vet, `go test -race` and the four release builds on every PR and push to main |
 
 ## Rules that are easy to break
 
