@@ -58,8 +58,23 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
 | `deepseek-v4.1-flash-1017` | DeepSeek V4.1 Flash, 1017 release, official weights |
 | `deepseek-v4.1-flash-1017-heretic` | same, heretic (uncensored) fine-tune |
 | `qwen3.8-flash-next-fp4-alesha` | Qwen3.8 Flash-Next, NVIDIA FP4-Local quant, alesha uncensored fine-tune |
+| `qwen3.8-flash-next-nvfp4-lil` | Qwen3.8 Flash-Next, official weights, local-inference-lab NVFP4-MXFP8-CSF-QAD quant (served with NVIDIA Flare: fixed sampling, temperature 1.0 / top-p 0.95 / top-k 20) |
 
-Same name must mean same weights. Add a row (PR or message) before sharing a new model.
+Same name must mean same weights. Add a row (PR or issue) before sharing a new model.
+
+**How names are built:** `<model>[-<quant>][-<source>]`, lowercase, joined with hyphens.
+
+| part | what it says | when to leave it out | examples |
+|---|---|---|---|
+| model | the base model and release, as its maker names it | never | `deepseek-v4.1-flash-1017`, `qwen3.8-flash-next` |
+| quant | the weight format, if not the maker's own release | official weights as released | `fp4`, `nvfp4`, `int4`, `q4_k_m` |
+| source | who changed the weights: fine-tune name, or the group that made the quant | official weights as released | `heretic`, `alesha`, `lil` |
+
+How a server runs the model (vLLM or SGLang, context length, fixed sampling) does not change the
+name; note it in the table instead. To register a name, open an issue with: the base model, where
+the weights come from (link), the quant format and who made it, and anything a client should know
+(fixed sampling, context length, image support). Your server's address is never needed: nodes find
+each other on the network.
 
 ## Use the network
 
