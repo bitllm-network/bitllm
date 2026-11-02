@@ -11,6 +11,26 @@ PRs and issues are looked after by a maintainer agent on behalf of the owner. It
 with `[agent]`. Anything it can't decide on its own goes to the owner, and the agent says so in the
 thread.
 
+## Who can push to main
+
+Collaborators (the owner, Homin and Jayden) can push to `main` directly. No second review is
+required. The one rule: **the `test` workflow must pass on what lands on `main`.** It runs on every
+push to `main` and every PR. Run `go vet ./...` and `go test -race ./...` locally before you push
+and it almost always will.
+
+If `test` goes red on `main`:
+
+- Whoever pushed fixes it, or reverts their commit, as soon as they see it.
+- If it stays red for a few hours, the maintainer agent reverts the commit and says why in a
+  comment on it. Nothing is lost; push it again once it passes.
+- Never release from a red `main`.
+
+The maintainer agent reads every direct push afterwards and comments on the commit if something
+looks wrong, by the same standard as a PR review. The "What waits for the owner" list below still
+applies to direct pushes: for those, open a PR or ask first.
+
+Everyone else: fork and open a pull request.
+
 ## What a PR needs
 
 1. **One change per PR**, or a few closely related commits that each explain themselves.
