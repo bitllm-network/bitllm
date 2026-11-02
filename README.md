@@ -164,6 +164,27 @@ bitllm invite 0xADDRESS           # invite with a recovery-words account
 
 With a browser wallet, use the Invite box in the dashboard instead.
 
+### Serving only people you choose (`--allow`)
+
+To share only with a few people, list their node ids (each node prints its id at startup, and
+`curl -s 127.0.0.1:7778/status` shows it as `id`):
+
+```bash
+./bitllm --upstream http://localhost:8000/v1 --model ... \
+  --allow 12D3KooW...friend1 --allow 12D3KooW...friend2
+```
+
+- Listed nodes are served on any free slot, like members, whether or not they were invited.
+  `--free-daily` still applies to them.
+- Every other node is refused, members included, with
+  `403 not allowed: this server serves only the peers its owner listed with --allow. Your node is
+  12D3KooW...; send that id to the owner to be added`. Their gateway skips your server and tries
+  others for the model at once; if yours is the only one, they get that message right away, not
+  after a wait.
+- Your model still appears in everyone's `/v1/models`, because the list is not announced.
+- Without `--allow` nothing changes: the three rules above apply.
+- The list is read at startup; restart the node to change it.
+
 ### Accounts
 
 Credits are earned by nodes. To add up the credits of all your machines, link each node to one

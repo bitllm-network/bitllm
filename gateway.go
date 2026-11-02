@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 //go:embed ui.html
@@ -149,10 +151,17 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		}
 		// Try the best few peers; if every one of them is merely busy, queue
 		// for a while rather than fail, since a small network has few servers.
-		var last error
+		var last, denied error
+		refused := map[peer.ID]bool{} // servers that serve only an allow list we are not on
 		for deadline := time.Now().Add(busyWait); ; {
-			busy := true
-			for _, p := range cands[:min(len(cands), 3)] {
+			busy, tried := true, 0
+			for _, p := range cands {
+				if tried == 3 {
+					break
+				}
+				if refused[p] {
+					continue
+				}
 				started, err := n.infer(r.Context(), p, path, body, req.Stream, w)
 				if started {
 					// A local client that hangs up mid-response (the user
@@ -164,19 +173,28 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					return
 				}
 				var pe *peerError
+				if errors.As(err, &pe) && notAllowed(pe.status, pe.msg) {
+					// Skip it, here and in the busy wait; another server may answer.
+					refused[p], denied = true, err
+					continue
+				}
+				tried++
 				busy = busy && errors.As(err, &pe) && isBusy(pe.status, pe.msg)
 				if !busy {
 					log.Printf("peer %s: %v", p, err)
 				}
 				last = err
 			}
-			if !busy || time.Now().After(deadline) || r.Context().Err() != nil {
+			if tried == 0 || !busy || time.Now().After(deadline) || r.Context().Err() != nil {
 				break
 			}
 			time.Sleep(time.Second)
 			if c := n.candidates(req.Model); len(c) > 0 {
 				cands = c
 			}
+		}
+		if last == nil {
+			last = denied // every server for this model serves only its own allow list
 		}
 		var pe *peerError
 		if errors.As(last, &pe) {

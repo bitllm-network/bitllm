@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -121,6 +122,7 @@ func (n *Node) accountOf(p peer.ID) string {
 // The three access rules, as the server applies them to a request from remote.
 const (
 	msgBusy       = "busy"
+	msgNotAllowed = "not allowed: this server serves only the peers its owner listed with --allow"
 	msgUninvited  = "busy: this server serves uninvited nodes only when it is idle. Ask a member for an invite (bitllm invite), then link this node to your account"
 	msgQuotaSpent = "daily free quota on this server used up (its owner set one). Another server may still answer; sharing a model removes the limit, or try again after 00:00 UTC"
 )
@@ -145,12 +147,18 @@ func (n *Node) openSlots() int32 {
 // admit takes a serving slot for remote, or says why not. The caller must
 // call done with the ticket when the job ends.
 func (n *Node) admit(remote peer.ID, now time.Time) (status int, msg string, t ticket) {
+	if len(n.cfg.Allow) > 0 && !n.cfg.Allow[remote] {
+		return 403, fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote), t
+	}
 	account := n.accountOf(remote)
 	member, contributor := true, false
 	if n.members.Enabled() {
 		ms := n.memberSet()
 		member = account != "" && ms.Member[account]
 		contributor = member && ms.Contributors[account]
+	}
+	if len(n.cfg.Allow) > 0 {
+		member = true // the owner's list replaces the invite rule on this server
 	}
 	// An open server serves uninvited nodes on spare slots, while the shared
 	// pool for all of them lasts. Peer ids are free, so the per-node quota
@@ -202,6 +210,12 @@ func (n *Node) done(t ticket, credits int64, now time.Time) {
 	if t.key != "" {
 		n.quota.add(t.key, credits, now)
 	}
+}
+
+// notAllowed reports whether a peer refused us for good: its owner serves
+// only an allow list we are not on. Asking it again will not help.
+func notAllowed(status int, msg string) bool {
+	return status == 403 && strings.HasPrefix(msg, msgNotAllowed)
 }
 
 // isBusy reports whether a refusal is temporary, worth waiting out.
