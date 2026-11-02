@@ -48,6 +48,10 @@ func mockUpstream(t *testing.T, model string) *httptest.Server {
 			}
 			fmt.Fprint(w, "data: [DONE]\n\n")
 		case "/v1/messages":
+			if r.Header.Get("anthropic-version") != "2023-06-01" { // as NVIDIA Flare does
+				http.Error(w, "anthropic-version must be 2023-06-01", 400)
+				return
+			}
 			var req struct {
 				Model  string `json:"model"`
 				Stream bool   `json:"stream"`
