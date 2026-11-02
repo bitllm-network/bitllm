@@ -61,6 +61,7 @@ func main() {
 		wsPort       int
 		gateway      string
 		port         int
+		ipv6         bool
 	)
 	flag.StringVar(&cfg.Upstream, "upstream", "", "OpenAI-compatible base URL to share, e.g. http://localhost:8080/v1 (empty: use the network only)")
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
@@ -75,6 +76,7 @@ func main() {
 	flag.StringVar(&cfg.DataDir, "data", filepath.Join(home, ".bitllm"), "identity and ledger directory")
 	flag.BoolVar(&cfg.DHTServer, "dht-server", false, "always act as a DHT server (for bootstrap nodes with a public address)")
 	flag.BoolVar(&cfg.MDNS, "mdns", true, "find peers on the local network")
+	flag.BoolVar(&ipv6, "ipv6", true, "accept p2p connections over IPv6 too; --ipv6=false listens on IPv4 only, so a public IPv6 address does not expose the p2p port")
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 32768, "most new tokens a peer may ask for in one request (0: no limit)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -103,12 +105,7 @@ func main() {
 	}
 	cfg.Private = !cfg.DHTServer
 	cfg.AnnounceEvery = 10 * time.Second
-	cfg.Listen = []string{
-		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
-		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-		fmt.Sprintf("/ip6/::/tcp/%d", port),
-		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
-	}
+	cfg.Listen = listenAddrs(port, ipv6)
 	if wsPort > 0 {
 		// Peers arriving through the tunnel all come from 127.0.0.1.
 		cfg.RelayBehindProxy = true
@@ -145,4 +142,19 @@ func main() {
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// listenAddrs is where the p2p host accepts connections: TCP and QUIC on every
+// IPv4 address, and on every IPv6 address unless ipv6 is off.
+func listenAddrs(port int, ipv6 bool) []string {
+	addrs := []string{
+		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+	}
+	if ipv6 {
+		addrs = append(addrs,
+			fmt.Sprintf("/ip6/::/tcp/%d", port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port))
+	}
+	return addrs
 }

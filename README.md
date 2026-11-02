@@ -202,6 +202,12 @@ the tunnel at `http://127.0.0.1:4002`. Others join with
 - If you share a model, the clients you serve can see your IP too.
 - No verification yet: a node could serve a different model than it claims.
 - `--upnp` (on by default) asks your router to forward the p2p port.
+- **IPv6 exposes the p2p port.** With a public IPv6 address and a router that lets inbound IPv6
+  through, anyone on the internet can reach port 4001 (the p2p port, never the gateway on 7778,
+  which only listens on 127.0.0.1). That is how peers get direct connections, but if you do not
+  want an open port on that machine, start with `--ipv6=false` to listen on IPv4 only. The cost:
+  IPv6-only peers can no longer dial you directly, so more of your traffic goes through relays and
+  may be slower. On IPv4 nothing changes.
 
 ## Build and test
 
