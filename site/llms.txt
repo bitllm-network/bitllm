@@ -148,7 +148,7 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 - `503 no peer serves model X`: nobody serves that name right now. Check `/v1/models` and use a listed id.
 - `429 busy ...`: every server is full or this node is uninvited on a closed server. The gateway already queued up to 60 seconds; retry later.
 - `429 daily free quota ... used up`: only if the owner set a quota; another server may still answer, or wait until 00:00 UTC.
-- `400 At most N image(s) may be provided in one prompt`: the serving model's image limit. The gateway keeps only the newest `--max-images` images (default 4) and replaces older ones with a note; if a server's limit is lower, start the node with a smaller `--max-images`.
+- `400 At most N image(s) may be provided in one prompt`: the serving model takes at most N images per request, and the server that answered runs an older bitllm (current servers keep only the newest N images instead). Start a new agent session to drop old screenshots, or retry later.
 - `403 use http://127.0.0.1 or http://localhost`: the gateway only accepts local hostnames. Use 127.0.0.1, not the machine's LAN name.
 - Port 7778 in use: another node is already running (`curl -s 127.0.0.1:7778/status`), or start with `--gateway 127.0.0.1:PORT`.
 

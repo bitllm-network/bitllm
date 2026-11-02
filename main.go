@@ -77,7 +77,6 @@ func main() {
 	flag.BoolVar(&cfg.MDNS, "mdns", true, "find peers on the local network")
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 32768, "most new tokens a peer may ask for in one request (0: no limit)")
-	flag.IntVar(&cfg.MaxImages, "max-images", 4, "most images sent in one request; older ones are replaced by a note, because servers reject a prompt over their image limit (0: no limit)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.BoolVar(&cfg.Open, "open", false, "serve uninvited nodes like members (any free slot, --free-daily per node), not only when idle")
 	flag.IntVar(&cfg.OpenSlots, "open-slots", 0, "with --open: most slots uninvited nodes may hold at once (default: half of --concurrency, at least 1)")

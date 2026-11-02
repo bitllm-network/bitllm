@@ -56,7 +56,6 @@ type Config struct {
 	OpenSlots        int               // most slots uninvited nodes may hold on an open server; 0 = half
 	OpenDaily        int64             // credits all uninvited nodes together may use per UTC day on an open server; 0 = no limit
 	MaxTokens        int               // cap on new tokens per request we serve; 0 = none
-	MaxImages        int               // most images we send in one request; older ones become a text note; 0 = none
 	AnnounceEvery    time.Duration     //
 }
 
@@ -102,6 +101,8 @@ type Node struct {
 	inflight     atomic.Int32
 	upOK         atomic.Bool  // upstream answered its last health check
 	openInflight atomic.Int32 // slots held by uninvited nodes on an open server
+	imgMu        sync.Mutex
+	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
