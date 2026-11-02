@@ -259,6 +259,11 @@ func (n *Node) postUpstream(ctx context.Context, path string, body map[string]an
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", n.cfg.Upstream+path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	if path == "/messages" {
+		// Anthropic-style servers (NVIDIA Flare, Anthropic's own) refuse a
+		// /messages request without it; vLLM and SGLang ignore it.
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 	n.upstreamAuth(req)
 	resp, err := n.http.Do(req)
 	if err != nil {
