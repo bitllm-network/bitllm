@@ -104,6 +104,8 @@ type Node struct {
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
+
+	started time.Time // when this node came up, shown by GET /status
 }
 
 func loadKey(path string) (crypto.PrivKey, error) {
@@ -142,11 +144,12 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
-		cfg:    cfg,
-		ledger: OpenLedger(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:   &http.Client{},
-		peers:  map[peer.ID]*peerInfo{},
-		relays: bootstrap,
+		cfg:     cfg,
+		ledger:  OpenLedger(filepath.Join(cfg.DataDir, "ledger.json")),
+		http:    &http.Client{},
+		peers:   map[peer.ID]*peerInfo{},
+		relays:  bootstrap,
+		started: time.Now(),
 	}
 	mode := dht.ModeAutoServer
 	if cfg.DHTServer {

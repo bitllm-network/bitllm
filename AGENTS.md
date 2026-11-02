@@ -36,6 +36,8 @@ One `main` package, one binary.
 | `limits.go` | caps on gossip state (peers, claims, models) |
 | `ledger.go` | per-peer exchange record (data only) |
 | `ui.html` | dashboard served at the gateway root (embedded) |
+| `top.go` | `bitllm top`: live terminal view of the running node, over the local HTTP API |
+| `logs.go` | in-memory tail of the log, served as `GET /logs` |
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |

@@ -33,6 +33,7 @@ func (n *Node) Gateway() http.Handler {
 		w.Write(uiHTML)
 	})
 	mux.HandleFunc("GET /status", n.status)
+	mux.HandleFunc("GET /logs", n.logs)
 	mux.HandleFunc("GET /account", n.account)
 	mux.HandleFunc("POST /account/message", n.accountMessage)
 	mux.HandleFunc("POST /account/link", n.accountLink)
@@ -206,6 +207,7 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 		"serving":     serving,
 		"upstream_up": n.cfg.Upstream != "" && n.upOK.Load(),
 		"inflight":    n.inflight.Load(),
+		"uptime":      int64(time.Since(n.started).Seconds()),
 		"ledger":      n.ledger.Snapshot(),
 	})
 }

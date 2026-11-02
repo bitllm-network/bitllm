@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,6 +49,10 @@ func main() {
 		inviteCmd(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "top" {
+		topCmd(os.Args[2:])
+		return
+	}
 	var (
 		cfg          Config
 		models, boot listFlag
@@ -82,6 +87,10 @@ func main() {
 		fmt.Println("bitllm", Version)
 		return
 	}
+
+	// Keep the last log lines in memory as well, so `bitllm top` and GET /logs
+	// can show what the node has been doing without reading a terminal.
+	log.SetOutput(io.MultiWriter(os.Stderr, recentLogs))
 
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
 	cfg.Bootstrap = boot

@@ -29,6 +29,9 @@ message. Prefer to download by hand? Get the file for your system from [Releases
 (use curl, not a browser, on macOS to avoid the quarantine flag).
 中文说明见 [JOIN.zh.md](JOIN.zh.md)。
 
+While it runs, `bitllm top` in another terminal shows peers, work exchanged and the log — see
+[Watch and manage your node](#watch-and-manage-your-node).
+
 ## Share a model
 
 ```bash
@@ -81,6 +84,41 @@ OpenAI clients (Cline, Continue, OpenCode, Aider...): base URL `http://127.0.0.1
 Anthropic requests need the serving peer's upstream to support `/v1/messages` (vLLM does). If you share
 a model yourself, your gateway answers it from your own server (free, never leaves your machine).
 The response header `X-Bitllm-Peer` says which peer answered.
+
+## Watch and manage your node
+
+`bitllm top` is a live view of a running node in your terminal: who you are connected to, what
+you share, the work exchanged with each peer, and the tail of the log, redrawn every second.
+
+```bash
+bitllm top                     # watch 127.0.0.1:7778
+bitllm top --interval 2s       # a slower refresh
+bitllm top --gateway 127.0.0.1:9000
+q                               # quit; the node keeps running
+```
+
+It only reads the local gateway over HTTP, so it watches a node started any way you like — from
+another terminal, from tmux, or as a service — and it never touches the node's state. If the
+node stops it shows why and keeps retrying, so you can leave it open while you restart. In a
+pipe (`bitllm top | cat`) it prints one frame and exits, which is handy over `ssh` or in a log.
+
+The same data is available without a terminal:
+
+```bash
+curl localhost:7778/status        # peer id, addresses, connections, serving, uptime, ledger
+curl localhost:7778/logs?n=50     # the last 50 log lines the node kept in memory
+curl localhost:7778/credits       # credits per serving peer
+```
+
+The node keeps its last 500 log lines in a ring buffer for `/logs`, and still writes every line
+to stderr, so nothing changes for a log file, `journalctl`, or a `tee` in your terminal.
+
+To keep the node in a terminal you can detach from and come back to:
+
+```bash
+tmux new -s bitllm 'bitllm 2>&1 | tee -a ~/.local/state/bitllm.log'
+# ctrl-b d detaches and leaves it running; `tmux attach -t bitllm` comes back
+```
 
 ## Credits for serving
 
