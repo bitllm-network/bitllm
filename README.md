@@ -85,6 +85,11 @@ Anthropic requests need the serving peer's upstream to support `/v1/messages` (v
 a model yourself, your gateway answers it from your own server (free, never leaves your machine).
 The response header `X-Bitllm-Peer` says which peer answered.
 
+Servers refuse a prompt with more images than their limit (vLLM's `--limit-mm-per-prompt`), and an
+agent sends every screenshot of a session again on each turn. So the gateway sends only the newest
+`--max-images` images (default 4) and puts a short note in place of each older one. `--max-images 0`
+sends them all.
+
 ## Watch and manage your node
 
 `bitllm top` is a live view of a running node in your terminal: who you are connected to, what
