@@ -101,6 +101,8 @@ type Node struct {
 	inflight     atomic.Int32
 	upOK         atomic.Bool  // upstream answered its last health check
 	openInflight atomic.Int32 // slots held by uninvited nodes on an open server
+	imgMu        sync.Mutex
+	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo

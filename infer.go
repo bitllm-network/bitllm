@@ -222,6 +222,11 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 		defuseRequest(body)
 	}
 	n.clamp(path, body)
+	if lim, ok := n.imageLimit(up); ok {
+		if d := trimImages(body, lim); d > 0 {
+			log.Printf("dropped %d older image(s) from a %s request; the server takes %d", d, model, lim)
+		}
+	}
 	stream, _ := body["stream"].(bool)
 	if stream && path != "/messages" { // Anthropic streams always carry usage
 		so, _ := body["stream_options"].(map[string]any)
@@ -231,20 +236,40 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 		so["include_usage"] = true
 		body["stream_options"] = so
 	}
+	resp, err := n.postUpstream(ctx, path, body)
+	// A server that takes fewer images than the request carries says how
+	// many it takes. Remember that and send the newest ones only, now and
+	// from then on, rather than refuse every later turn of the session.
+	if pe, ok := err.(*peerError); ok && pe.status == 400 {
+		if lim, ok := imageLimitFrom(pe.msg); ok && trimImages(body, lim) > 0 {
+			n.setImageLimit(up, lim)
+			log.Printf("%s takes at most %d image(s) per request; sending only the newest %d", model, lim, lim)
+			resp, err = n.postUpstream(ctx, path, body)
+		}
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return resp, stream, nil
+}
+
+// postUpstream sends a request to our own server. Any answer but 200 comes
+// back as a *peerError carrying the server's status and message.
+func (n *Node) postUpstream(ctx context.Context, path string, body map[string]any) (*http.Response, error) {
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", n.cfg.Upstream+path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	n.upstreamAuth(req)
 	resp, err := n.http.Do(req)
 	if err != nil {
-		return nil, false, &peerError{502, "upstream: " + err.Error()}
+		return nil, &peerError{502, "upstream: " + err.Error()}
 	}
 	if resp.StatusCode != 200 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, false, &peerError{resp.StatusCode, string(msg)}
+		return nil, &peerError{resp.StatusCode, string(msg)}
 	}
-	return resp, stream, nil
+	return resp, nil
 }
 
 // specialOpen starts every DeepSeek chat-template token (<｜User｜>,

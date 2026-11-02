@@ -46,6 +46,10 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
 - `--concurrency`: how many requests you serve at once. Extra requests queue on the client side.
 - `--max-tokens` (default 32768): the most new tokens one peer request may ask for. Peers also get one
   choice per request (`n` is dropped).
+- Images: if your server caps images per prompt (vLLM's `--limit-mm-per-prompt`), the node learns the
+  cap from the server's first refusal and from then on sends only the newest images, with a short note
+  in place of each older one. Agents send every screenshot of a session again on each turn, so this
+  keeps long sessions working. Nothing to set; restart the node after you change the cap.
 
 ### Canonical model names
 
