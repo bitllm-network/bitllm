@@ -81,7 +81,9 @@ func TestClientCancelAfterLastEvent(t *testing.T) {
 	gw := httptest.NewServer(client.Gateway())
 	defer gw.Close()
 
-	reqCtx, cancel := context.WithCancel(ctx)
+	// Bound the read: if the gateway ever stalls mid-stream the test fails
+	// fast instead of hanging until the package timeout.
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	body := `{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req, _ := http.NewRequestWithContext(reqCtx, "POST", gw.URL+"/v1/chat/completions", strings.NewReader(body))
 	resp, err := http.DefaultClient.Do(req)

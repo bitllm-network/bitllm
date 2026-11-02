@@ -8,11 +8,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -221,6 +221,10 @@ func (rs *Receipts) served(job string, client peer.ID, model string, m meter) {
 	rs.pending[job] = &pendingJob{client, model, m, now.Add(10 * time.Minute)}
 }
 
+// errUnknownJob means the receipt arrived before we recorded the job. Its text
+// is what goes over the wire, so the client can tell the two cases apart.
+var errUnknownJob = errors.New("unknown job")
+
 // countersign checks a client's receipt against the job we served and signs it.
 func (rs *Receipts) countersign(sr *SignedReceipt, from peer.ID) error {
 	r := sr.Receipt
@@ -230,7 +234,7 @@ func (rs *Receipts) countersign(sr *SignedReceipt, from peer.ID) error {
 	rs.mu.Unlock()
 	switch {
 	case p == nil:
-		return fmt.Errorf("unknown job")
+		return errUnknownJob
 	case r.Server != rs.self.String() || p.client != from:
 		return fmt.Errorf("wrong parties")
 	case !verifySig(r.Client, r.bytes(), sr.ClientSig):
@@ -306,7 +310,7 @@ func (n *Node) sendReceipt(p peer.ID, job, model string, m meter) error {
 	// yet when the receipt arrives. Wait a little for it to be registered.
 	for attempt := 0; ; attempt++ {
 		err = n.deliverReceipt(p, sr)
-		if err == nil || !strings.Contains(err.Error(), "unknown job") || attempt == 5 {
+		if err == nil || !errors.Is(err, errUnknownJob) || attempt == 5 {
 			return err
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -314,6 +318,8 @@ func (n *Node) sendReceipt(p peer.ID, job, model string, m meter) error {
 }
 
 func (n *Node) deliverReceipt(p peer.ID, sr SignedReceipt) error {
+	// A receipt is one short line: give a stalled peer ten seconds, then let
+	// the retry above open a fresh stream instead of blocking here.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "receipt"), p, ReceiptProto)
@@ -326,10 +332,13 @@ func (n *Node) deliverReceipt(p peer.ID, sr SignedReceipt) error {
 	}
 	s.CloseWrite()
 	line, _ := bufio.NewReader(s).ReadString('\n')
-	if line != "ok\n" {
-		return fmt.Errorf("server refused receipt: %q", line)
+	switch line {
+	case "ok\n":
+		return nil
+	case errUnknownJob.Error() + "\n":
+		return errUnknownJob
 	}
-	return nil
+	return fmt.Errorf("server refused receipt: %q", line)
 }
 
 // syncItem is one line of the sync stream: a receipt, or a node claim.
