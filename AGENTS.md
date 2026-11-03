@@ -43,7 +43,8 @@ One `main` package, one binary.
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
-| `.github/workflows/test.yml` | gofmt, vet, `go test -race` and the four release builds on every PR and push to main |
+| `.github/workflows/test.yml` | gofmt, vet, tidy, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
+| `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
 
 ## Rules that are easy to break
 
