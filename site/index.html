@@ -50,6 +50,22 @@ figcaption { font-size: 16px; color: var(--sub); text-align: center; margin-top:
 figcaption b { color: var(--ink); font-weight: 600; }
 .k { display: inline-block; width: 9px; height: 9px; margin: 0 4px 0 2px; vertical-align: 1px; }
 
+/* Figure 2, the live node map. Land comes from world.svg (equirectangular,
+   x = lon + 180, y = 90 - lat); circles are clusters of declared cells. */
+.map { position: relative; }
+.map svg { width: 100%; height: auto; display: block; }
+.map .c { fill: var(--share); fill-opacity: .85; cursor: pointer; }
+.map .c.on { stroke: var(--ink); stroke-width: 1.5; }
+.map .u { fill: #fff; stroke: var(--node); stroke-dasharray: 3 2; cursor: pointer; }
+.map .u.on { stroke: var(--ink); stroke-dasharray: none; }
+.map circle:focus { outline: none; }
+.map circle:focus-visible { stroke: var(--use); stroke-width: 2; }
+figcaption code { white-space: nowrap; }
+.map text { font: 600 11px var(--serif); fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.map text.ul { fill: var(--sub); font-weight: 400; font-style: italic; }
+.map text.un { fill: var(--ink); }
+.mapnote { min-height: 1.5em; }
+
 h2 { font-size: 23px; font-weight: 700; margin: 44px 0 10px; }
 p { margin: 0 0 14px; text-align: justify; hyphens: auto; }
 .lead { font-variant: small-caps; letter-spacing: .02em; font-weight: 600; }
@@ -100,6 +116,7 @@ td code, p code, li code { font: 14px var(--code); overflow-wrap: anywhere; }
     <nav class="links">
       <a href="#use">Get started</a>
       <a href="#share">Share a GPU</a>
+      <a href="#map">Live map</a>
       <a href="https://github.com/bitllm-network/bitllm">Source</a>
       <a href="https://github.com/bitllm-network/bitllm/blob/main/JOIN.zh.md">中文说明</a>
     </nav>
@@ -163,6 +180,25 @@ td code, p code, li code { font: 14px var(--code); overflow-wrap: anywhere; }
   <p>Invites are signed by an Ethereum account and gossiped like everything else, so there is no membership
     server. Ask a member to invite your address, then link your node to it from the dashboard. Revoking an
     account also removes everyone it invited.</p>
+
+  <h2 id="map">The network right now</h2>
+  <figure>
+    <div class="map" id="map-fig" role="img" aria-label="Figure 2: map of the nodes serving models right now, grouped by region">
+      <svg id="map-svg" viewBox="0 0 360 150" preserveAspectRatio="xMidYMid meet">
+        <image href="world.svg" x="0" y="0" width="360" height="150"/>
+        <g id="map-dots"></g>
+      </svg>
+    </div>
+    <div class="figctl"><span class="mapnote" id="map-note">Loading the live map&hellip;</span><span id="map-time"></span></div>
+    <figcaption><b>Figure 2.</b> Nodes serving models now, grouped by region; tap a circle for its models.
+      Locations are <i>declared by each node&rsquo;s operator</i> with <code>--location</code> and rounded to cells of
+      about 150&nbsp;km. They are not measured or verified. Nodes that declared none are counted in the dashed circle.</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <caption>Table 2. Models online now. Free counts the slots not busy at the last announce.</caption>
+    <thead><tr><th>Model</th><th>Nodes</th><th>Free slots</th></tr></thead>
+    <tbody id="map-models"><tr><td colspan="3">&hellip;</td></tr></tbody>
+  </table></div>
 
   <h2>How the network works</h2>
   <p><span class="lead">Discovery.</span> Nodes meet through a Kademlia DHT and a gossip topic on which every
@@ -366,6 +402,112 @@ document.addEventListener("click", e => {
   if (still) { clients.forEach(c => start(c, 0)); draw(1.4); stats(); }
   else requestAnimationFrame(loop);
   addEventListener("resize", () => { size(); linkUp(); if (still) draw(1.4); });
+})();
+// Figure 2, the live node map. Reads network.json, which the bootstrap
+// machine refreshes every minute from its node's GET /network (counts per
+// model and per ~156 km cell, no peer ids). Cells close together on screen
+// merge into one circle, so a crowded region reads as one larger number
+// rather than a pile of dots. Nodes without a declared location get their
+// own dashed circle in the empty South Pacific.
+(() => {
+  const svg = document.getElementById("map-svg"), dots = document.getElementById("map-dots");
+  const note = document.getElementById("map-note"), when = document.getElementById("map-time");
+  const tbody = document.getElementById("map-models");
+  const NS = "http://www.w3.org/2000/svg";
+  let data = null, picked = null;
+
+  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  const unitPx = () => (svg.getBoundingClientRect().width || 700) / 360;
+  const deg = (v, pos, neg) => Math.abs(v).toFixed(0) + "°" + (v >= 0 ? pos : neg);
+  const list = models => Object.entries(models).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([m, n]) => m + (n > 1 ? " ×" + n : "")).join(", ");
+
+  // Greedy clustering in screen space: biggest cells first, each one joins
+  // the first cluster within reach or starts its own.
+  function clusters(cells) {
+    const reach = 26 / unitPx(), out = [];
+    for (const c of [...cells].sort((a, b) => b.nodes - a.nodes)) {
+      const x = c.lon + 180, y = Math.min(90 - c.lat, 148);
+      const k = out.find(k => Math.hypot(k.x - x, k.y - y) < reach);
+      if (!k) { out.push({ x, y, lat: c.lat, lon: c.lon, nodes: c.nodes, cells: 1, models: { ...c.models } }); continue; }
+      const n = k.nodes + c.nodes;
+      k.x = (k.x * k.nodes + x * c.nodes) / n; k.y = (k.y * k.nodes + y * c.nodes) / n;
+      k.lat = (k.lat * k.nodes + c.lat * c.nodes) / n; k.lon = (k.lon * k.nodes + c.lon * c.nodes) / n;
+      k.nodes = n; k.cells++;
+      for (const m in c.models) k.models[m] = (k.models[m] || 0) + c.models[m];
+    }
+    return out;
+  }
+
+  function summary() {
+    const d = data, models = d.models.length;
+    return d.nodes + (d.nodes === 1 ? " node" : " nodes") + " serving " + models + (models === 1 ? " model" : " models") +
+      (d.unlocated ? ", " + d.unlocated + " without a declared location" : "") + ".";
+  }
+
+  function show(what, circle) {
+    for (const e of dots.querySelectorAll(".on")) e.classList.remove("on");
+    if (!what || picked === what.key) { picked = null; note.textContent = summary(); return; }
+    picked = what.key; circle.classList.add("on");
+    note.textContent = what.text;
+  }
+
+  function draw() {
+    dots.replaceChildren();
+    if (!data) return;
+    const u = unitPx(), r = n => (6 + 3.2 * Math.sqrt(n)) / u, fs = 11 / u;
+    for (const k of clusters(data.cells)) {
+      const key = k.x.toFixed(1) + "," + k.y.toFixed(1);
+      const text = "Around " + deg(k.lat, "N", "S") + " " + deg(k.lon, "E", "W") + ": " + k.nodes +
+        (k.nodes === 1 ? " node" : " nodes") + (k.cells > 1 ? " in " + k.cells + " nearby cells" : "") + ". " + list(k.models) + ".";
+      const c = el("circle", { class: "c", cx: k.x, cy: k.y, r: r(k.nodes), tabindex: 0, role: "button", "aria-label": text });
+      c.addEventListener("click", () => show({ key, text }, c));
+      c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show({ key, text }, c); } });
+      dots.append(c);
+      if (k.nodes > 1) { const t = el("text", { x: k.x, y: k.y, "font-size": fs }); t.textContent = k.nodes; dots.append(t); }
+      if (picked === key) c.classList.add("on");
+    }
+    if (data.unlocated) {
+      const n = data.unlocated, x = 30, y = 122, key = "unlocated";
+      const text = n + (n === 1 ? " node has" : " nodes have") + " not declared a location, so they are counted here and not placed on the map.";
+      const c = el("circle", { class: "u", cx: x, cy: y, r: r(n), tabindex: 0, role: "button", "aria-label": text });
+      c.addEventListener("click", () => show({ key, text }, c));
+      c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show({ key, text }, c); } });
+      const t = el("text", { class: "un", x, y, "font-size": fs }); t.textContent = n;
+      const l = el("text", { class: "ul", x, y: y + r(n) + fs, "font-size": fs }); l.textContent = "no location";
+      dots.append(c, t, l);
+      if (picked === key) c.classList.add("on");
+    }
+  }
+
+  function table() {
+    tbody.replaceChildren();
+    if (!data.models.length) { const tr = tbody.insertRow(), td = tr.insertCell(); td.colSpan = 3; td.textContent = "No model is online right now."; return; }
+    for (const m of data.models) {
+      const tr = tbody.insertRow(), c = document.createElement("code");
+      c.textContent = m.id; tr.insertCell().append(c);
+      tr.insertCell().textContent = m.nodes;
+      tr.insertCell().textContent = m.free + " of " + m.max;
+    }
+  }
+
+  async function load() {
+    try {
+      const r = await fetch("network.json", { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json();
+      if (!Array.isArray(d.cells) || !Array.isArray(d.models)) throw new Error("bad data");
+      data = d;
+      const t = new Date(d.updated);
+      when.textContent = isNaN(t) ? "" : "updated " + t.toISOString().slice(11, 16) + " UTC";
+      if (!picked) note.textContent = summary();
+      draw(); table();
+    } catch (e) {
+      if (!data) { note.textContent = "Live data is not available right now."; tbody.replaceChildren(); }
+    }
+  }
+  load(); setInterval(load, 60000);
+  let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 150); });
 })();
 </script>
 </body>
