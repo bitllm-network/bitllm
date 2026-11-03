@@ -36,6 +36,7 @@ func (n *Node) Gateway() http.Handler {
 	})
 	mux.HandleFunc("GET /status", n.status)
 	mux.HandleFunc("GET /logs", n.logs)
+	mux.HandleFunc("GET /audits", n.auditList)
 	mux.HandleFunc("GET /account", n.account)
 	mux.HandleFunc("POST /account/message", n.accountMessage)
 	mux.HandleFunc("POST /account/link", n.accountLink)
@@ -163,6 +164,9 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					continue
 				}
 				started, err := n.infer(r.Context(), p, path, body, req.Stream, w)
+				if started && err == nil && n.audits != nil {
+					n.audits.observe(p, req.Model, body)
+				}
 				if started {
 					// A local client that hangs up mid-response (the user
 					// stopped the answer, or the agent closed the request)

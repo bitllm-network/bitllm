@@ -1,0 +1,56 @@
+Write a Python function that returns the n-th Fibonacci number using iteration, with a short docstring.
+Explain the difference between TCP and UDP in a few short paragraphs.
+What causes the seasons on Earth? Answer in under 150 words.
+Write a bash one-liner that counts the lines in every .go file under the current directory and prints the total.
+用三句话解释什么是区块链。
+Give me a recipe for a simple tomato pasta for two people.
+Summarize the plot of Romeo and Juliet in five sentences.
+A train leaves at 3:15 pm and travels 210 km at 84 km/h. When does it arrive? Show the steps.
+Write a SQL query that finds the top 5 customers by total order value from tables customers(id, name) and orders(id, customer_id, amount).
+What is the time complexity of quicksort in the average and worst case, and why?
+Explain what a mutex is to a junior programmer.
+List the planets of the solar system in order from the sun, with one fact about each.
+Write a short polite email asking a landlord to fix a leaking kitchen tap.
+How do I reverse a linked list in C? Give the code.
+What is the derivative of x^3 * sin(x)? Show the work.
+Describe how a refrigerator keeps food cold.
+写一段Go代码，用goroutine并发下载三个URL并打印每个响应的长度。
+Explain the CAP theorem with a concrete example.
+What are three good habits for writing maintainable code?
+Write a JavaScript function that debounces another function.
+Convert 72 degrees Fahrenheit to Celsius and explain the formula.
+What does the git rebase command do, and when should you avoid it?
+Explain gradient descent in plain language.
+Write a regular expression that matches an email address and explain each part.
+请解释一下什么是机器学习中的过拟合，以及如何避免。
+Give three arguments for and three against remote work.
+Write a Rust function that checks whether a string is a palindrome.
+What happened during the French Revolution? Give a brief overview.
+Explain how HTTPS protects data in transit.
+Write a short story opening, two paragraphs, set on a night train.
+How does a hash map handle collisions?
+What is the difference between a process and a thread?
+Write a Dockerfile for a small Python Flask app.
+Explain compound interest with an example of 1000 dollars at 5 percent for 3 years.
+Give a step-by-step plan to learn to play the guitar in three months.
+Describe the water cycle for a ten year old.
+Explain how a binary search works and write it in Python.
+What is the difference between RAM and storage? Give examples.
+Write a short guide to brewing pour-over coffee at home.
+Explain what an API is, using a restaurant analogy.
+Write a Go function that reads a file line by line and counts the words.
+What are the main causes of inflation? Explain briefly.
+Describe three common sorting algorithms and when to use each.
+Write a cover letter opening paragraph for a junior data analyst role.
+Explain the difference between let, const and var in JavaScript.
+How does public key cryptography work? Keep it simple.
+Write a Python script that renames all .txt files in a folder to lowercase.
+Give a weekly meal plan outline for a vegetarian on a budget.
+Explain what Kubernetes does and why teams use it.
+What is the Pythagorean theorem? Give a worked example.
+写一个Python函数，判断一个数是否为质数，并解释思路。
+用通俗的语言解释一下通货膨胀是怎么回事。
+Explain the difference between supervised and unsupervised learning.
+Write a unit test in Go for a function that adds two integers.
+How do vaccines train the immune system?
+Explain what a closure is in programming with an example.

@@ -78,6 +78,8 @@ export CLAUDE_CODE_SUBAGENT_MODEL=MODEL
 
 The dashboard at http://127.0.0.1:7778 shows the same setup for a human.
 
+Optional: start the node with `--audit` to spot-check the peers that answer the user (a canary request now and then, scored by another node; a peer that keeps failing is not used for that model for 24 h). `curl -s http://127.0.0.1:7778/audits` shows the results. It cannot catch every cheat; see https://github.com/zengjiajun0623/bitllm/blob/main/docs/audit.md.
+
 ## Task 3: share a GPU with the network
 
 The user needs an inference server already running with an OpenAI-compatible API. Find it:
@@ -113,7 +115,7 @@ curl -s http://127.0.0.1:7778/status
 
 Check: `serving` in the status lists NETWORK_NAME. Set `--concurrency` to how many parallel requests the server can take without slowing the user down. Requests for a model the user shares are answered by their own server and never leave the machine.
 
-Useful flags: `--upstream-key KEY` if the server needs an API key (or set `BITLLM_UPSTREAM_KEY`, which keeps it out of the process list); `--max-tokens N` caps tokens per peer request (default 32768); `--free-daily N` sets a daily quota per member (default 0, no limit); `--open` also serves uninvited nodes on spare slots. `--allow PEER_ID` (repeatable) serves only the listed nodes and refuses all others. `--ipv6=false` listens on IPv4 only: use it if the machine has a public IPv6 address and the user does not want the p2p port reachable from the internet (cost: IPv6-only peers cannot dial it directly, so more traffic goes through relays).
+Useful flags: `--upstream-key KEY` if the server needs an API key (or set `BITLLM_UPSTREAM_KEY`, which keeps it out of the process list); `--max-tokens N` caps tokens per peer request (default 32768); `--free-daily N` sets a daily quota per member (default 0, no limit); `--open` also serves uninvited nodes on spare slots. `--allow PEER_ID` (repeatable) serves only the listed nodes and refuses all others. `--ipv6=false` listens on IPv4 only: use it if the machine has a public IPv6 address and the user does not want the p2p port reachable from the internet (cost: IPv6-only peers cannot dial it directly, so more traffic goes through relays). `--weights NAME=HASH` states which weights the server loads (the hash comes from `bitllm hash-model DIR`). With a vLLM server the node announces that it can score answers for other nodes' spot checks (`--audit-serve=false` turns that off).
 
 ## Task 4: keep it running
 

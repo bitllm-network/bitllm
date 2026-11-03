@@ -35,6 +35,8 @@ One `main` package, one binary.
 | `members.go`, `access.go` | invite tree, revocation, the three access rules, daily quotas, `--open` |
 | `limits.go` | caps on gossip state (peers, claims, models) |
 | `ledger.go` | per-peer exchange record (data only) |
+| `audit.go`, `canaries.txt` | `--audit`: canary requests, scoring by an auditor node, verdicts, `GET /audits` ([docs/audit.md](docs/audit.md)) |
+| `models.go`, `models.json` | canonical model records (weights hash, canary settings), `bitllm hash-model` |
 | `ui.html` | dashboard served at the gateway root (embedded) |
 | `top.go` | `bitllm top`: live terminal view of the running node, over the local HTTP API |
 | `logs.go` | in-memory tail of the log, served as `GET /logs` |

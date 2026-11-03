@@ -50,8 +50,23 @@ func validAnnounce(a *Announce) bool {
 		a.Free < 0 || a.Max < 1 || a.Free > a.Max || a.Max > maxAnnounceSlots || len(a.Version) > 64 {
 		return false
 	}
+	served := map[string]bool{}
 	for _, m := range a.Models {
 		if m == "" || len(m) > maxModelName {
+			return false
+		}
+		served[m] = true
+	}
+	if len(a.Audit) > len(a.Models) || len(a.Weights) > len(a.Models) {
+		return false
+	}
+	for _, m := range a.Audit {
+		if !served[m] {
+			return false
+		}
+	}
+	for m, h := range a.Weights {
+		if !served[m] || !validHash(h) {
 			return false
 		}
 	}
