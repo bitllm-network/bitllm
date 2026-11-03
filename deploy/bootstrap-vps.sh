@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turn a fresh Ubuntu VM with a public IP into a BitLLM bootstrap + relay node.
 #
-#   curl -fsSL https://raw.githubusercontent.com/zengjiajun0623/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/bitllm-network/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
 #   (or: sudo bash bootstrap-vps.sh [version], default: latest release)
 #
 # Oracle Cloud: the VM firewall is not the only one. Also open 4001 in the
@@ -21,9 +21,9 @@ esac
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
 
 if [ "$VERSION" = latest ]; then
-  URL="https://github.com/zengjiajun0623/bitllm/releases/latest/download/bitllm-linux-$ARCH"
+  URL="https://github.com/bitllm-network/bitllm/releases/latest/download/bitllm-linux-$ARCH"
 else
-  URL="https://github.com/zengjiajun0623/bitllm/releases/download/$VERSION/bitllm-linux-$ARCH"
+  URL="https://github.com/bitllm-network/bitllm/releases/download/$VERSION/bitllm-linux-$ARCH"
 fi
 echo "downloading $URL"
 curl -fsSL -o /usr/local/bin/bitllm.new "$URL"
