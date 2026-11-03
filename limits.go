@@ -47,7 +47,8 @@ func (o *originRate) allow(p peer.ID, now time.Time) bool {
 
 func validAnnounce(a *Announce) bool {
 	if len(a.Models) == 0 || len(a.Models) > maxAnnounceModels ||
-		a.Free < 0 || a.Max < 1 || a.Free > a.Max || a.Max > maxAnnounceSlots || len(a.Version) > 64 {
+		a.Free < 0 || a.Max < 1 || a.Free > a.Max || a.Max > maxAnnounceSlots || len(a.Version) > 64 ||
+		len(a.Loc) > maxLocJSON {
 		return false
 	}
 	served := map[string]bool{}

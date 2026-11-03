@@ -63,6 +63,7 @@ type Config struct {
 	AuditEvery       int               // real requests to a peer between its spot checks
 	Auditors         []peer.ID         // auditors tried first
 	AuditServe       bool              // announce the models our server can score, so others may use us as an auditor
+	Location         string            // coarse geohash cell for the node map (network.go); empty = not shown
 }
 
 // Announce is what a serving node gossips about itself.
@@ -74,6 +75,8 @@ type Announce struct {
 	// Added in v0.2 (older nodes ignore them):
 	Audit   []string          `json:"audit,omitempty"`   // models our server can score (prompt logprobs): we can be an auditor
 	Weights map[string]string `json:"weights,omitempty"` // model -> hash of the weight files, as the operator states it
+	// Added in v0.2.1:
+	Loc string `json:"loc,omitempty"` // geohash cell (~156 km) for the node map, only if the operator set --location
 }
 
 type peerInfo struct {
@@ -108,8 +111,9 @@ type Node struct {
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
 	inflight     atomic.Int32
-	upOK         atomic.Bool  // upstream answered its last health check
-	openInflight atomic.Int32 // slots held by uninvited nodes on an open server
+	upOK         atomic.Bool              // upstream answered its last health check
+	lastAnn      atomic.Pointer[Announce] // what announceLoop last gossiped (GET /network counts us too)
+	openInflight atomic.Int32             // slots held by uninvited nodes on an open server
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 	audits       *audits        // nil without --audit
@@ -487,7 +491,9 @@ func (n *Node) announceLoop(ctx context.Context) {
 			}
 			a.Audit = scorable
 			a.Weights = n.cfg.Weights
+			a.Loc = n.cfg.Location
 		}
+		n.lastAnn.Store(&a)
 		b, _ := json.Marshal(a)
 		n.topic.Publish(ctx, b)
 		select {
