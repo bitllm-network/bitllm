@@ -1,0 +1,15 @@
+{
+  "deepseek-v4.1-flash-1017": {
+    "extra": {"chat_template_kwargs": {"thinking": false}}
+  },
+  "deepseek-v4.1-flash-1017-heretic": {
+    "extra": {"chat_template_kwargs": {"thinking": false}}
+  },
+  "qwen3.8-flash-next-fp4-alesha": {
+    "extra": {"chat_template_kwargs": {"enable_thinking": false}}
+  },
+  "qwen3.8-flash-next-nvfp4-lil": {
+    "extra": {"chat_template_kwargs": {"enable_thinking": false}},
+    "sampling": {"temperature": 1.0, "top_p": 0.95}
+  }
+}

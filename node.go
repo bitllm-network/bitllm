@@ -58,6 +58,11 @@ type Config struct {
 	OpenDaily        int64             // credits all uninvited nodes together may use per UTC day on an open server; 0 = no limit
 	MaxTokens        int               // cap on new tokens per request we serve; 0 = none
 	AnnounceEvery    time.Duration     //
+	Weights          map[string]string // public name -> bitllm hash-model of the files our server loads (announced, not proven)
+	Audit            bool              // spot-check the peers that answer us (audit.go)
+	AuditEvery       int               // real requests to a peer between its spot checks
+	Auditors         []peer.ID         // auditors tried first
+	AuditServe       bool              // announce the models our server can score, so others may use us as an auditor
 }
 
 // Announce is what a serving node gossips about itself.
@@ -66,6 +71,9 @@ type Announce struct {
 	Models  []string `json:"models"`
 	Free    int      `json:"free"`
 	Max     int      `json:"max"`
+	// Added in v0.2 (older nodes ignore them):
+	Audit   []string          `json:"audit,omitempty"`   // models our server can score (prompt logprobs): we can be an auditor
+	Weights map[string]string `json:"weights,omitempty"` // model -> hash of the weight files, as the operator states it
 }
 
 type peerInfo struct {
@@ -104,6 +112,7 @@ type Node struct {
 	openInflight atomic.Int32 // slots held by uninvited nodes on an open server
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
+	audits       *audits        // nil without --audit
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
@@ -320,6 +329,9 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.MDNS {
 		mdns.NewMdnsService(n.host, Rendezvous, n).Start()
 	}
+	if cfg.Audit {
+		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
+	}
 	go n.discoverLoop(ctx)
 	go n.syncLoop(ctx)
 	if cfg.Upstream != "" {
@@ -452,6 +464,8 @@ func (n *Node) announceLoop(ctx context.Context) {
 		models = append(models, m)
 	}
 	sort.Strings(models)
+	var scorable []string
+	probed := false
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
@@ -465,6 +479,14 @@ func (n *Node) announceLoop(ctx context.Context) {
 		a := Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency}
 		if n.upOK.Load() {
 			a.Models = models
+			if n.cfg.AuditServe && !probed {
+				scorable, probed = n.probeScoring(ctx), true
+				if len(scorable) > 0 {
+					log.Printf("our server can score %v: announcing it, so peers may use this node as an auditor", scorable)
+				}
+			}
+			a.Audit = scorable
+			a.Weights = n.cfg.Weights
 		}
 		b, _ := json.Marshal(a)
 		n.topic.Publish(ctx, b)
@@ -544,20 +566,37 @@ func (n *Node) alive() map[peer.ID]Announce {
 // candidates lists remote peers serving model, best first.
 func (n *Node) candidates(model string) []peer.ID {
 	type c struct {
-		id   peer.ID
-		free int
-		rtt  time.Duration
+		id      peer.ID
+		free    int
+		rtt     time.Duration
+		demoted bool // an audit suspect: used only when nobody else can answer
 	}
 	var cs []c
+	want := manifest[model].Weights
 	for p, a := range n.alive() {
+		// A peer that says it loads other weights than the name stands for
+		// is serving another model under this name, by its own account.
+		if h := a.Weights[model]; want != "" && h != "" && h != want {
+			continue
+		}
+		var demoted bool
+		if n.audits != nil {
+			var out bool
+			if out, demoted = n.audits.rank(p, model); out {
+				continue
+			}
+		}
 		for _, m := range a.Models {
 			if m == model {
-				cs = append(cs, c{p, a.Free, n.host.Peerstore().LatencyEWMA(p)})
+				cs = append(cs, c{p, a.Free, n.host.Peerstore().LatencyEWMA(p), demoted})
 				break
 			}
 		}
 	}
 	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].demoted != cs[j].demoted {
+			return !cs[i].demoted
+		}
 		if (cs[i].free > 0) != (cs[j].free > 0) {
 			return cs[i].free > 0
 		}

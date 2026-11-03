@@ -51,6 +51,10 @@ func main() {
 		inviteCmd(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "hash-model" {
+		hashModelCmd(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "top" {
 		topCmd(os.Args[2:])
 		return
@@ -61,6 +65,8 @@ func main() {
 		announce     listFlag
 		roots        listFlag
 		allow        listFlag
+		weights      listFlag
+		auditors     listFlag
 		wsPort       int
 		gateway      string
 		port         int
@@ -88,6 +94,11 @@ func main() {
 	flag.IntVar(&cfg.OpenSlots, "open-slots", 0, "with --open: most slots uninvited nodes may hold at once (default: half of --concurrency, at least 1)")
 	flag.Int64Var(&cfg.OpenDaily, "open-daily", 0, "with --open: credits all uninvited nodes together may use per UTC day, after which they are served only when idle (default 0: no limit)")
 	flag.Int64Var(&cfg.FreeDaily, "free-daily", 0, "credits each member may use per UTC day on this server; contributors are exempt (default 0: no limit)")
+	flag.Var(&weights, "weights", "model=HASH: state which weights your server loads for a shared model, as printed by `bitllm hash-model DIR` (repeatable). Announced as your claim; clients skip a server whose claim differs from the network's record")
+	flag.BoolVar(&cfg.Audit, "audit", false, "spot-check the peers that answer you: now and then send one a canary request and have another node score the answer; a peer that keeps failing is not used for that model for 24 h (GET /audits shows the results)")
+	flag.IntVar(&cfg.AuditEvery, "audit-every", 50, "with --audit: real requests to a peer between its spot checks (each peer is also checked on first use)")
+	flag.Var(&auditors, "auditor", "with --audit: peer id of an auditor to try first (repeatable; default: the BitLLM maintainers' node; none: no preferred auditor)")
+	flag.BoolVar(&cfg.AuditServe, "audit-serve", true, "if your server returns prompt logprobs (vLLM), announce that you can score answers, so others may use this node as an auditor")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("bitllm", Version)
@@ -127,6 +138,30 @@ func main() {
 		cfg.Listen = append(cfg.Listen, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/ws", wsPort))
 	}
 	cfg.Announce = announce
+	if len(weights) > 0 {
+		cfg.Weights = map[string]string{}
+		for _, w := range weights {
+			m, h, _ := strings.Cut(w, "=")
+			if !validHash(h) {
+				log.Fatalf("--weights %s: want MODEL=HASH, the 64 hex digits that bitllm hash-model prints", w)
+			}
+			cfg.Weights[m] = h
+		}
+	}
+	if len(auditors) == 0 {
+		auditors = DefaultAuditors
+	}
+	for _, s := range auditors {
+		if s == "none" {
+			cfg.Auditors = nil
+			break
+		}
+		id, err := peer.Decode(s)
+		if err != nil {
+			log.Fatalf("--auditor %s: not a peer id", s)
+		}
+		cfg.Auditors = append(cfg.Auditors, id)
+	}
 	if len(models) > 0 {
 		cfg.Models = map[string]string{}
 		for _, m := range models {
