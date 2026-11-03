@@ -1,4 +1,4 @@
-module github.com/zengjiajun0623/bitllm
+module github.com/bitllm-network/bitllm
 
 go 1.26.6
 
