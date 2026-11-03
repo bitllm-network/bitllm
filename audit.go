@@ -699,5 +699,24 @@ func (n *Node) auditList(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Peer < out[j].Peer
 	})
-	json.NewEncoder(w).Encode(map[string]any{"enabled": n.audits != nil, "peers": out})
+	resp := map[string]any{"enabled": n.audits != nil, "peers": out}
+	if n.audits != nil {
+		pref := []map[string]any{}
+		for _, p := range n.audits.seeds {
+			pref = append(pref, map[string]any{"peer": p.String(), "seed": isSeed(p)})
+		}
+		resp["preferred_auditors"] = pref
+		resp["note"] = "seed auditors are run by the BitLLM maintainers; replace them with --auditor PEER_ID or drop them with --auditor none"
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// isSeed reports whether p is one of the maintainers' seed auditors.
+func isSeed(p peer.ID) bool {
+	for _, s := range DefaultAuditors {
+		if s == p.String() {
+			return true
+		}
+	}
+	return false
 }

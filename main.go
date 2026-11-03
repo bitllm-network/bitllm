@@ -98,7 +98,7 @@ func main() {
 	flag.BoolVar(&cfg.Audit, "audit", false, "spot-check the peers that answer you: now and then send one a canary request and have another node score the answer; a peer that keeps failing is not used for that model for 24 h (GET /audits shows the results)")
 	flag.IntVar(&cfg.AuditEvery, "audit-every", 50, "with --audit: real requests to a peer between its spot checks (each peer is also checked on first use)")
 	flag.Var(&auditors, "auditor", "with --audit: peer id of an auditor to try first (repeatable; default: the BitLLM maintainers' node; none: no preferred auditor)")
-	flag.BoolVar(&cfg.AuditServe, "audit-serve", true, "if your server returns prompt logprobs (vLLM), announce that you can score answers, so others may use this node as an auditor")
+	flag.BoolVar(&cfg.AuditServe, "audit-serve", false, "offer to be an auditor: if your server returns prompt logprobs (vLLM), announce that this node can score answers for other nodes' --audit (they pay for it like any request)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("bitllm", Version)
@@ -185,6 +185,13 @@ func main() {
 	}
 	if cfg.Upstream != "" {
 		log.Printf("sharing %v from %s", cfg.Models, cfg.Upstream)
+	}
+	if cfg.Audit {
+		if len(cfg.Auditors) > 0 && len(auditors) == len(DefaultAuditors) && auditors[0] == DefaultAuditors[0] {
+			log.Printf("audit: on; preferred auditor %v is the seed run by the BitLLM maintainers (replace it with --auditor PEER_ID, drop it with --auditor none)", cfg.Auditors)
+		} else {
+			log.Printf("audit: on; preferred auditors %v", cfg.Auditors)
+		}
 	}
 	log.Printf("gateway http://%s/v1", gateway)
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}

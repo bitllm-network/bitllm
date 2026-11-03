@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -347,5 +349,50 @@ func TestWeightsClaim(t *testing.T) {
 	}
 	if got := client.candidates("m"); len(got) != 1 || got[0] != good.host.ID() {
 		t.Fatalf("candidates %v", got)
+	}
+}
+
+// Without --audit-serve a node whose server could score does not offer to:
+// a node that does not opt in behaves as before.
+func TestAuditServeOff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var scored atomic.Int32
+	sc := scoringUpstream(t, "local-m", true)
+	defer sc.Close()
+	count := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			scored.Add(1)
+		}
+		resp, err := http.Post(sc.URL+r.URL.Path, "application/json", r.Body)
+		if r.Method == "GET" {
+			resp, err = http.Get(sc.URL + r.URL.Path)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(w, resp.Body)
+	}))
+	defer count.Close()
+	boot := testNode(t, ctx, Config{})
+	bs := boot.Addrs()[:1]
+	srv := testNode(t, ctx, Config{Bootstrap: bs, Upstream: count.URL + "/v1", Models: map[string]string{"m": "local-m"}})
+	client := testNode(t, ctx, Config{Bootstrap: bs})
+	for deadline := time.Now().Add(20 * time.Second); ; {
+		if a, ok := client.alive()[srv.host.ID()]; ok {
+			if len(a.Audit) != 0 || len(a.Weights) != 0 {
+				t.Fatalf("announce %+v", a)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server never seen")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := scored.Load(); n != 0 {
+		t.Fatalf("%d requests reached the server without any client asking", n)
 	}
 }
