@@ -35,6 +35,7 @@ func (n *Node) Gateway() http.Handler {
 		w.Write(uiHTML)
 	})
 	mux.HandleFunc("GET /status", n.status)
+	mux.HandleFunc("GET /network", n.network)
 	mux.HandleFunc("GET /logs", n.logs)
 	mux.HandleFunc("GET /audits", n.auditList)
 	mux.HandleFunc("GET /account", n.account)

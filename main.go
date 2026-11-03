@@ -99,6 +99,7 @@ func main() {
 	flag.IntVar(&cfg.AuditEvery, "audit-every", 50, "with --audit: real requests to a peer between its spot checks (each peer is also checked on first use)")
 	flag.Var(&auditors, "auditor", "with --audit: peer id of an auditor to try first (repeatable; default: the BitLLM maintainers' node; none: no preferred auditor)")
 	flag.BoolVar(&cfg.AuditServe, "audit-serve", false, "offer to be an auditor: if your server returns prompt logprobs (vLLM), announce that this node can score answers for other nodes' --audit (they pay for it like any request)")
+	location := flag.String("location", "", "where to show this node on the bitllm.org map: LAT,LON of any point in your city, e.g. 52.52,13.40. Only a ~156 km cell is announced, never the point. Default: not shown")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("bitllm", Version)
@@ -138,6 +139,11 @@ func main() {
 		cfg.Listen = append(cfg.Listen, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/ws", wsPort))
 	}
 	cfg.Announce = announce
+	loc, err := parseLocation(*location)
+	if err != nil {
+		log.Fatalf("--location %s: %v", *location, err)
+	}
+	cfg.Location = loc
 	if len(weights) > 0 {
 		cfg.Weights = map[string]string{}
 		for _, w := range weights {
