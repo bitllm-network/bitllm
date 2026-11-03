@@ -50,6 +50,9 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
   cap from the server's first refusal and from then on sends only the newest images, with a short note
   in place of each older one. Agents send every screenshot of a session again on each turn, so this
   keeps long sessions working. Nothing to set; restart the node after you change the cap.
+- `--location LAT,LON` (optional): show your node on the map at bitllm.org. Give any point in your
+  city, e.g. `--location 52.52,13.40`; the node announces only a cell of about 150 km, never the point.
+  Without it your node is counted as "no location". Details: [docs/network-map.md](docs/network-map.md).
 
 ### Canonical model names
 
