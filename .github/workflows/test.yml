@@ -1,21 +1,89 @@
+# Runs on every pull request and every push to main. All jobs run in
+# parallel, so the whole check takes about as long as the slowest job (~1 min).
+# Collaborators push to main directly; keep this green (see CONTRIBUTING.md).
 name: test
 on:
   pull_request:
   push:
     branches: [main]
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test -race ./...
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -count=1 ./...
+
+  # The same binaries scripts/release.sh makes, kept for 7 days as a
+  # downloadable artifact of the run (handy for testing a PR on a real machine).
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: build all release targets
         run: |
-          for t in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
-            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null . || exit 1
+          mkdir dist
+          for t in darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
+            os=${t%/*} arch=${t#*/} ext=""
+            [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.Version=ci-${GITHUB_SHA::7}" -o "dist/bitllm-$os-$arch$ext" . || exit 1
           done
+          (cd dist && sha256sum bitllm-* > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitllm-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+  # Protocol compatibility: a node built from this commit must work with nodes
+  # still running older releases, in both directions (see scripts/compat.sh
+  # and docs/compat.md). "latest" is the newest release; the pinned version is
+  # the oldest one we know is still running on the public network.
+  compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        old: [latest, v0.1.11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bitllm-new .
+      - name: download ${{ matrix.old }}
+        run: |
+          if [ "${{ matrix.old }}" = latest ]; then
+            url=https://github.com/${{ github.repository }}/releases/latest/download/bitllm-linux-amd64
+          else
+            url=https://github.com/${{ github.repository }}/releases/download/${{ matrix.old }}/bitllm-linux-amd64
+          fi
+          curl -fsSL -o bitllm-old "$url" && chmod +x bitllm-old && ./bitllm-old --version
+      - run: scripts/compat.sh ./bitllm-old ./bitllm-new
