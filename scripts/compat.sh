@@ -56,6 +56,8 @@ class H(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 EOF
 python3 "$work/upstream.py" 18900 "$MODEL" & pids+=($!)
+# Older releases give up at startup if the upstream does not answer yet.
+for _ in $(seq 1 50); do curl -sf 127.0.0.1:18900/v1/models > /dev/null && break; sleep 0.1; done
 
 # A bootstrap needs some --bootstrap, or it would dial the public default.
 # This one points at a closed local port, so it goes nowhere.
