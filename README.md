@@ -236,12 +236,22 @@ the tunnel at `http://127.0.0.1:4002`. Others join with
 - **Peers you connect to directly see your IP address**, and the peer serving you sees your node id.
   If that matters where you live, use the network through a VPN or Tor-capable VPS.
 - If you share a model, the clients you serve can see your IP too.
-- **A node could serve a different model than it claims.** Start with `--audit` to spot-check the
-  peers that answer you: now and then your node sends one a canary request and has another node
-  score the answer token by token; a peer that keeps failing gets no requests for that model for
-  24 h (`GET /audits` shows the results). It catches another model, and a coarser quant on greedy
-  canaries; it does not catch a server that recognizes canaries, or an auditor that lies. Numbers
-  and limits: [docs/audit.md](docs/audit.md).
+- **A node could serve a different model than it claims.** Start with `--audit` (off by default) to
+  spot-check the peers that answer you: about one request in 50 to a peer is followed by a canary
+  request, and another node (the auditor) scores the answer token by token; a peer that keeps
+  failing gets no requests for that model for 24 h (`GET /audits` shows the results). The default
+  auditor is a seed node run by us, the maintainers; `--auditor PEER_ID` replaces it and
+  `--auditor none` drops it. Turning it on does not make cheating impossible:
+  - It finds a server running another model, and a coarser quant (Q4 or below) on greedy requests.
+  - It does not find a server that recognizes canaries (the pool is public), a quant swap on
+    sampled requests only, or a light fine-tune swap such as official weights for heretic.
+  - An auditor can lie: pass a cheater, or make up bad scores for an honest server. A shuffled
+    control catches only an auditor that passes everything. Trusting the seed means trusting us.
+  - A server and an auditor run by the same person can pass each other. Nodes of the same claimed
+    owner or /24 are never paired, but unclaimed nodes on different networks can be.
+  - `--weights NAME=HASH` is what the server says it loads. The node only relays its server and
+    cannot prove it.
+  Numbers and details: [docs/audit.md](docs/audit.md).
 - `--upnp` (on by default) asks your router to forward the p2p port.
 - **IPv6 exposes the p2p port.** With a public IPv6 address and a router that lets inbound IPv6
   through, anyone on the internet can reach port 4001 (the p2p port, never the gateway on 7778,

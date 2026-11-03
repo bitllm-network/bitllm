@@ -2,8 +2,10 @@
 
 A node shares a model under a network name, and nothing stops it from running something cheaper
 under that name: a small model, a coarser quant, another fine-tune. `--audit` lets your node check.
-It is off by default in this release, runs only on your side, and changes nothing on the wire
-(two optional fields in the announce, which older nodes ignore).
+It is off by default, runs only on your side, and changes nothing on the wire (two optional fields
+in the announce, which older nodes ignore). A node that turns on neither `--audit` nor
+`--audit-serve` behaves exactly as before: it sends no canaries, scores nothing, and announces the
+same as v0.1.
 
 ```bash
 bitllm --audit                           # check the peers that answer you
@@ -21,8 +23,8 @@ curl -s 127.0.0.1:7778/audits            # what your node found
    real request. At most 6 rounds per peer and model per hour. The canary is paid like any request.
 2. **Auditor.** Another node that serves the same model and whose server returns prompt logprobs
    (vLLM) scores the canary's answer: it reads prompt + answer once (teacher forcing) and returns
-   the log probability of every answer token and its top 8 alternatives. A node announces that it
-   can do this (`--audit-serve`, on by default, checked once at start with one tiny request). The
+   the log probability of every answer token and its top 8 alternatives. A node offers this with
+   `--audit-serve` (off by default; checked once at start with one tiny request). The
    auditor gets only the text, never which peer wrote it. Your node picks the auditor: first one of
    `--auditor` (by default the maintainers' seed, below), else a random node that can score. Never
    the server itself, a node claimed by the same owner, or one on the same /24 (IPv6: /48).
@@ -149,10 +151,13 @@ that is ten times rarer.
   the ring per score, plus the same again for one check in four (the shuffled control).
 - Client: two small HTTP requests over libp2p per check, and up to 20 checks kept per peer.
 
-## Seed auditor
+## Seed auditor (run by us)
 
-The default `--auditor` is the omarchy node run by the BitLLM maintainers
+So that `--audit` works for a new user without setup, the default `--auditor` is a node that we,
+the BitLLM maintainers, run ourselves: the omarchy node
 (`12D3KooWSCjSmNqem7jVEwc3scunEjpTqSZPgPdhMx6VbZ5piETF`), which scores
 `deepseek-v4.1-flash-1017-heretic` on the 4-node ring. It is used only for the models it announces.
-Replace it with `--auditor PEER_ID` (repeatable) or drop it with `--auditor none`; any other node
-that announces it can score is used after the ones you name.
+It is not independent: using it means trusting us to score honestly. The node says so in its log
+at start and in `GET /audits` (`preferred_auditors`, `seed: true`). Replace it with
+`--auditor PEER_ID` (repeatable) or drop it with `--auditor none`; any other node that offers to
+score is used after the ones you name.
