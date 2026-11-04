@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -294,16 +295,16 @@ func TestHashModel(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "model-1.safetensors"), []byte("aaa"), 0o644)
 	os.WriteFile(filepath.Join(dir, "sub", "model-2.safetensors"), []byte("bbb"), 0o644)
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
-	h1, n, err := hashModel(dir)
-	if err != nil || n != 2 || !validHash(h1) {
+	h1, n, err := models.HashModel(dir)
+	if err != nil || n != 2 || !models.ValidHash(h1) {
 		t.Fatalf("%s %d %v", h1, n, err)
 	}
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"x":1}`), 0o644)
-	if h2, _, _ := hashModel(dir); h2 != h1 {
+	if h2, _, _ := models.HashModel(dir); h2 != h1 {
 		t.Fatal("a config change changed the weights hash")
 	}
 	os.WriteFile(filepath.Join(dir, "model-1.safetensors"), []byte("aab"), 0o644)
-	if h3, _, _ := hashModel(dir); h3 == h1 {
+	if h3, _, _ := models.HashModel(dir); h3 == h1 {
 		t.Fatal("a weight change kept the hash")
 	}
 }
@@ -326,8 +327,8 @@ func TestWeightsClaim(t *testing.T) {
 	// A server that states other weights than the record is skipped.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manifest["m"] = modelInfo{Weights: h}
-	defer delete(manifest, "m")
+	models.Manifest["m"] = models.Info{Weights: h}
+	defer delete(models.Manifest, "m")
 	up := mockUpstream(t, "local-m")
 	defer up.Close()
 	boot := testNode(t, ctx, Config{})

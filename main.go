@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -60,21 +61,21 @@ func main() {
 		return
 	}
 	var (
-		cfg          Config
-		models, boot listFlag
-		announce     listFlag
-		roots        listFlag
-		allow        listFlag
-		weights      listFlag
-		auditors     listFlag
-		wsPort       int
-		gateway      string
-		port         int
-		ipv6         bool
+		cfg              Config
+		modelFlags, boot listFlag
+		announce         listFlag
+		roots            listFlag
+		allow            listFlag
+		weights          listFlag
+		auditors         listFlag
+		wsPort           int
+		gateway          string
+		port             int
+		ipv6             bool
 	)
 	flag.StringVar(&cfg.Upstream, "upstream", "", "OpenAI-compatible base URL to share, e.g. http://localhost:8080/v1 (empty: use the network only)")
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
-	flag.Var(&models, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model)")
+	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
 	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3... (repeatable; default: boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
@@ -148,7 +149,7 @@ func main() {
 		cfg.Weights = map[string]string{}
 		for _, w := range weights {
 			m, h, _ := strings.Cut(w, "=")
-			if !validHash(h) {
+			if !models.ValidHash(h) {
 				log.Fatalf("--weights %s: want MODEL=HASH, the 64 hex digits that bitllm hash-model prints", w)
 			}
 			cfg.Weights[m] = h
@@ -168,9 +169,9 @@ func main() {
 		}
 		cfg.Auditors = append(cfg.Auditors, id)
 	}
-	if len(models) > 0 {
+	if len(modelFlags) > 0 {
 		cfg.Models = map[string]string{}
-		for _, m := range models {
+		for _, m := range modelFlags {
 			local, public, _ := strings.Cut(m, "=")
 			if public == "" {
 				public = local
