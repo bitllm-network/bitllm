@@ -31,3 +31,14 @@ func TestValidAnnounce(t *testing.T) {
 		}
 	}
 }
+
+func TestAnnounceLocLimit(t *testing.T) {
+	a := Announce{Models: []string{"m"}, Free: 1, Max: 1, Loc: strings.Repeat("u", MaxLocJSON)}
+	if !ValidAnnounce(&a) {
+		t.Fatal("a loc of MaxLocJSON bytes must pass")
+	}
+	a.Loc += "u"
+	if ValidAnnounce(&a) {
+		t.Fatal("a longer loc must be refused")
+	}
+}

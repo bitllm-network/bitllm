@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/models"
+	"github.com/bitllm-network/bitllm/internal/netmap"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -140,7 +141,7 @@ func main() {
 		cfg.Listen = append(cfg.Listen, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/ws", wsPort))
 	}
 	cfg.Announce = announce
-	loc, err := parseLocation(*location)
+	loc, err := netmap.ParseLocation(*location)
 	if err != nil {
 		log.Fatalf("--location %s: %v", *location, err)
 	}
