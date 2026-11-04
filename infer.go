@@ -420,14 +420,21 @@ func (n *Node) handleInfer(s network.Stream) {
 	if worst <= 0 {
 		worst = int64(n.cfg.MaxTokens)
 	}
+	if n.cfg.MaxTokens > 0 {
+		worst = min(worst, int64(n.cfg.MaxTokens)) // clamp() applies the same cap
+	}
+	// A job also pays for its prompt (a quarter credit per token), so leave
+	// room for it. The body is at most maxRequest bytes, so this is bounded.
+	amount := price(int64(len(req.Body))/4, worst)
 	wait := time.Duration(0)
 	if s.Protocol() == InferProto2 {
-		wait = min(time.Duration(req.Wait)*time.Millisecond, maxWait)
-		if wait < 0 {
-			wait = 0
+		ms := min(req.Wait, int64(maxWait/time.Millisecond)) // clamp first: no overflow
+		if ms < 0 {
+			ms = 0
 		}
+		wait = time.Duration(ms) * time.Millisecond
 	}
-	status, msg, a := n.admit(remote, meta.Model, time.Now(), wait, worst)
+	status, msg, a := n.admit(remote, meta.Model, time.Now(), wait, amount)
 	if a.w == nil && status != 0 {
 		reply(status, msg)
 		return
@@ -535,6 +542,10 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		return false, err
 	}
 	s.CloseWrite()
+	// Bound the wait for a header: a peer that keeps sending 202 lines must
+	// not hold this request (and the gateway's writer) forever. The deadline
+	// is cleared once the header is in, so a long generation is not cut.
+	s.SetReadDeadline(time.Now().Add(wait + 30*time.Second))
 	r := bufio.NewReaderSize(s, 64<<10)
 	var hdr inferHdr
 	for {
@@ -552,6 +563,7 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		}
 		break
 	}
+	s.SetReadDeadline(time.Time{})
 	if hdr.Status != 200 {
 		return false, &peerError{hdr.Status, hdr.Error}
 	}

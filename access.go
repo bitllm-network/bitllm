@@ -62,22 +62,23 @@ func (q *Quota) room(key string, limit int64, now time.Time) int64 {
 	return limit - q.Used[key] - q.Reserved[key]
 }
 
-// hold reserves up to amount against limit and returns what it took. The
-// caller releases it with settle, whether the job ran or not.
-func (q *Quota) hold(key string, amount, limit int64, now time.Time) int64 {
-	if key == "" || amount <= 0 {
-		return 0
-	}
-	if limit <= 0 {
-		return 0
+// take checks that room is left for key and reserves up to amount against
+// limit, all in one critical section, so two parallel jobs cannot both pass
+// the same remaining quota. It reports false when nothing is left today.
+func (q *Quota) take(key string, amount, limit int64, now time.Time) (int64, bool) {
+	if key == "" || limit <= 0 {
+		return 0, true
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.roll(now)
 	room := limit - q.Used[key] - q.Reserved[key]
-	take := min(amount, max(room, 0))
+	if room <= 0 {
+		return 0, false
+	}
+	take := min(max(amount, 0), room)
 	q.Reserved[key] += take
-	return take
+	return take, true
 }
 
 func (q *Quota) drop(key string, reserved int64, now time.Time) {
@@ -229,9 +230,9 @@ func (r *refusals) snapshot() map[string]int64 {
 // caller must call done when the job ends, and must watch a.w.ready when a
 // waiter is returned.
 //
-// maxTokens is the worst case the job may use, reserved against the daily
-// quota until it ends.
-func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Duration, maxTokens int64) (status int, msg string, a admission) {
+// amount is the worst case the job may cost in credits, reserved against the
+// daily quota until it ends.
+func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Duration, amount int64) (status int, msg string, a admission) {
 	if len(n.cfg.Allow) > 0 && !n.cfg.Allow[remote] {
 		n.refused.allow.Add(1)
 		return 403, fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote), a
@@ -277,27 +278,33 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 			t.key = "node:" + remote.String()
 		}
 	}
-	// Refuse at once when nothing is left today: waiting will not help.
-	if t.key != "" && t.limit > 0 && n.quota.room(t.key, t.limit, now) <= 0 {
+	// The job reserves its worst case now, whether it runs at once or waits,
+	// so parallel jobs cannot both pass the same remaining quota, and a
+	// queued job cannot start on quota another job already took.
+	reserved, ok := n.quota.take(t.key, amount, t.limit, now)
+	if !ok {
 		n.refused.quota.Add(1)
 		return 429, msgQuotaSpent, a
 	}
-
-	// The job reserves its worst case now, whether it runs at once or waits,
-	// so parallel jobs cannot both pass the same remaining quota.
-	amount := price(0, maxTokens)
+	t.reserved = reserved
+	if open {
+		t.poolReserved, _ = n.quota.take(openPool, amount, t.poolLimit, now)
+	}
 	n.qmu.Lock()
+	// Grant whoever already waits and fits, so a new request cannot take
+	// the slot a queued one was about to get. After this no waiter fits.
+	n.dispatchLocked()
 	if n.tryTakeLocked(remote, class) {
 		n.qmu.Unlock()
-		t.reserved = n.quota.hold(t.key, amount, t.limit, now)
-		if open {
-			t.poolReserved = n.quota.hold(openPool, amount, t.poolLimit, now)
-		}
 		return 0, "", admission{t: t}
 	}
 	if wait <= 0 {
 		spent := open && n.openInflight.Load() >= n.openSlots()
 		n.qmu.Unlock()
+		n.quota.drop(t.key, t.reserved, now)
+		if open {
+			n.quota.drop(openPool, t.poolReserved, now)
+		}
 		n.refused.busy.Add(1)
 		if class == classIdle || spent {
 			return 429, msgUninvited, a
@@ -310,15 +317,14 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 	w.t = t
 	if !n.enqueueLocked(w) {
 		n.qmu.Unlock()
+		n.quota.drop(t.key, t.reserved, now)
+		if open {
+			n.quota.drop(openPool, t.poolReserved, now)
+		}
 		n.refused.queue.Add(1)
 		return 429, msgQueueFull, a
 	}
-	// The place in line holds the reservation too, so a job that waits
-	// cannot start on quota another job already took.
-	w.t.reserved = n.quota.hold(w.key, amount, w.limit, now)
-	if open {
-		w.t.poolReserved = n.quota.hold(openPool, amount, w.pool, now)
-	}
+	n.dispatchLocked()
 	n.qmu.Unlock()
 	return 202, "", admission{w: w}
 }
@@ -328,19 +334,23 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 func (n *Node) done(t ticket, credits int64, now time.Time) {
 	n.qmu.Lock()
 	n.releaseLocked(t)
+	// Dispatch before unlocking: otherwise the slot is free but unclaimed
+	// for a moment, and a new request could take it ahead of a waiter.
+	n.dispatchLocked()
 	n.qmu.Unlock()
-	if d := now.Sub(t.start); d > 0 {
-		if cur := n.svc.Load(); cur > 0 {
-			n.svc.Store((cur*3 + d.Nanoseconds()) / 4)
-		} else {
-			n.svc.Store(d.Nanoseconds())
+	if credits > 0 { // a job that served nothing says nothing about the wait
+		if d := now.Sub(t.start); d > 0 {
+			if cur := n.svc.Load(); cur > 0 {
+				n.svc.Store((cur*3 + d.Nanoseconds()) / 4)
+			} else {
+				n.svc.Store(d.Nanoseconds())
+			}
 		}
 	}
 	n.quota.settle(t.key, t.reserved, credits, now)
 	if t.open {
 		n.quota.settle(openPool, t.poolReserved, credits, now)
 	}
-	n.dispatch()
 }
 
 // notAllowed reports whether a peer refused us for good: its owner serves

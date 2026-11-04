@@ -33,6 +33,11 @@ const (
 	// it, a steady trickle of members would starve the open pool, since a
 	// class always beats an older request of a lower class.
 	ageStep = 20 * time.Second
+
+	// maxPerPeerQueue is the most places one peer may hold at once. Peer
+	// ids are free, so without it one id (or a few) could fill the queue
+	// and shut members out.
+	maxPerPeerQueue = 8
 )
 
 // Request classes, best first. They mirror the three access rules: a
@@ -145,13 +150,16 @@ func (n *Node) releaseLocked(t ticket) {
 
 // enqueue adds a waiter if there is room. The caller holds q.mu.
 func (n *Node) enqueueLocked(w *waiter) bool {
-	pending := 0
+	pending, mine := 0, 0
 	for _, other := range n.waiters {
 		if other.state == waitPending {
 			pending++
+			if other.peer == w.peer {
+				mine++
+			}
 		}
 	}
-	if pending >= maxQueue {
+	if pending >= maxQueue || mine >= maxPerPeerQueue {
 		return false
 	}
 	n.waiters = append(n.waiters, w)
@@ -242,6 +250,9 @@ func (n *Node) cancelWait(w *waiter) bool {
 	}
 	w.state = waitCanceled
 	n.dropLocked(w)
+	// Losing a place can free a slot another peer was waiting for (its
+	// share of the slots, say), so look again before unlocking.
+	n.dispatchLocked()
 	n.qmu.Unlock()
 	// The place is gone, so the credits it held go back to the day's room.
 	now := time.Now()
@@ -282,14 +293,15 @@ func (n *Node) queueView(w http.ResponseWriter, r *http.Request) {
 }
 
 // eta estimates in milliseconds how long a waiter at position pos still
-// waits, from the average time recent jobs took. Zero means unknown (no job
-// served yet).
+// waits, from the average time recent jobs took and how many run at once.
+// Zero means unknown (no job served yet).
 func (n *Node) eta(pos int) int64 {
 	avg := n.svc.Load()
 	if avg <= 0 || pos <= 1 {
 		return 0
 	}
-	return int64(time.Duration(pos-1) * time.Duration(avg) / time.Millisecond)
+	slots := max(n.cfg.Concurrency, 1)
+	return int64(time.Duration(pos-1) * time.Duration(avg) / time.Duration(slots) / time.Millisecond)
 }
 
 // position is where w stands in the queue: 1 is next, under the same order

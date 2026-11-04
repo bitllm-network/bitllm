@@ -28,6 +28,11 @@ var busyWait = 60 * time.Second
 // peer refused at once (its queue full, or a node too old to queue at all).
 var busyBackoff = time.Second
 
+// peerWait is the longest one peer may hold the request while another
+// candidate is still untried. Without it a deep queue on the first peer
+// hides an idle second one for the whole busyWait.
+var peerWait = 15 * time.Second
+
 // Gateway is the local OpenAI-compatible endpoint. Point any agent at it; it
 // answers from our own upstream when we serve the model, otherwise from a peer.
 func (n *Node) Gateway() http.Handler {
@@ -183,7 +188,11 @@ func (n *Node) complete(path string) http.HandlerFunc {
 				if remaining <= 0 {
 					break
 				}
-				started, err := n.infer(r.Context(), p, path, body, req.Stream, w, remaining)
+				wait := remaining
+				if left := len(cands) - tried; left > 1 {
+					wait = min(remaining, peerWait)
+				}
+				started, err := n.infer(r.Context(), p, path, body, req.Stream, w, wait)
 				if started && err == nil && n.audits != nil {
 					n.audits.observe(p, req.Model, body)
 				}

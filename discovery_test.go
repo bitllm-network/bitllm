@@ -102,7 +102,7 @@ func TestRedialReconnects(t *testing.T) {
 
 	waitConnected := func(want bool) {
 		t.Helper()
-		deadline := time.Now().Add(15 * time.Second)
+		deadline := time.Now().Add(5 * time.Second)
 		for {
 			got := client.host.Network().Connectedness(boot.host.ID()) == network.Connected
 			if got == want {
@@ -141,11 +141,15 @@ func TestBootstrapRestart(t *testing.T) {
 	l.Close()
 
 	dir := t.TempDir()
+	var stopBoot context.CancelFunc
 	startBoot := func() *Node {
+		// Its own context, so the old node's loops stop before the new one
+		// opens the same data directory and port.
+		bctx, bcancel := context.WithCancel(ctx)
 		var n *Node
 		var err error
 		for i := 0; i < 40; i++ { // the old listener may take a moment to go
-			n, err = NewNode(ctx, Config{Listen: []string{addr}, DataDir: dir, DHTServer: true,
+			n, err = NewNode(bctx, Config{Listen: []string{addr}, DataDir: dir, DHTServer: true,
 				AnnounceEvery: 300 * time.Millisecond, Concurrency: 2})
 			if err == nil {
 				break
@@ -153,9 +157,11 @@ func TestBootstrapRestart(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if err != nil {
+			bcancel()
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { n.host.Close() })
+		stopBoot = bcancel
+		t.Cleanup(func() { n.host.Close(); bcancel() })
 		return n
 	}
 	boot := startBoot()
@@ -191,13 +197,14 @@ func TestBootstrapRestart(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	waitServed("before the restart", 30*time.Second)
+	waitServed("before the restart", 20*time.Second)
 
 	// Take the bootstrap down, as a restart would, and bring it back with the
 	// same identity on the same address.
 	boot.host.Close()
+	stopBoot()
 	boot = startBoot()
-	waitServed("after the bootstrap restarted", 30*time.Second)
+	waitServed("after the bootstrap restarted", 15*time.Second)
 
 	relayed := false
 	for _, c := range client.host.Network().ConnsToPeer(server.host.ID()) {

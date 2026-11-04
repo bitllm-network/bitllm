@@ -45,7 +45,7 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
 - Without `--model`, every model your server lists is shared under its own name.
 - `--concurrency`: how many requests you serve at once. Extra requests wait in this node's queue,
   in order of access class, which improves as a request waits, and then arrival. A full queue
-  refuses at once instead of making the client poll.
+  answers at once, so nobody waits on a place that does not exist.
 - `--max-tokens` (default 32768): the most new tokens one peer request may ask for. Peers also get one
   choice per request (`n` is dropped).
 - Images: if your server caps images per prompt (vLLM's `--limit-mm-per-prompt`), the node learns the

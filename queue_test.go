@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +66,7 @@ func TestQueueFIFO(t *testing.T) {
 		t.Fatalf("queue depth = %d, want 2", d)
 	}
 
-	n.done(first, 0, now.Add(100*time.Millisecond))
+	n.done(first, 10, now.Add(100*time.Millisecond))
 	if eta := n.eta(2); eta != 100 {
 		t.Fatalf("eta(2) = %d ms, want 100 from the one job just served", eta)
 	}
@@ -243,6 +247,27 @@ func TestQueueFull(t *testing.T) {
 	n.done(slot, 0, now)
 }
 
+// TestQueuePerPeerCap: one peer cannot fill the queue and shut others out.
+func TestQueuePerPeerCap(t *testing.T) {
+	ctx := t.Context()
+	n := testNode(t, ctx, Config{Concurrency: 1})
+	now := time.Now()
+	slot := takeSlot(t, n, randomPeer(t), now)
+	a := randomPeer(t)
+	for i := 0; i < maxPerPeerQueue; i++ {
+		if s, msg, w := n.admit(a, "m", now, time.Minute, 0); s != 202 || w.w == nil {
+			t.Fatalf("waiter %d: %d %s", i, s, msg)
+		}
+	}
+	if s, msg, _ := n.admit(a, "m", now, time.Minute, 0); s != 429 || msg != msgQueueFull {
+		t.Fatalf("one peer past its share: %d %s", s, msg)
+	}
+	if s, msg, w := n.admit(randomPeer(t), "m", now, time.Minute, 0); s != 202 || w.w == nil {
+		t.Fatalf("another peer refused while the queue had room: %d %s", s, msg)
+	}
+	n.done(slot, 0, now)
+}
+
 // TestQueueCancel: a caller that gives up loses its place, and one that was
 // already granted keeps the slot it was given.
 func TestQueueCancel(t *testing.T) {
@@ -357,5 +382,75 @@ func TestQueueView(t *testing.T) {
 	}
 	if v.Slots != 1 || v.Inflight != 1 || v.Queued != 1 || v.PerModel["m"] != 1 {
 		t.Fatalf("GET /queue = %+v", v)
+	}
+}
+
+// TestQueueOverTheWire: a real 1.1.0 request that finds the only slot taken
+// waits on its stream (202 lines) and runs when the first job ends, and the
+// answer reaches the client.
+func TestQueueOverTheWire(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	defer free()
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"data":[{"id":"local-ds"}]}`)
+		case "/v1/chat/completions":
+			<-release // the first job takes its time
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":1}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer up.Close()
+
+	boot := testNode(t, ctx, Config{})
+	bs := boot.Addrs()[:1]
+	server := testNode(t, ctx, Config{Bootstrap: bs, Upstream: up.URL + "/v1", MaxTokens: 8,
+		Models: map[string]string{"ds": "local-ds"}, Concurrency: 1})
+	client := testNode(t, ctx, Config{Bootstrap: bs})
+
+	deadline := time.Now().Add(20 * time.Second)
+	for len(client.candidates("ds")) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("client never discovered the server")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	body := []byte(`{"model":"ds","messages":[{"role":"user","content":"hi"}]}`)
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			_, errs[i] = client.infer(ctx, server.host.ID(), "/chat/completions", body, false, rec, 30*time.Second)
+			codes[i] = rec.Code
+		}(i)
+	}
+
+	// One job runs, the other waits in the server's queue.
+	deadline = time.Now().Add(10 * time.Second)
+	for server.inflight.Load() != 1 || server.queueDepth() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("inflight = %d, queued = %d; want 1 and 1", server.inflight.Load(), server.queueDepth())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	free()
+	wg.Wait()
+
+	for i := range 2 {
+		if errs[i] != nil || codes[i] != 200 {
+			t.Fatalf("request %d: %v, code %d", i, errs[i], codes[i])
+		}
 	}
 }

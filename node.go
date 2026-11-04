@@ -451,15 +451,18 @@ func relayResources(behindProxy bool) relay.Resources {
 // now and then, so anything a node missed on gossip arrives eventually.
 func (n *Node) syncLoop(ctx context.Context) {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(10 * time.Minute):
-		}
+		// Sync first, then wait, so a node that started while the network
+		// was unreachable catches up as soon as the connect lands, not ten
+		// minutes later.
 		for _, ai := range n.relays {
 			if n.host.Network().Connectedness(ai.ID) == network.Connected {
 				n.syncReceipts(ctx, ai.ID)
 			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Minute):
 		}
 	}
 }
@@ -618,10 +621,11 @@ func modelKey(model string) cid.Cid {
 }
 
 // provideLoop records this node as a provider of every model it serves, and
-// refreshes the records before the DHT drops them (they expire after 24 h, and
-// a refresh also repairs a record lost when the DHT had no peers yet).
+// refreshes the records often: they expire after 24 h, a refresh repairs a
+// record lost when the DHT had no peers yet, and a bootstrap restart wipes
+// the DHT, so a two minute refresh keeps cold clients able to find us.
 func (n *Node) provideLoop(ctx context.Context, models []string) {
-	every := 10 * time.Minute
+	every := 2 * time.Minute
 	for {
 		ok := true
 		for _, m := range models {
@@ -632,7 +636,7 @@ func (n *Node) provideLoop(ctx context.Context, models []string) {
 			}
 			cancel()
 		}
-		every = 10 * time.Minute
+		every = 2 * time.Minute
 		if !ok { // the DHT was not ready; try again soon
 			every = 15 * time.Second
 		}
@@ -672,6 +676,10 @@ func (n *Node) hello(ctx context.Context, p peer.ID) {
 		return
 	}
 	defer s.Close()
+	// The context only bounds the dial; without a read deadline a provider
+	// that accepts the stream and says nothing blocks the caller for long
+	// past the five seconds promised above.
+	s.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var a Announce
 	if err := json.NewDecoder(io.LimitReader(s, 1<<14)).Decode(&a); err != nil {
 		return
