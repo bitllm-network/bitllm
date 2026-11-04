@@ -28,8 +28,9 @@ One `main` package, one binary.
 |---|---|
 | `main.go` | flags, default bootstrap and roots, starts the node and the gateway |
 | `node.go` | libp2p host, DHT, gossip topics and validators, peer discovery, relays |
-| `infer.go` | `/bitllm/infer/1.0.0`: serving a peer's request, metering tokens, request clamps |
-| `gateway.go` | local HTTP API on 127.0.0.1:7778 (OpenAI + Anthropic), peer selection, busy queueing, Host/Origin guard |
+| `infer.go` | `/bitllm/infer/1.1.0` and `1.0.0`: serving a peer's request, the queue's 202 lines, metering tokens, request clamps |
+| `queue.go` | bounded per-peer queue for serving slots: classes, fairness, position and ETA |
+| `gateway.go` | local HTTP API on 127.0.0.1:7778 (OpenAI + Anthropic), peer selection, queue wait, Host/Origin guard |
 | `receipts.go` | signed job receipts, gossip limits, sync, per-server client pseudonyms |
 | `account.go`, `cmd_account.go` | Ethereum-address accounts, node claims, `bitllm account` |
 | `members.go`, `access.go` | invite tree, revocation, the three access rules, daily quotas, `--open` |
@@ -49,7 +50,8 @@ One `main` package, one binary.
 
 ## Rules that are easy to break
 
-- **Wire compatibility.** Protocol ids (`/bitllm/infer/1.0.0`, `/bitllm/receipt/1.0.0`, sync), gossip
+- **Wire compatibility.** Protocol ids (`/bitllm/infer/1.0.0`, `/bitllm/infer/1.1.0`, `/bitllm/hello/1.0.0`,
+  `/bitllm/receipt/1.0.0`, sync), gossip
   topics (`bitllm/announce/1`, `bitllm/receipts/1`, `bitllm/claims/1`, `bitllm/invites/1`) and the
   signed message formats (`Receipt`, `Claim.Message()`, `Invite`, `Revoke`) are shared by every node
   on the network. Changing a field or a signed string splits the network. Add a new version instead,

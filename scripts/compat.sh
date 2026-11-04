@@ -9,9 +9,11 @@
 #   1. old bootstrap + old server, new client   (a new user joins today's network)
 #   2. new bootstrap + new server, old client   (an old user meets upgraded nodes)
 # and checks that the client sees the model through gossip, gets a plain and a
-# streamed answer, and that the signed receipt reaches the client's ledger.
+# streamed answer, that the signed receipt reaches the client's ledger, and in
+# case 2 that two concurrent requests against a server with one slot are both
+# answered (the old client speaks 1.0.0, so it must never see a 202).
 # Nothing touches the public network: mDNS, UPnP and the default bootstrap
-# are off. Needs bash, curl and python3. Takes about 20 seconds.
+# are off. Needs bash, curl and python3. Takes about 25 seconds.
 set -euo pipefail
 OLD=$(realpath "${1:?usage: scripts/compat.sh OLD_BINARY NEW_BINARY}")
 NEW=$(realpath "${2:?usage: scripts/compat.sh OLD_BINARY NEW_BINARY}")
@@ -27,7 +29,7 @@ trap cleanup EXIT
 
 # Fake OpenAI-compatible upstream: one model, fixed answer, usage included.
 cat > "$work/upstream.py" <<'EOF'
-import json, sys
+import json, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODEL = sys.argv[2]
 class H(BaseHTTPRequestHandler):
@@ -47,6 +49,10 @@ class H(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions" or req.get("model") != MODEL:
             return self.send(404, b'{"error":"unknown"}')
         usage = {"prompt_tokens": 40, "completion_tokens": 10}
+        # A "slow" prompt keeps one request in the server for longer than the
+        # gateway's retry interval, so two concurrent requests really overlap.
+        if any((m or {}).get("content") == "slow" for m in req.get("messages") or []):
+            time.sleep(1.2)
         if not req.get("stream"):
             return self.send(200, json.dumps({"choices": [{"message": {"content": "hello world"}}], "usage": usage}).encode())
         out = "".join("data: %s\n\n" % json.dumps({"choices": [{"delta": {"content": t}}]}) for t in ["hel", "lo ", "world"])
@@ -76,14 +82,16 @@ start() { # name binary p2p-port gateway-port flags...
 
 fail() { echo "FAIL: $*"; for f in "$work"/*.log; do echo "== $f"; tail -n 40 "$f"; done; exit 1; }
 
-scenario() { # label boot-binary server-binary client-binary base-port
-  local label=$1 b=$2 s=$3 c=$4 p=$5
+scenario() { # label boot-binary server-binary client-binary base-port [one-slot]
+  local label=$1 b=$2 s=$3 c=$4 p=$5 one=${6:-}
   local bg=$((p + 10)) sg=$((p + 11)) cg=$((p + 12))
   echo "== $label"
   start "$label-boot" "$b" "$p" "$bg" --dht-server --bootstrap "$NOWHERE"
   local id; id=$(curl -s "127.0.0.1:$bg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
   local boot="/ip4/127.0.0.1/tcp/$p/p2p/$id"
-  start "$label-srv" "$s" $((p + 1)) "$sg" --bootstrap "$boot" --open --upstream http://127.0.0.1:18900/v1
+  local srvflags=(--open --upstream http://127.0.0.1:18900/v1)
+  [ -n "$one" ] && srvflags+=(--concurrency 1)
+  start "$label-srv" "$s" $((p + 1)) "$sg" --bootstrap "$boot" "${srvflags[@]}"
   start "$label-cli" "$c" $((p + 2)) "$cg" --bootstrap "$boot"
   printf '   versions: boot %s, server %s, client %s\n' \
     "$("$b" --version)" "$("$s" --version)" "$("$c" --version)"
@@ -119,6 +127,35 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
   [ -n "$credited" ] || fail "$label: no receipt in the client's /credits: $(curl -s "127.0.0.1:$cg/credits")"
   echo "   ok: receipt recorded"
 
+  if [ -n "$one" ]; then
+    # One serving slot, two requests at the same moment. The client here is an
+    # old release: it speaks 1.0.0, which has no wait_ms, so the server must
+    # refuse the second request with 429 (busy) and let the old gateway retry,
+    # not queue it with a 202 the old client cannot read (it would see a failed
+    # peer and answer 502). Both requests must come back with the model's text,
+    # and the server must have refused at least once, which is only possible
+    # if the two really overlapped and no 202 was sent.
+    local before after i p1 p2
+    before=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
+      || fail "$label: no refusals in the server's /status"
+    local body="{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"slow\"}]}"
+    curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par1" &
+    p1=$!
+    curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par2" &
+    p2=$!
+    wait "$p1" || true
+    wait "$p2" || true
+    for i in 1 2; do
+      grep -q "hello world" "$work/$label.par$i" \
+        || fail "$label: concurrent 1.0.0 request $i: $(cat "$work/$label.par$i")"
+    done
+    after=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
+      || fail "$label: no refusals in the server's /status"
+    [ "$after" -gt "$before" ] \
+      || fail "$label: the two requests never overlapped (busy refusals $before -> $after)"
+    echo "   ok: two concurrent 1.0.0 requests answered, second after a busy refusal (no 202)"
+  fi
+
   local q
   for _ in 1 2 3; do
     q=${pids[-1]}; unset 'pids[-1]'
@@ -127,5 +164,8 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
 }
 
 scenario old-network-new-client "$OLD" "$OLD" "$NEW" 19000
-scenario new-network-old-client "$NEW" "$NEW" "$OLD" 19100
+# One serving slot, so the second of two concurrent requests must wait for the
+# first: an old client has to be refused with 429 and retry, never queued with
+# a 202 it cannot read.
+scenario new-network-old-client "$NEW" "$NEW" "$OLD" 19100 one
 echo "compatible: $("$OLD" --version) <-> $("$NEW" --version)"

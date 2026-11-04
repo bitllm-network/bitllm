@@ -19,7 +19,7 @@ func randomPeer(t *testing.T) peer.ID {
 }
 
 func TestValidAnnounce(t *testing.T) {
-	ok := Announce{Models: []string{"m"}, Free: 1, Max: 2}
+	ok := Announce{Models: []string{"m"}, Free: 1, Max: 2, Q: 3}
 	if !validAnnounce(&ok) {
 		t.Fatal("rejected a normal announce")
 	}
@@ -36,6 +36,8 @@ func TestValidAnnounce(t *testing.T) {
 		"negative":   {Models: []string{"m"}, Free: -1, Max: 2},
 		"huge max":   {Models: []string{"m"}, Max: maxAnnounceSlots + 1},
 		"zero slots": {Models: []string{"m"}},
+		"negative q": {Models: []string{"m"}, Max: 1, Q: -1},
+		"huge q":     {Models: []string{"m"}, Max: 1, Q: maxQueue*64 + 1},
 	} {
 		if validAnnounce(&a) {
 			t.Fatalf("accepted %s", name)

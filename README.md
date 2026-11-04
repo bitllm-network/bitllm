@@ -43,7 +43,10 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
 - `--model local=public`: the name on the left is what your server calls the model, the name on
   the right is the network name. **Use the canonical names below** or nobody will find your model.
 - Without `--model`, every model your server lists is shared under its own name.
-- `--concurrency`: how many requests you serve at once. Extra requests queue on the client side.
+- `--concurrency`: how many requests you serve at once. Extra requests wait in this node's queue,
+  in order of access class, which improves one step every 20 seconds as a request waits, but never
+  past the best class; after that, arrival decides, so the longest wait goes first among equals.
+  A full queue answers at once, so nobody waits on a place that does not exist.
 - `--max-tokens` (default 32768): the most new tokens one peer request may ask for. Peers also get one
   choice per request (`n` is dropped).
 - Images: if your server caps images per prompt (vLLM's `--limit-mm-per-prompt`), the node learns the
@@ -89,6 +92,7 @@ curl localhost:7778/v1/models
 curl localhost:7778/v1/chat/completions \
   -d '{"model":"deepseek-v4.1-flash-1017","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 curl localhost:7778/status                         # your peer id, connections, ledger
+curl localhost:7778/queue                          # slots, running jobs and the wait list
 ```
 
 Open `http://127.0.0.1:7778` for a dashboard with copy-paste setup for your agent and a
@@ -232,6 +236,9 @@ No public IP? Put it behind an HTTPS tunnel that passes WebSockets (Cloudflare T
 the tunnel at `http://127.0.0.1:4002`. Others join with
 `--bootstrap /dns4/boot.example.org/tcp/443/wss/p2p/<peer id>`.
 
+Announce a restart before you do it. Nodes redial a lost bootstrap every 15 seconds, but a request
+already streaming through your relay is cut when it goes down, and the user's agent may not retry it.
+
 ## What you should know
 
 - **The peer that serves you sees your prompt**, like any inference provider. Transport is
@@ -266,11 +273,14 @@ the tunnel at `http://127.0.0.1:4002`. Others join with
 ## Build and test
 
 ```bash
-go test ./...          # discovery, relay-only path, busy queueing, ledger, debt limit
+go test ./...          # discovery, relay-only path, the serving queue, ledger, debt limit
 go build -o bitllm .
 GOOS=darwin GOARCH=arm64 go build -o dist/bitllm-darwin-arm64 .
 ```
 
-Protocol: `/bitllm/infer/1.0.0` (one JSON request line, one JSON header line, then the upstream
-body verbatim), DHT prefix `/bitllm`, gossip topic `bitllm/announce/1`. The first, centralized
-Python prototype is in `legacy/`.
+Protocol: `/bitllm/infer/1.1.0` (one JSON request line, zero or more `202` position lines while
+the request waits for a slot, then one `200` header and the upstream body verbatim) next to the
+older `/bitllm/infer/1.0.0`, which a client falls back to when a server does not know `1.1.0`.
+Nodes find a model's servers through the DHT under a key derived from the model name, ask a provider
+for its current announce over `/bitllm/hello/1.0.0`, and keep gossip (`bitllm/announce/1`) as the
+fast path for free slots. The first, centralized Python prototype is in `legacy/`.

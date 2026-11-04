@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -27,13 +29,19 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multihash"
 )
 
 const (
 	Rendezvous    = "bitllm/v1"
 	AnnounceTopic = "bitllm/announce/1"
+	// HelloProto answers with a node's current announce. It is how a node
+	// that found a provider in the DHT learns its models at once, instead of
+	// waiting for the next gossip round (up to an announce period).
+	HelloProto = "/bitllm/hello/1.0.0"
 )
 
 type Config struct {
@@ -58,6 +66,7 @@ type Config struct {
 	OpenDaily        int64             // credits all uninvited nodes together may use per UTC day on an open server; 0 = no limit
 	MaxTokens        int               // cap on new tokens per request we serve; 0 = none
 	AnnounceEvery    time.Duration     //
+	RedialEvery      time.Duration     // how often to reconnect a lost bootstrap; 0 = 15s
 	Weights          map[string]string // public name -> bitllm hash-model of the files our server loads (announced, not proven)
 	Audit            bool              // spot-check the peers that answer us (audit.go)
 	AuditEvery       int               // real requests to a peer between its spot checks
@@ -77,6 +86,8 @@ type Announce struct {
 	Weights map[string]string `json:"weights,omitempty"` // model -> hash of the weight files, as the operator states it
 	// Added in v0.2.1:
 	Loc string `json:"loc,omitempty"` // geohash cell (~156 km) for the node map, only if the operator set --location
+	// Added in v0.3:
+	Q int `json:"q,omitempty"` // requests waiting for a slot right now
 }
 
 type peerInfo struct {
@@ -121,6 +132,14 @@ type Node struct {
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
 
+	// qmu guards the serving slots and the queue: inflight, openInflight,
+	// peerSlots and waiters are changed under it (queue.go).
+	qmu       sync.Mutex
+	peerSlots map[peer.ID]int32
+	waiters   []*waiter
+	svc       atomic.Int64 // average job duration in ns, for the queue's ETA
+	refused   refusals     // why this server refused requests, for /status
+
 	started time.Time // when this node came up, shown by GET /status
 }
 
@@ -137,6 +156,9 @@ func loadKey(path string) (crypto.PrivKey, error) {
 }
 
 func NewNode(ctx context.Context, cfg Config) (*Node, error) {
+	if cfg.RedialEvery <= 0 {
+		cfg.RedialEvery = 15 * time.Second
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -160,12 +182,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
-		cfg:     cfg,
-		ledger:  OpenLedger(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:    &http.Client{},
-		peers:   map[peer.ID]*peerInfo{},
-		relays:  bootstrap,
-		started: time.Now(),
+		cfg:       cfg,
+		ledger:    OpenLedger(filepath.Join(cfg.DataDir, "ledger.json")),
+		http:      &http.Client{},
+		peers:     map[peer.ID]*peerInfo{},
+		peerSlots: map[peer.ID]int32{},
+		relays:    bootstrap,
+		started:   time.Now(),
 	}
 	mode := dht.ModeAutoServer
 	if cfg.DHTServer {
@@ -217,8 +240,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		opts = append(opts, libp2p.NATPortMap())
 	}
 	if len(bootstrap) > 0 {
+		// Static relays are cheap to reconsider, and a bootstrap that
+		// restarts takes its reservation with it: look again soon, not
+		// after autorelay's default 30 seconds, and do not sit out its
+		// one hour backoff after a failed attempt during the restart.
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(bootstrap,
-			autorelay.WithMinCandidates(1), autorelay.WithBootDelay(0)))
+			autorelay.WithMinCandidates(1), autorelay.WithBootDelay(0),
+			autorelay.WithMinInterval(5*time.Second), autorelay.WithBackoff(time.Minute)))
 	}
 	if n.host, err = libp2p.New(opts...); err != nil {
 		return nil, err
@@ -231,6 +259,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 			}
 		}
 		n.host.SetStreamHandler(InferProto, n.handleInfer)
+		n.host.SetStreamHandler(InferProto2, n.handleInfer)
 	}
 
 	n.nodeKey = key
@@ -246,6 +275,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	n.members = OpenMembers(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
 	n.host.SetStreamHandler(ReceiptProto, n.handleReceipt)
 	n.host.SetStreamHandler(SyncProto, n.handleSync)
+	n.host.SetStreamHandler(HelloProto, n.handleHello)
 
 	ps, err := pubsub.NewGossipSub(ctx, n.host)
 	if err != nil {
@@ -338,9 +368,11 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.discoverLoop(ctx)
 	go n.syncLoop(ctx)
+	go n.redialLoop(ctx)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
 		go n.announceLoop(ctx)
+		go n.provideLoop(ctx, mapKeys(n.cfg.Models))
 	}
 	return n, nil
 }
@@ -419,15 +451,18 @@ func relayResources(behindProxy bool) relay.Resources {
 // now and then, so anything a node missed on gossip arrives eventually.
 func (n *Node) syncLoop(ctx context.Context) {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(10 * time.Minute):
-		}
+		// Sync first, then wait, so a node that started while the network
+		// was unreachable catches up as soon as the connect lands, not ten
+		// minutes later.
 		for _, ai := range n.relays {
 			if n.host.Network().Connectedness(ai.ID) == network.Connected {
 				n.syncReceipts(ctx, ai.ID)
 			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Minute):
 		}
 	}
 }
@@ -480,7 +515,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 			}
 		}
 		free := n.cfg.Concurrency - int(n.inflight.Load())
-		a := Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency}
+		a := Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth()}
 		if n.upOK.Load() {
 			a.Models = models
 			if n.cfg.AuditServe && !probed {
@@ -539,18 +574,159 @@ func (n *Node) readAnnounces(ctx context.Context, sub *pubsub.Subscription) {
 		if json.Unmarshal(msg.Data, &a) != nil {
 			continue
 		}
-		n.mu.Lock()
-		if _, ok := n.peers[from]; !ok && len(n.peers) >= maxPeers {
-			oldest, at := peer.ID(""), time.Now()
-			for p, pi := range n.peers {
-				if pi.seen.Before(at) {
-					oldest, at = p, pi.seen
-				}
+		n.remember(from, a)
+	}
+}
+
+// remember stores what a peer announced, evicting the least recently seen
+// when the table is full.
+func (n *Node) remember(from peer.ID, a Announce) {
+	n.mu.Lock()
+	if _, ok := n.peers[from]; !ok && len(n.peers) >= maxPeers {
+		oldest, at := peer.ID(""), time.Now()
+		for p, pi := range n.peers {
+			if pi.seen.Before(at) {
+				oldest, at = p, pi.seen
 			}
-			delete(n.peers, oldest)
 		}
-		n.peers[from] = &peerInfo{Announce: a, seen: time.Now()}
-		n.mu.Unlock()
+		delete(n.peers, oldest)
+	}
+	n.peers[from] = &peerInfo{Announce: a, seen: time.Now()}
+	n.mu.Unlock()
+	// The peer just reached us, so whatever address we failed to dial
+	// before is worth trying again now. Without this, a relayed peer that
+	// re-reserved after a bootstrap restart keeps its old address in the
+	// swarm's dial backoff for minutes (issue #17).
+	n.clearBackoff(from)
+}
+
+// clearBackoff forgets the dial backoff the swarm holds for p, so the next
+// attempt goes out now instead of after a growing wait.
+func (n *Node) clearBackoff(p peer.ID) {
+	if s, ok := n.host.Network().(*swarm.Swarm); ok {
+		s.Backoff().Clear(p)
+	}
+}
+
+// modelKey is the DHT key a model's providers are recorded under. One key per
+// model means a node that wants a model looks up its servers directly,
+// instead of waiting for one of them to gossip at it.
+func modelKey(model string) cid.Cid {
+	sum := sha256.Sum256([]byte("bitllm/model/" + model))
+	mh, err := multihash.Sum(sum[:], multihash.SHA2_256, -1)
+	if err != nil {
+		panic("model key: " + err.Error())
+	}
+	return cid.NewCidV1(cid.Raw, mh)
+}
+
+// provideLoop records this node as a provider of every model it serves, and
+// refreshes the records often: they expire after 24 h, a refresh repairs a
+// record lost when the DHT had no peers yet, and a bootstrap restart wipes
+// the DHT, so a two minute refresh keeps cold clients able to find us.
+func (n *Node) provideLoop(ctx context.Context, models []string) {
+	every := 2 * time.Minute
+	for {
+		ok := true
+		for _, m := range models {
+			pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			if err := n.dht.Provide(pctx, modelKey(m), true); err != nil {
+				log.Printf("dht provide %s: %v", m, err)
+				ok = false
+			}
+			cancel()
+		}
+		every = 2 * time.Minute
+		if !ok { // the DHT was not ready; try again soon
+			every = 15 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+		}
+	}
+}
+
+// findModelPeers asks the DHT who serves model and connects to them. It is
+// the cold-start path: gossip may not have reached this node yet, and a model
+// name is enough to find its servers.
+func (n *Node) findModelPeers(ctx context.Context, model string) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for ai := range n.dht.FindProvidersAsync(ctx, modelKey(model), 20) {
+		if ai.ID == n.host.ID() {
+			continue
+		}
+		n.addRelayPaths(ai.ID)
+		if err := n.host.Connect(ctx, ai); err != nil {
+			continue
+		}
+		n.hello(ctx, ai.ID)
+	}
+}
+
+// hello asks a peer what it serves right now, so a provider found in the DHT
+// is usable at once instead of after its next announce.
+func (n *Node) hello(ctx context.Context, p peer.ID) {
+	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	s, err := n.host.NewStream(hctx, p, HelloProto)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+	// The context only bounds the dial; without a read deadline a provider
+	// that accepts the stream and says nothing blocks the caller for long
+	// past the five seconds promised above.
+	s.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var a Announce
+	if err := json.NewDecoder(io.LimitReader(s, 1<<14)).Decode(&a); err != nil {
+		return
+	}
+	if len(a.Models) > 0 && validAnnounce(&a) {
+		n.remember(p, a)
+	}
+}
+
+// handleHello answers with the announce this node last gossiped, or an empty
+// one if it serves nothing.
+func (n *Node) handleHello(s network.Stream) {
+	defer s.Close()
+	s.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	a := Announce{Version: Version, Models: []string{}}
+	if last := n.lastAnn.Load(); last != nil {
+		a = *last
+	}
+	b, _ := json.Marshal(a)
+	s.Write(b)
+}
+
+// redialLoop reconnects to any bootstrap we lost. Without it a restarted
+// bootstrap leaves nodes without a relay reservation until autorelay's
+// backoff happens to retry, which took minutes.
+func (n *Node) redialLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(n.cfg.RedialEvery):
+		}
+		for _, ai := range n.relays {
+			if n.host.Network().Connectedness(ai.ID) == network.Connected {
+				continue
+			}
+			// A refused dial during the restart must not push the next
+			// one out by minutes.
+			n.clearBackoff(ai.ID)
+			c, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := n.host.Connect(c, ai); err != nil {
+				log.Printf("bootstrap %s: %v", ai.ID, err)
+			} else {
+				log.Printf("bootstrap %s: reconnected", ai.ID)
+			}
+			cancel()
+		}
 	}
 }
 
@@ -574,6 +750,7 @@ func (n *Node) candidates(model string) []peer.ID {
 	type c struct {
 		id      peer.ID
 		free    int
+		q       int
 		rtt     time.Duration
 		demoted bool // an audit suspect: used only when nobody else can answer
 	}
@@ -594,7 +771,14 @@ func (n *Node) candidates(model string) []peer.ID {
 		}
 		for _, m := range a.Models {
 			if m == model {
-				cs = append(cs, c{p, a.Free, n.host.Peerstore().LatencyEWMA(p), demoted})
+				// A peer we never dialed has no measured latency. Treat it as
+				// last among equals, or every request would prefer a
+				// stranger over the peer that just answered it.
+				rtt := n.host.Peerstore().LatencyEWMA(p)
+				if rtt <= 0 {
+					rtt = time.Duration(1<<62 - 1)
+				}
+				cs = append(cs, c{p, a.Free, a.Q, rtt, demoted})
 				break
 			}
 		}
@@ -605,6 +789,11 @@ func (n *Node) candidates(model string) []peer.ID {
 		}
 		if (cs[i].free > 0) != (cs[j].free > 0) {
 			return cs[i].free > 0
+		}
+		// A peer with a shorter queue sends the answer sooner than one with
+		// a long one, whatever the ping says. q is the depth it announced.
+		if cs[i].q != cs[j].q {
+			return cs[i].q < cs[j].q
 		}
 		return cs[i].rtt < cs[j].rtt
 	})
@@ -657,6 +846,16 @@ func (n *Node) upstreamAuth(req *http.Request) {
 	if n.cfg.UpstreamKey != "" {
 		req.Header.Set("Authorization", "Bearer "+n.cfg.UpstreamKey)
 	}
+}
+
+// mapKeys returns the sorted keys of a public-name -> upstream-name map.
+func mapKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (n *Node) Addrs() []string {

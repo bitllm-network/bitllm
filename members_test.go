@@ -195,40 +195,42 @@ func TestAccessRules(t *testing.T) {
 	release := func() { n.inflight.Add(-1) }
 
 	// Rule 2: a member is served until the daily quota, then refused.
-	s, _, tk := n.admit(memberNode, now)
+	s, _, adm := n.admit(memberNode, "", now, 0, 0)
+	tk := adm.t
 	if s != 0 || tk.key != member.addr {
 		t.Fatalf("member refused: %d %+v", s, tk)
 	}
 	n.done(tk, 30, now) // uses up the quota
-	if s, msg, _ := n.admit(memberNode, now); s != 429 || msg != msgQuotaSpent {
+	if s, msg, _ := n.admit(memberNode, "", now, 0, 0); s != 429 || msg != msgQuotaSpent {
 		t.Fatalf("member over quota: %d %s", s, msg)
 	}
-	if s, _, _ := n.admit(memberNode, now.Add(24*time.Hour)); s != 0 {
+	if s, _, _ := n.admit(memberNode, "", now.Add(24*time.Hour), 0, 0); s != 0 {
 		t.Fatal("quota did not reset the next UTC day")
 	}
 	release()
 
 	// Rule 3: a contributor has no quota.
 	n.quota.add(contrib.addr, 1_000_000, now)
-	s, _, tk = n.admit(contribNode, now)
+	s, _, adm = n.admit(contribNode, "", now, 0, 0)
+	tk = adm.t
 	if s != 0 || tk.key != "" {
 		t.Fatalf("contributor: %d %+v", s, tk)
 	}
 	release()
 
 	// Rule 1: uninvited only when idle.
-	if s, _, _ := n.admit(stranger, now); s != 0 {
+	if s, _, _ := n.admit(stranger, "", now, 0, 0); s != 0 {
 		t.Fatal("uninvited refused on an idle server")
 	}
-	if s, msg, _ := n.admit(stranger, now); s != 429 || !isBusy(s, msg) {
+	if s, msg, _ := n.admit(stranger, "", now, 0, 0); s != 429 || !isBusy(s, msg) {
 		t.Fatalf("uninvited served on a busy server: %d %s", s, msg)
 	}
 	release()
 	// A member still gets the second slot while the stranger holds one.
-	if s, _, _ := n.admit(stranger, now); s != 0 {
+	if s, _, _ := n.admit(stranger, "", now, 0, 0); s != 0 {
 		t.Fatal("idle again")
 	}
-	if s, _, _ := n.admit(contribNode, now); s != 0 {
+	if s, _, _ := n.admit(contribNode, "", now, 0, 0); s != 0 {
 		t.Fatal("contributor refused a free slot")
 	}
 	release()
@@ -279,38 +281,43 @@ func TestOpenServer(t *testing.T) {
 	a, b, c := randomPeer(t), randomPeer(t), randomPeer(t)
 	now := time.Now()
 
-	s1, _, ta := n.admit(a, now)
-	s2, _, tb := n.admit(b, now)
+	s1, _, adm := n.admit(a, "", now, 0, 0)
+	ta := adm.t
+	s2, _, adm := n.admit(b, "", now, 0, 0)
+	tb := adm.t
 	if s1 != 0 || s2 != 0 || ta.key != "node:"+a.String() || !ta.open {
 		t.Fatalf("open server refused uninvited on spare slots: %d %d %+v", s1, s2, ta)
 	}
 	// The third slot is kept for members.
-	if s, msg, _ := n.admit(c, now); s != 429 || msg != msgUninvited {
+	if s, msg, _ := n.admit(c, "", now, 0, 0); s != 429 || msg != msgUninvited {
 		t.Fatalf("uninvited took a reserved slot: %d %s", s, msg)
 	}
-	s, _, tm := n.admit(memberNode, now)
-	if s != 0 || tm.open {
-		t.Fatalf("member refused the reserved slot: %d", s)
+	sm, _, adm := n.admit(memberNode, "", now, 0, 0)
+	tm := adm.t
+	if sm != 0 || tm.open {
+		t.Fatalf("member refused the reserved slot: %d", sm)
 	}
 	n.done(tm, 0, now)
 	n.done(tb, 0, now)
 
 	// Per-node quota: a has used 30, b has not.
 	n.done(ta, 30, now)
-	if s, msg, _ := n.admit(a, now); s != 429 || msg != msgQuotaSpent {
+	if s, msg, _ := n.admit(a, "", now, 0, 0); s != 429 || msg != msgQuotaSpent {
 		t.Fatalf("per-node quota not applied: %d %s", s, msg)
 	}
-	s, _, tb = n.admit(b, now)
-	if s != 0 {
+	sb, _, adm := n.admit(b, "", now, 0, 0)
+	tb = adm.t
+	if sb != 0 {
 		t.Fatal("one node's quota limited another")
 	}
 	// The shared pool (100) runs out after 30 + 70 = 100: fresh ids get idle-only.
 	n.done(tb, 70, now)
-	s, _, tc := n.admit(c, now) // idle server: served, but not as open
-	if s != 0 || tc.open {
-		t.Fatalf("pool spent: want idle-only service, got %d %+v", s, tc)
+	sc, _, adm := n.admit(c, "", now, 0, 0)
+	tc := adm.t // idle server: served, but not as open
+	if sc != 0 || tc.open {
+		t.Fatalf("pool spent: want idle-only service, got %d %+v", sc, tc)
 	}
-	if s, msg, _ := n.admit(randomPeer(t), now); s != 429 || msg != msgUninvited {
+	if s, msg, _ := n.admit(randomPeer(t), "", now, 0, 0); s != 429 || msg != msgUninvited {
 		t.Fatalf("pool spent and busy: want refusal, got %d %s", s, msg)
 	}
 	n.done(tc, 0, now)

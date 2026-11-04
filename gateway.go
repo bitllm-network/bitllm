@@ -19,8 +19,19 @@ import (
 //go:embed ui.html
 var uiHTML []byte
 
-// busyWait is how long a request queues when every peer serving its model is busy.
+// busyWait is how long a request queues when every peer serving its model is
+// busy. The waiting itself happens on one stream, in the server's queue; this
+// is the longest the gateway keeps trying.
 var busyWait = 60 * time.Second
+
+// busyBackoff is how long the gateway waits before trying again when every
+// peer refused at once (its queue full, or a node too old to queue at all).
+var busyBackoff = time.Second
+
+// peerWait is the longest one peer may hold the request while another
+// candidate is still untried. Without it a deep queue on the first peer
+// hides an idle second one for the whole busyWait.
+var peerWait = 15 * time.Second
 
 // Gateway is the local OpenAI-compatible endpoint. Point any agent at it; it
 // answers from our own upstream when we serve the model, otherwise from a peer.
@@ -35,6 +46,7 @@ func (n *Node) Gateway() http.Handler {
 		w.Write(uiHTML)
 	})
 	mux.HandleFunc("GET /status", n.status)
+	mux.HandleFunc("GET /queue", n.queueView)
 	mux.HandleFunc("GET /network", n.network)
 	mux.HandleFunc("GET /logs", n.logs)
 	mux.HandleFunc("GET /audits", n.auditList)
@@ -148,23 +160,39 @@ func (n *Node) complete(path string) http.HandlerFunc {
 
 		cands := n.candidates(req.Model)
 		if len(cands) == 0 {
+			// Gossip may not have reached us yet. Ask the DHT for providers
+			// of this model, which is what a node that just started sees.
+			n.findModelPeers(r.Context(), req.Model)
+			cands = n.candidates(req.Model)
+		}
+		if len(cands) == 0 {
 			jsonErr(w, 503, "no peer serves model "+req.Model+"; see GET /v1/models")
 			return
 		}
-		// Try the best few peers; if every one of them is merely busy, queue
-		// for a while rather than fail, since a small network has few servers.
+		// Try the best few peers. A peer that has no free slot keeps the
+		// request in its own queue for as long as we allow, so this loop only
+		// spins when every peer refused at once.
 		var last, denied error
 		refused := map[peer.ID]bool{} // servers that serve only an allow list we are not on
-		for deadline := time.Now().Add(busyWait); ; {
+		deadline := time.Now().Add(busyWait)
+		for {
 			busy, tried := true, 0
 			for _, p := range cands {
 				if tried == 3 {
 					break
 				}
-				if refused[p] {
+				if refused[p] || r.Context().Err() != nil {
 					continue
 				}
-				started, err := n.infer(r.Context(), p, path, body, req.Stream, w)
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					break
+				}
+				wait := remaining
+				if left := len(cands) - tried; left > 1 {
+					wait = min(remaining, peerWait)
+				}
+				started, err := n.infer(r.Context(), p, path, body, req.Stream, w, wait)
 				if started && err == nil && n.audits != nil {
 					n.audits.observe(p, req.Model, body)
 				}
@@ -179,27 +207,32 @@ func (n *Node) complete(path string) http.HandlerFunc {
 				}
 				var pe *peerError
 				if errors.As(err, &pe) && notAllowed(pe.status, pe.msg) {
-					// Skip it, here and in the busy wait; another server may answer.
+					// Skip it, here and in the retries; another server may answer.
 					refused[p], denied = true, err
 					continue
 				}
 				tried++
-				busy = busy && errors.As(err, &pe) && isBusy(pe.status, pe.msg)
-				if !busy {
+				if !errors.As(err, &pe) || !isBusy(pe.status, pe.msg) {
 					log.Printf("peer %s: %v", p, err)
+					busy = false
 				}
 				last = err
 			}
 			if tried == 0 || !busy || time.Now().After(deadline) || r.Context().Err() != nil {
 				break
 			}
-			time.Sleep(time.Second)
+			// Everything we asked refused at once. Wait a little, then look
+			// at the freshest announces rather than the same stale list.
+			time.Sleep(busyBackoff)
 			if c := n.candidates(req.Model); len(c) > 0 {
 				cands = c
 			}
 		}
 		if last == nil {
 			last = denied // every server for this model serves only its own allow list
+		}
+		if last == nil {
+			last = errors.New("no peer answered before the wait ran out")
 		}
 		var pe *peerError
 		if errors.As(last, &pe) {
@@ -233,6 +266,8 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 		"serving":     serving,
 		"upstream_up": n.cfg.Upstream != "" && n.upOK.Load(),
 		"inflight":    n.inflight.Load(),
+		"queued":      n.queueDepth(),
+		"refusals":    n.refused.snapshot(),
 		"uptime":      int64(time.Since(n.started).Seconds()),
 		"ledger":      n.ledger.Snapshot(),
 	})

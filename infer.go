@@ -18,13 +18,22 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // InferProto: the client writes one JSON line {path, body}, then closes its
 // write side. The server answers with one JSON header line {status, error},
 // then (if status is 200) the upstream response body verbatim: SSE lines for
 // stream requests, a JSON document otherwise.
-const InferProto = "/bitllm/infer/1.0.0"
+//
+// InferProto2 adds wait_ms and an optional queue. A server that has no free
+// slot answers with one {status: 202, position, eta_ms} line per check and
+// keeps the stream open; when a slot is free it sends {status: 200} and the
+// body follows. Old clients never send wait_ms, so they never see a 202.
+const (
+	InferProto  = "/bitllm/infer/1.0.0"
+	InferProto2 = "/bitllm/infer/1.1.0"
+)
 
 const maxRequest = 16 << 20
 
@@ -35,11 +44,14 @@ type inferReq struct {
 	Job  string          `json:"job"` // client-chosen id, named in the receipt
 	Path string          `json:"path"`
 	Body json.RawMessage `json:"body"`
+	Wait int64           `json:"wait_ms,omitempty"` // 1.1.0: how long the server may queue it
 }
 
 type inferHdr struct {
-	Status int    `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Status   int    `json:"status"`
+	Error    string `json:"error,omitempty"`
+	Position int    `json:"position,omitempty"` // 202: waiters ahead, 1 = next
+	ETA      int64  `json:"eta_ms,omitempty"`   // 202: rough wait, 0 when unknown
 }
 
 type peerError struct {
@@ -59,6 +71,7 @@ type meter struct {
 	chars              int64
 	reported           bool
 	done               bool      // the stream reached its terminal event
+	end                bool      // the end of the last event: metering stops here
 	out                hash.Hash // sha256 of the exact response bytes, for the receipt
 }
 
@@ -127,7 +140,7 @@ func (m *meter) sseLine(line []byte) {
 	}
 	data = bytes.TrimSpace(data)
 	if bytes.Equal(data, []byte("[DONE]")) {
-		m.done = true
+		m.done, m.end = true, true
 		return
 	}
 	var d usageDoc
@@ -135,7 +148,7 @@ func (m *meter) sseLine(line []byte) {
 		return
 	}
 	if d.Type == "message_stop" {
-		m.done = true
+		m.done, m.end = true, true
 	}
 	if d.Delta.StopReason != nil && *d.Delta.StopReason != "" {
 		m.done = true
@@ -171,6 +184,18 @@ func (m *meter) tokens() (prompt, completion int64) {
 
 func (m *meter) credits() int64 { return price(m.tokens()) }
 
+// line meters one SSE line. Nothing after the last event counts: the client
+// and the server may each read a different amount past it (whichever one the
+// other's reset or the local client's hang-up reaches first), and the receipt
+// they sign has to match, so both stop at the same place.
+func (m *meter) line(b []byte) {
+	if m.end {
+		return
+	}
+	m.sseLine(b) // this line may be the end
+	m.raw(b)
+}
+
 // pipe copies a response body to dst, line by line for SSE so each event is
 // flushed as it arrives, and meters it on the way.
 func pipe(dst io.Writer, flush func(), src io.Reader, stream bool, m *meter) error {
@@ -188,8 +213,7 @@ func pipe(dst io.Writer, flush func(), src io.Reader, stream bool, m *meter) err
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
-			m.sseLine(line)
-			m.raw(line)
+			m.line(line)
 			if _, werr := dst.Write(line); werr != nil {
 				return werr
 			}
@@ -385,7 +409,7 @@ func (n *Node) handleInfer(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer()
 	reply := func(status int, msg string) {
-		b, _ := json.Marshal(inferHdr{status, msg})
+		b, _ := json.Marshal(inferHdr{Status: status, Error: msg})
 		s.Write(append(b, '\n'))
 	}
 	s.SetReadDeadline(time.Now().Add(readTimeout))
@@ -396,13 +420,90 @@ func (n *Node) handleInfer(s network.Stream) {
 		reply(400, "bad request")
 		return
 	}
-	status, msg, tk := n.admit(remote, time.Now())
-	if status != 0 {
+	// What the request may cost at most, reserved against the daily quota
+	// while it runs. clamp() in callUpstream applies the same bound.
+	var meta struct {
+		Model               string `json:"model"`
+		MaxTokens           int64  `json:"max_tokens"`
+		MaxCompletionTokens int64  `json:"max_completion_tokens"`
+	}
+	json.Unmarshal(req.Body, &meta)
+	worst := max(meta.MaxTokens, meta.MaxCompletionTokens)
+	if worst <= 0 {
+		worst = int64(n.cfg.MaxTokens)
+	}
+	if n.cfg.MaxTokens > 0 {
+		worst = min(worst, int64(n.cfg.MaxTokens)) // clamp() applies the same cap
+	}
+	// A job also pays for its prompt (a quarter credit per token), so leave
+	// room for it. The body is at most maxRequest bytes, so this is bounded.
+	amount := price(int64(len(req.Body))/4, worst)
+	wait := time.Duration(0)
+	if s.Protocol() == InferProto2 {
+		ms := min(req.Wait, int64(maxWait/time.Millisecond)) // clamp first: no overflow
+		if ms < 0 {
+			ms = 0
+		}
+		wait = time.Duration(ms) * time.Millisecond
+	}
+	status, msg, a := n.admit(remote, meta.Model, time.Now(), wait, amount)
+	if a.w == nil && status != 0 {
 		reply(status, msg)
 		return
 	}
+	tk, held := a.t, a.w == nil
 	var m meter
-	defer func() { n.done(tk, m.credits(), time.Now()) }()
+	defer func() {
+		if held {
+			n.done(tk, m.credits(), time.Now())
+		}
+	}()
+	if a.w != nil {
+		// Say where it stands, then wait on this stream for a slot. A line
+		// every second also tells us the peer is still there: the write
+		// fails once it gave up, and the place goes to someone else.
+		say := func() bool {
+			pos := n.position(a.w)
+			hdr, _ := json.Marshal(inferHdr{Status: 202, Position: pos, ETA: n.eta(pos)})
+			_, err := s.Write(append(hdr, '\n'))
+			return err == nil
+		}
+		if !say() {
+			if !n.cancelWait(a.w) { // it was granted as the write failed
+				n.done(a.w.t, 0, time.Now())
+			}
+			return
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		waiting := true
+		for waiting {
+			select {
+			case <-a.w.ready:
+				waiting = false
+			case <-tick.C:
+				// A slot may have come free without a done() call here
+				// (an operator's own request, say), so check again.
+				n.dispatch()
+				if !say() {
+					if !n.cancelWait(a.w) { // it was granted as the write failed
+						n.done(a.w.t, 0, time.Now())
+					}
+					return
+				}
+			case <-timer.C:
+				if n.cancelWait(a.w) {
+					reply(429, msgBusy)
+					return
+				}
+				<-a.w.ready // lost the race: the slot is ours
+				waiting = false
+			}
+		}
+		tk, held = a.w.t, true
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // a failed write to the peer stops the upstream generation too
@@ -425,10 +526,22 @@ func (n *Node) handleInfer(s network.Stream) {
 
 // infer runs a request on peer p and writes the response to w. started reports
 // whether anything reached w; until then the caller may retry another peer.
+// wait is how long the peer may queue it; a peer that predates the queue
+// answers at once, as before.
 func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, stream bool,
-	w http.ResponseWriter) (started bool, err error) {
+	w http.ResponseWriter, wait time.Duration) (started bool, err error) {
 	n.addRelayPaths(p)
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, InferProto)
+	proto := protocol.ID(InferProto2)
+	req := inferReq{Job: rand.Text(), Path: path, Body: body}
+	if wait > 0 {
+		req.Wait = wait.Milliseconds()
+	}
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
+	if err != nil {
+		// An older node has no queue: ask it the old way.
+		proto, req.Wait = InferProto, 0
+		s, err = n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -436,21 +549,33 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	stop := context.AfterFunc(ctx, func() { s.Reset() })
 	defer stop()
 
-	job := rand.Text()
-	b, _ := json.Marshal(inferReq{job, path, body})
+	b, _ := json.Marshal(req)
 	if _, err := s.Write(append(b, '\n')); err != nil {
 		return false, err
 	}
 	s.CloseWrite()
+	// Bound the wait for a header: a peer that keeps sending 202 lines must
+	// not hold this request (and the gateway's writer) forever. The deadline
+	// is cleared once the header is in, so a long generation is not cut.
+	s.SetReadDeadline(time.Now().Add(wait + 30*time.Second))
 	r := bufio.NewReaderSize(s, 64<<10)
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		return false, err
-	}
 	var hdr inferHdr
-	if err := json.Unmarshal(line, &hdr); err != nil {
-		return false, err
+	for {
+		// ReadSlice keeps one header line inside the buffer, so a peer
+		// cannot make us grow it without bound.
+		line, err := r.ReadSlice('\n')
+		if err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(line, &hdr); err != nil {
+			return false, err
+		}
+		if hdr.Status == 202 { // queued; the slot comes on this stream
+			continue
+		}
+		break
 	}
+	s.SetReadDeadline(time.Time{})
 	if hdr.Status != 200 {
 		return false, &peerError{hdr.Status, hdr.Error}
 	}
@@ -467,7 +592,7 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		var model struct{ Model string }
 		json.Unmarshal(body, &model)
 		go func() {
-			if err := n.sendReceipt(p, job, model.Model, m); err != nil {
+			if err := n.sendReceipt(p, req.Job, model.Model, m); err != nil {
 				log.Printf("receipt to %s: %v", p, err)
 			}
 		}()
