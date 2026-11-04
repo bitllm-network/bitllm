@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bitllm-network/bitllm/internal/protocol"
 )
 
 func TestGeohash(t *testing.T) {
@@ -68,7 +70,7 @@ func TestPeerCell(t *testing.T) {
 }
 
 func TestAggregate(t *testing.T) {
-	v := aggregate([]Announce{
+	v := aggregate([]protocol.Announce{
 		{Version: "v0.2.1", Models: []string{"a", "b"}, Free: 1, Max: 2, Loc: "u33"},
 		{Version: "v0.2.1", Models: []string{"a"}, Free: 0, Max: 1, Loc: "u33"},
 		{Version: "v0.1.13", Models: []string{"a"}, Free: 4, Max: 4},
@@ -92,12 +94,12 @@ func TestAggregate(t *testing.T) {
 }
 
 func TestAnnounceLocLimit(t *testing.T) {
-	a := Announce{Models: []string{"m"}, Free: 1, Max: 1, Loc: strings.Repeat("u", maxLocJSON)}
-	if !validAnnounce(&a) {
-		t.Fatal("a loc of maxLocJSON bytes must pass")
+	a := protocol.Announce{Models: []string{"m"}, Free: 1, Max: 1, Loc: strings.Repeat("u", protocol.MaxLocJSON)}
+	if !protocol.ValidAnnounce(&a) {
+		t.Fatal("a loc of protocol.MaxLocJSON bytes must pass")
 	}
 	a.Loc += "u"
-	if validAnnounce(&a) {
+	if protocol.ValidAnnounce(&a) {
 		t.Fatal("a longer loc must be refused")
 	}
 }

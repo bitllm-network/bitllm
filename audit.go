@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/models"
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -400,7 +401,7 @@ func (a *audits) pickAuditor(model string, server peer.ID, used map[peer.ID]bool
 	return rest[rand.IntN(len(rest))], true
 }
 
-func scores(a Announce, model string) bool {
+func scores(a protocol.Announce, model string) bool {
 	for _, m := range a.Audit {
 		if m == model {
 			return true

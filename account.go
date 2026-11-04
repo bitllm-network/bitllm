@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -27,8 +28,6 @@ import (
 // chain. An owner claims a node with a statement signed by both the owner's
 // wallet and the node's own key, so nobody can claim someone else's node.
 // Credits are then summed per owner across all their machines.
-
-const ClaimTopic = "bitllm/claims/1"
 
 func keccak(b ...[]byte) []byte {
 	h := sha3.NewLegacyKeccak256()
@@ -145,7 +144,7 @@ func (c *Claim) Valid() bool {
 	if err != nil || addr != c.Owner {
 		return false
 	}
-	return verifySig(c.Node, []byte(c.Message()), c.NodeSig)
+	return protocol.VerifySig(c.Node, []byte(c.Message()), c.NodeSig)
 }
 
 // Claims keeps the newest valid claim per node.
