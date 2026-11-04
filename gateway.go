@@ -1,7 +1,6 @@
 package main
 
 import (
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,11 +13,9 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/assets"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-//go:embed ui.html
-var uiHTML []byte
 
 // busyWait is how long a request queues when every peer serving its model is
 // busy. The waiting itself happens on one stream, in the server's queue; this
@@ -44,7 +41,7 @@ func (n *Node) Gateway() http.Handler {
 	mux.HandleFunc("POST /v1/messages", n.complete("/messages"))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(uiHTML)
+		w.Write(assets.UI)
 	})
 	mux.HandleFunc("GET /status", n.status)
 	mux.HandleFunc("GET /queue", n.queueView)
