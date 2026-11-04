@@ -21,15 +21,17 @@ func TestAllowAdmit(t *testing.T) {
 	now := time.Now()
 
 	// Not invited, but listed: served on both slots, not only when idle.
-	s1, _, t1 := n.admit(friend, now)
-	s2, _, t2 := n.admit(friend, now)
+	s1, _, adm := n.admit(friend, "", now, 0, 0)
+	t1 := adm.t
+	s2, _, adm := n.admit(friend, "", now, 0, 0)
+	t2 := adm.t
 	if s1 != 0 || s2 != 0 {
 		t.Fatalf("listed peer refused a free slot: %d %d", s1, s2)
 	}
 	n.done(t1, 0, now)
 	n.done(t2, 0, now)
 
-	s, msg, _ := n.admit(stranger, now)
+	s, msg, _ := n.admit(stranger, "", now, 0, 0)
 	if s != 403 || !notAllowed(s, msg) || isBusy(s, msg) || !strings.Contains(msg, stranger.String()) {
 		t.Fatalf("unlisted peer: %d %s", s, msg)
 	}

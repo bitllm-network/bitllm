@@ -17,7 +17,9 @@ server with a fake upstream model, a client) and runs it twice:
 In each run the client must:
 
 1. see the server's model in `GET /v1/models` (announce gossip over the bootstrap),
-2. get a plain answer and a streamed answer (the `/bitllm/infer` stream protocol),
+2. get a plain answer and a streamed answer (the `/bitllm/infer` stream protocol). A new client
+   asks for `/bitllm/infer/1.1.0` and falls back to `1.0.0` when the server is older; an old client
+   only ever asks `1.0.0`, and a new server answers it as before, so the queue is invisible to it,
 3. end up with the signed receipt in its `GET /credits` (the `/bitllm/receipt` protocol).
 
 It never touches the public network (mDNS, UPnP and the default bootstrap are off) and takes about

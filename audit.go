@@ -462,7 +462,7 @@ func canaryBody(model, prompt, answer string, stream bool, sp sampler) []byte {
 // reasoning is refused: the auditor cannot rebuild the hidden part.
 func (a *audits) ask(ctx context.Context, p peer.ID, model, prompt string, stream bool, sp sampler) (string, error) {
 	w := httptest.NewRecorder()
-	if _, err := a.n.infer(ctx, p, "/chat/completions", canaryBody(model, prompt, "", stream, sp), stream, w); err != nil {
+	if _, err := a.n.infer(ctx, p, "/chat/completions", canaryBody(model, prompt, "", stream, sp), stream, w, time.Minute); err != nil {
 		return "", err
 	}
 	return answerText(w.Body.Bytes(), stream)
@@ -522,7 +522,7 @@ func (e auditErr) Error() string { return string(e) }
 // score has auditor score answer as the reply to prompt.
 func (a *audits) score(ctx context.Context, auditor peer.ID, model, prompt, answer string, sp sampler) (auditStats, error) {
 	w := httptest.NewRecorder()
-	if _, err := a.n.infer(ctx, auditor, "/chat/completions", canaryBody(model, prompt, answer, false, sampler{}), false, w); err != nil {
+	if _, err := a.n.infer(ctx, auditor, "/chat/completions", canaryBody(model, prompt, answer, false, sampler{}), false, w, time.Minute); err != nil {
 		return auditStats{}, err
 	}
 	return scoreAnswer(w.Body.Bytes(), answer, sp)

@@ -151,7 +151,7 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 ## Errors
 
 - `503 no peer serves model X`: nobody serves that name right now. Check `/v1/models` and use a listed id.
-- `429 busy ...`: every server is full or this node is uninvited on a closed server. The gateway already queued up to 60 seconds; retry later.
+- `429 busy ...`: every server is full, or this node is uninvited on a closed server. The gateway waited up to 60 seconds on the server's own queue; retry later.
 - `429 daily free quota ... used up`: only if the owner set a quota; another server may still answer, or wait until 00:00 UTC.
 - `400 At most N image(s) may be provided in one prompt`: the serving model takes at most N images per request, and the server that answered runs an older bitllm (current servers keep only the newest N images instead). Start a new agent session to drop old screenshots, or retry later.
 - `403 not allowed: this server serves only the peers its owner listed with --allow ...`: every server for that model serves only its own list. The message includes this node's id; the user can send it to that server's owner, or use another model.
@@ -161,7 +161,9 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 ## Local API
 
 - `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`: inference.
-- `GET /status`: version, peer id, connections, models served, slots in use.
+- `GET /status`: version, peer id, connections, models served, slots in use, requests queued.
+- `GET /queue`: slots, running jobs, wait-list depth per model, the age of the oldest waiter, and
+  counts of refusals by reason.
 - `GET /members/me`, `GET /members`: membership. `GET /credits`: credits per account.
 
 ## More

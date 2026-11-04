@@ -410,7 +410,7 @@ func TestOwnerAccounts(t *testing.T) {
 	// One job on each server.
 	for _, n := range []*Node{a, b} {
 		w := httptest.NewRecorder()
-		if _, err := client.infer(ctx, n.host.ID(), "/chat/completions", []byte(`{"model":"ds","messages":[]}`), false, w); err != nil || w.Code != 200 {
+		if _, err := client.infer(ctx, n.host.ID(), "/chat/completions", []byte(`{"model":"ds","messages":[]}`), false, w, 0); err != nil || w.Code != 200 {
 			t.Fatalf("infer on %s: %v %d", n.host.ID(), err, w.Code)
 		}
 	}

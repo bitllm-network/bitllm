@@ -42,7 +42,7 @@ curl -s localhost:8000/v1/models     # 看 "id" 字段，比如 "deepseek-v4.1-f
 
 - 等号左边是你本地的名字，右边是网络统一名字。**官方权重一律用 `deepseek-v4.1-flash-1017`**，去审查版用 `deepseek-v4.1-flash-1017-heretic`。Qwen3.8 Flash-Next 的 NVIDIA FP4-Local 量化 + alesha 去审查微调版用 `qwen3.8-flash-next-fp4-alesha`；local-inference-lab 的 NVFP4-MXFP8-CSF-QAD 量化版用 `qwen3.8-flash-next-nvfp4-lil`。名字不对，别人就找不到你。
 - 命名规则：`模型[-量化][-来源]`，全小写，用连字符连接。模型 = 基础模型和版本（如 `qwen3.8-flash-next`）；量化 = 权重格式（`fp4`、`nvfp4`、`int4`）；来源 = 谁改的权重（微调名，或做量化的团队，如 `alesha`、`lil`）。官方原版权重不加量化和来源。用 vLLM 还是 SGLang、上下文多长不影响名字。新模型先在 GitHub 提 issue 登记，写清基础模型、权重来源链接、量化格式和谁做的、使用注意事项（比如采样参数固定）；不需要提供你服务器的地址。
-- `--concurrency` 是同时接几个请求，按你机器的余量填。
+- `--concurrency` 是同时接几个请求，按你机器的余量填。多出来的请求留在这个节点的队列里等，先按访问等级、再按到达顺序轮，等久了等级会升；队列满了直接拒绝，不让客户端反复重试。
 
 看到 `sharing map[...]` 和 `gateway http://127.0.0.1:7778/v1` 就说明接上了。
 
