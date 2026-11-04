@@ -144,13 +144,7 @@ func (n *Node) servedSets() (ever, recent map[string]bool) {
 		return n.servedEver, n.servedRecent
 	}
 	since := time.Now().Add(-contributorWindow).Unix()
-	n.receipts.mu.Lock()
-	servers := map[string]bool{} // node -> served recently
-	for _, sr := range n.receipts.all {
-		r := sr.Receipt
-		servers[r.Server] = servers[r.Server] || r.TS >= since
-	}
-	n.receipts.mu.Unlock()
+	servers := n.receipts.ServersSince(since) // node -> served recently
 	ever, recent = map[string]bool{}, map[string]bool{}
 	for s, rec := range servers {
 		if c, ok := n.claims.get(s); ok {
@@ -461,14 +455,7 @@ func sigOf(it memberItem) string {
 func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	ms := n.memberSet()
 	since := time.Now().Add(-contributorWindow).Unix()
-	jobs := map[string]int{}
-	n.receipts.mu.Lock()
-	for _, sr := range n.receipts.all {
-		if sr.Receipt.TS >= since {
-			jobs[sr.Receipt.Server]++
-		}
-	}
-	n.receipts.mu.Unlock()
+	jobs := n.receipts.JobsSince(since)
 	perAccount := map[string]int{}
 	for node, j := range jobs {
 		if c, ok := n.claims.get(node); ok {

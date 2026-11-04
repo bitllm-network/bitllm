@@ -17,6 +17,7 @@ import (
 
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -82,7 +83,8 @@ type Node struct {
 	dht          *dht.IpfsDHT
 	topic        *pubsub.Topic
 	ledger       *Ledger
-	receipts     *Receipts
+	receipts     *receipts.Receipts
+	receiptTop   *pubsub.Topic
 	claims       *Claims
 	claimTop     *pubsub.Topic
 	nodeKey      crypto.PrivKey
@@ -244,12 +246,12 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	n.nodeKey = key
-	if n.receiptSeed, err = loadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
+	if n.receiptSeed, err = receipts.LoadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
 		return nil, err
 	}
 	n.claims = OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = OpenQuota(filepath.Join(cfg.DataDir, "quota.json"))
-	if n.receipts, err = OpenReceipts(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
+	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
 		return nil, err
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
@@ -263,13 +265,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	ps.RegisterTopicValidator(protocol.ReceiptTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
-		var sr SignedReceipt
-		return json.Unmarshal(msg.Data, &sr) == nil && n.receipts.acceptGossip(msg.GetFrom(), &sr)
+		var sr receipts.SignedReceipt
+		return json.Unmarshal(msg.Data, &sr) == nil && n.receipts.AcceptGossip(msg.GetFrom(), &sr)
 	})
-	if n.receipts.topic, err = ps.Join(protocol.ReceiptTopic); err != nil {
+	if n.receiptTop, err = ps.Join(protocol.ReceiptTopic); err != nil {
 		return nil, err
 	}
-	rsub, err := n.receipts.topic.Subscribe()
+	rsub, err := n.receiptTop.Subscribe()
 	if err != nil {
 		return nil, err
 	}

@@ -168,7 +168,7 @@ func TestNetwork(t *testing.T) {
 
 	// Both receipts carry the client's one pseudonym for this server, not its node id.
 	clients := map[string]bool{}
-	for _, sr := range server.receipts.all {
+	for _, sr := range server.receipts.All() {
 		clients[sr.Receipt.Client] = true
 	}
 	if len(clients) != 1 || clients[client.host.ID().String()] {
@@ -180,7 +180,7 @@ func TestNetwork(t *testing.T) {
 	waitCredits(late, "late joiner")
 
 	// Tampering with a receipt breaks its signatures.
-	sr := late.receipts.all[0]
+	sr := late.receipts.All()[0]
 	if !sr.Valid() {
 		t.Fatal("stored receipt invalid")
 	}
@@ -189,7 +189,7 @@ func TestNetwork(t *testing.T) {
 		t.Fatal("inflated receipt still valid")
 	}
 	// Receipts are signed with a one-off client key, never the client's node id.
-	for _, sr := range late.receipts.all {
+	for _, sr := range late.receipts.All() {
 		if sr.Receipt.Client == client.host.ID().String() {
 			t.Fatal("receipt names the client node")
 		}

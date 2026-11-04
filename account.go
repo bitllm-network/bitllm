@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -254,7 +255,7 @@ type NodeCreditRow struct {
 }
 
 // ownerTable groups per-node credits by each node's current owner.
-func ownerTable(perNode map[string]ServerCredits, claims *Claims) []OwnerCredits {
+func ownerTable(perNode map[string]receipts.ServerCredits, claims *Claims) []OwnerCredits {
 	rows := map[string]*OwnerCredits{}
 	for node, c := range perNode {
 		key, owner, name := "node:"+node, "", ""
