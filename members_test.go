@@ -101,7 +101,7 @@ func TestAccessRules(t *testing.T) {
 	release()
 
 	// Rule 3: a contributor has no quota.
-	n.quota.add(contrib.addr, 1_000_000, now)
+	n.quota.Add(contrib.addr, 1_000_000, now)
 	s, _, adm = n.admit(contribNode, "", now, 0, 0)
 	tk = adm.t
 	if s != 0 || tk.key != "" {
