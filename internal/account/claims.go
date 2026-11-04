@@ -17,6 +17,7 @@ type Claims struct {
 	byNode map[string]Claim
 }
 
+// OpenClaims loads the claims file, dropping lines that no longer verify.
 func OpenClaims(path string) *Claims {
 	c := &Claims{path: path, byNode: map[string]Claim{}}
 	if b, err := os.ReadFile(path); err == nil {
@@ -55,6 +56,7 @@ func (cs *Claims) Add(c Claim) bool {
 	return true
 }
 
+// Get returns the claim for a node, if any.
 func (cs *Claims) Get(node string) (Claim, bool) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -62,6 +64,7 @@ func (cs *Claims) Get(node string) (Claim, bool) {
 	return c, ok
 }
 
+// All returns a copy of every claim, for sync and the dashboard.
 func (cs *Claims) All() []Claim {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
