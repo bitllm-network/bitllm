@@ -68,9 +68,8 @@ type Config struct {
 	Location         string            // coarse geohash cell for the node map (network.go); empty = not shown
 }
 
-// Announce is what a serving node gossips about itself.
-//
-// The type lives in the protocol package so a reader can find the whole wire
+// peerInfo is one peer's latest announce and when we heard it. The announce
+// type lives in the protocol package so a reader can find the whole wire
 // contract in one place.
 type peerInfo struct {
 	protocol.Announce

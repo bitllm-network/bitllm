@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -11,7 +12,7 @@ import (
 // attacker alone; they keep gossip state from growing without limit.
 
 const (
-	maxPeers  = 4096 // announcing peers we remember
+	maxPeers  = protocol.MaxPeers // announcing peers we remember
 	maxClaims = 20000
 )
 
