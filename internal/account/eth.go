@@ -105,3 +105,25 @@ func KeyFromMnemonic(mnemonic string) (*secp256k1.PrivateKey, error) {
 	}
 	return secp256k1.PrivKeyFromBytes(k), nil
 }
+
+// ValidAddress reports whether a is a lowercase 0x Ethereum address.
+func ValidAddress(a string) bool {
+	if len(a) != 42 || !strings.HasPrefix(a, "0x") || a != strings.ToLower(a) {
+		return false
+	}
+	_, err := hex.DecodeString(a[2:])
+	return err == nil
+}
+
+// SignatureShapeError explains a signature that is not a plain 65-byte ECDSA
+// one, which is what smart-account wallets (ERC-1271/6492) return.
+func SignatureShapeError(sigHex string) error {
+	sig, err := hex.DecodeString(strings.TrimPrefix(sigHex, "0x"))
+	if err != nil {
+		return fmt.Errorf("signature is not hex")
+	}
+	if len(sig) != 65 {
+		return fmt.Errorf("this wallet returned a smart-account signature (%d bytes, not 65); switch to a standard account in your wallet and try again", len(sig))
+	}
+	return nil
+}

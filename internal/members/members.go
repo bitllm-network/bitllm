@@ -1,4 +1,6 @@
-package main
+// Package members is the invite tree: who may use the network, derived
+// from signed invites and revocations, with no membership server.
+package members
 
 import (
 	"encoding/hex"
@@ -25,10 +27,14 @@ import (
 //     quota, and an account that has ever served gets 10 invites, not 3.
 
 const (
-	memberInvites      = 3
-	contributorInvites = 10
-	contributorWindow  = 7 * 24 * time.Hour
-	maxInvites         = 50_000 // stored invites; ids are cheap, so bound the set
+	// MemberInvites is how many accounts an ordinary member may invite.
+	MemberInvites = 3
+	// ContributorInvites is the higher limit for an account that has ever served.
+	ContributorInvites = 10
+	// ContributorWindow is how recently a node must have served to be a contributor.
+	ContributorWindow = 7 * 24 * time.Hour
+	// MaxInvites bounds the stored invite set; ids are cheap, so cap it.
+	MaxInvites = 50_000
 )
 
 // Invite says inviter (a member) vouches for invitee.
@@ -45,27 +51,6 @@ func (i *Invite) Message() string {
 
 func (i *Invite) id() string { return i.Inviter + ">" + i.Invitee }
 
-func validAddr(a string) bool {
-	if len(a) != 42 || !strings.HasPrefix(a, "0x") || a != strings.ToLower(a) {
-		return false
-	}
-	_, err := hex.DecodeString(a[2:])
-	return err == nil
-}
-
-// sigShapeErr explains a signature that is not a plain 65-byte ECDSA one,
-// which is what smart-account wallets (ERC-1271/6492) return.
-func sigShapeErr(sigHex string) error {
-	sig, err := hex.DecodeString(strings.TrimPrefix(sigHex, "0x"))
-	if err != nil {
-		return fmt.Errorf("signature is not hex")
-	}
-	if len(sig) != 65 {
-		return fmt.Errorf("this wallet returned a smart-account signature (%d bytes, not 65); switch to a standard account in your wallet and try again", len(sig))
-	}
-	return nil
-}
-
 func signedBy(msg, sigHex, addr string) bool {
 	sig, err := hex.DecodeString(strings.TrimPrefix(sigHex, "0x"))
 	if err != nil {
@@ -76,7 +61,7 @@ func signedBy(msg, sigHex, addr string) bool {
 }
 
 func (i *Invite) Valid() bool {
-	return validAddr(i.Inviter) && validAddr(i.Invitee) && i.Inviter != i.Invitee &&
+	return account.ValidAddress(i.Inviter) && account.ValidAddress(i.Invitee) && i.Inviter != i.Invitee &&
 		i.Time <= time.Now().Add(10*time.Minute).Unix() && signedBy(i.Message(), i.Sig, i.Inviter)
 }
 
@@ -94,12 +79,12 @@ func (r *Revoke) Message() string {
 }
 
 func (r *Revoke) Valid() bool {
-	return validAddr(r.Account) && validAddr(r.Root) &&
+	return account.ValidAddress(r.Account) && account.ValidAddress(r.Root) &&
 		r.Time <= time.Now().Add(10*time.Minute).Unix() && signedBy(r.Message(), r.Sig, r.Root)
 }
 
-// memberItem is one gossip or sync message on the membership topic.
-type memberItem struct {
+// Item is one gossip or sync message on the membership topic.
+type Item struct {
 	Invite *Invite `json:"invite,omitempty"`
 	Revoke *Revoke `json:"revoke,omitempty"`
 }
@@ -120,20 +105,20 @@ type Members struct {
 	served func() (ever, recent map[string]bool)
 }
 
-// OpenMembers loads the store. Saved items are replayed through the same
+// Open loads the store. Saved items are replayed through the same
 // checks as new ones (revocations first, then invites in time order), so a
 // store written by an older or buggy version cannot carry junk forward.
-func OpenMembers(path string, roots []string, served func() (ever, recent map[string]bool)) *Members {
+func Open(path string, roots []string, served func() (ever, recent map[string]bool)) *Members {
 	m := &Members{path: path, roots: map[string]bool{}, invites: map[string]Invite{}, revokes: map[string]Revoke{}, served: served}
 	for _, r := range roots {
 		m.roots[strings.ToLower(r)] = true
 	}
 	if b, err := os.ReadFile(path); err == nil {
-		var items []memberItem
+		var items []Item
 		if json.Unmarshal(b, &items) == nil {
 			sortItems(items)
 			for _, it := range items {
-				m.add(it)
+				m.Add(it)
 			}
 		}
 	}
@@ -142,8 +127,8 @@ func OpenMembers(path string, roots []string, served func() (ever, recent map[st
 
 // sortItems orders revocations first, then invites by time, which is the order
 // in which they can be checked (an inviter's own invite before the ones it signs).
-func sortItems(items []memberItem) {
-	key := func(it memberItem) (int, int64, string) {
+func sortItems(items []Item) {
+	key := func(it Item) (int, int64, string) {
 		if it.Revoke != nil {
 			return 0, it.Revoke.Time, it.Revoke.Account
 		}
@@ -165,8 +150,8 @@ func sortItems(items []memberItem) {
 // Enabled reports whether membership is in force (some root is configured).
 func (m *Members) Enabled() bool { return len(m.roots) > 0 }
 
-// check says why an item would not be stored, or nil if it would.
-func (m *Members) check(it memberItem) error {
+// Check says why an item would not be stored, or nil if it would.
+func (m *Members) Check(it Item) error {
 	switch {
 	case it.Invite != nil:
 		i := it.Invite
@@ -201,10 +186,10 @@ func (m *Members) check(it memberItem) error {
 	return fmt.Errorf("empty item")
 }
 
-// add stores an invite or revocation if it passes check and is new; it
+// Add stores an invite or revocation if it passes Check and is new; it
 // reports whether it did.
-func (m *Members) add(it memberItem) bool {
-	if m.check(it) != nil {
+func (m *Members) Add(it Item) bool {
+	if m.Check(it) != nil {
 		return false
 	}
 	m.mu.Lock()
@@ -212,7 +197,7 @@ func (m *Members) add(it memberItem) bool {
 	switch {
 	case it.Invite != nil:
 		i := *it.Invite
-		if _, ok := m.invites[i.id()]; ok || len(m.invites) >= maxInvites {
+		if _, ok := m.invites[i.id()]; ok || len(m.invites) >= MaxInvites {
 			return false
 		}
 		m.invites[i.id()] = i
@@ -231,13 +216,13 @@ func (m *Members) add(it memberItem) bool {
 	return true
 }
 
-func (m *Members) itemsLocked() []memberItem {
-	out := make([]memberItem, 0, len(m.invites)+len(m.revokes))
+func (m *Members) itemsLocked() []Item {
+	out := make([]Item, 0, len(m.invites)+len(m.revokes))
 	for _, i := range m.invites {
-		out = append(out, memberItem{Invite: &i})
+		out = append(out, Item{Invite: &i})
 	}
 	for _, r := range m.revokes {
-		out = append(out, memberItem{Revoke: &r})
+		out = append(out, Item{Revoke: &r})
 	}
 	sortItems(out)
 	return out
@@ -245,7 +230,7 @@ func (m *Members) itemsLocked() []memberItem {
 
 // known reports whether exactly this item is already stored. Gossip checks
 // a node's own messages too, and re-forwarding a known item is harmless.
-func (m *Members) known(it memberItem) bool {
+func (m *Members) Known(it Item) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
@@ -260,7 +245,7 @@ func (m *Members) known(it memberItem) bool {
 }
 
 // items returns everything stored, in replay order.
-func (m *Members) items() []memberItem {
+func (m *Members) Items() []Item {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.itemsLocked()
@@ -287,10 +272,13 @@ func (s *MemberSet) InviteLimit(a string) int {
 	case !s.Member[a]:
 		return 0
 	case s.Sharers[a]:
-		return contributorInvites
+		return ContributorInvites
 	}
-	return memberInvites
+	return MemberInvites
 }
+
+// IsRoot reports whether an account is a configured root.
+func (s *MemberSet) IsRoot(a string) bool { return s.roots[a] }
 
 // Compute derives the member set. Invites apply in time order; one counts
 // only if its inviter was already a member and under its invite limit; the

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/members"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"
@@ -132,7 +133,7 @@ func inviteCmd(args []string) {
 		}
 	}
 	fs.Parse(rest)
-	if !validAddr(addr) {
+	if !account.ValidAddress(addr) {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -143,13 +144,13 @@ func inviteCmd(args []string) {
 		fail(err)
 	}
 	me := account.EthAddress(key.PubKey())
-	var it memberItem
+	var it members.Item
 	if *revoke {
-		r := &Revoke{Account: addr, Root: me, Time: time.Now().Unix()}
+		r := &members.Revoke{Account: addr, Root: me, Time: time.Now().Unix()}
 		r.Sig = hex.EncodeToString(account.EthSign(key, r.Message()))
 		it.Revoke = r
 	} else {
-		i := &Invite{Inviter: me, Invitee: addr, Time: time.Now().Unix()}
+		i := &members.Invite{Inviter: me, Invitee: addr, Time: time.Now().Unix()}
 		i.Sig = hex.EncodeToString(account.EthSign(key, i.Message()))
 		it.Invite = i
 	}

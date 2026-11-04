@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/members"
 	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/bitllm-network/bitllm/internal/receipts"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -91,9 +92,9 @@ func (n *Node) deliverReceipt(p peer.ID, sr receipts.SignedReceipt) error {
 // syncItem is one line of the sync stream: a receipt, or a node claim.
 type syncItem struct {
 	receipts.SignedReceipt
-	Claim  *account.Claim `json:"claim,omitempty"`
-	Invite *Invite        `json:"invite,omitempty"`
-	Revoke *Revoke        `json:"revoke,omitempty"`
+	Claim  *account.Claim  `json:"claim,omitempty"`
+	Invite *members.Invite `json:"invite,omitempty"`
+	Revoke *members.Revoke `json:"revoke,omitempty"`
 }
 
 // handleSync streams every receipt and claim we know, so a new node can catch up.
@@ -110,7 +111,7 @@ func (n *Node) handleSync(s network.Stream) {
 			return
 		}
 	}
-	for _, it := range n.members.items() {
+	for _, it := range n.members.Items() {
 		if enc.Encode(it) != nil {
 			return
 		}
@@ -136,7 +137,7 @@ func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (int, error) {
 		if it.Claim != nil {
 			n.claims.Add(*it.Claim)
 		} else if it.Invite != nil || it.Revoke != nil {
-			if n.members.add(memberItem{Invite: it.Invite, Revoke: it.Revoke}) {
+			if n.members.Add(members.Item{Invite: it.Invite, Revoke: it.Revoke}) {
 				n.invalidateMembers()
 			}
 		} else if n.receipts.Add(it.SignedReceipt) {
