@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -147,7 +148,7 @@ func (n *Node) servedSets() (ever, recent map[string]bool) {
 	servers := n.receipts.ServersSince(since) // node -> served recently
 	ever, recent = map[string]bool{}, map[string]bool{}
 	for s, rec := range servers {
-		if c, ok := n.claims.get(s); ok {
+		if c, ok := n.claims.Get(s); ok {
 			ever[c.Owner] = true
 			recent[c.Owner] = recent[c.Owner] || rec
 		}
@@ -158,7 +159,7 @@ func (n *Node) servedSets() (ever, recent map[string]bool) {
 
 // accountOf is the account that owns node p, or "".
 func (n *Node) accountOf(p peer.ID) string {
-	if c, ok := n.claims.get(p.String()); ok {
+	if c, ok := n.claims.Get(p.String()); ok {
 		return c.Owner
 	}
 	return ""
@@ -397,20 +398,20 @@ type MemberInfo struct {
 	Members      int    `json:"members"`
 }
 
-func (n *Node) memberInfo(account string) MemberInfo {
+func (n *Node) memberInfo(acct string) MemberInfo {
 	ms := n.memberSet()
-	info := MemberInfo{Enabled: n.members.Enabled(), Account: account, Members: len(ms.Member)}
-	if account == "" {
+	info := MemberInfo{Enabled: n.members.Enabled(), Account: acct, Members: len(ms.Member)}
+	if acct == "" {
 		return info
 	}
-	info.Member = ms.Member[account]
-	info.Root = ms.roots[account]
-	info.Contributor = ms.Contributors[account]
-	if inv := ms.InvitedBy[account]; inv != "" {
-		info.InvitedBy = checksumAddress(inv)
+	info.Member = ms.Member[acct]
+	info.Root = ms.roots[acct]
+	info.Contributor = ms.Contributors[acct]
+	if inv := ms.InvitedBy[acct]; inv != "" {
+		info.InvitedBy = account.ChecksumAddress(inv)
 	}
-	info.InvitesUsed = ms.Used[account]
-	info.InvitesLimit = ms.InviteLimit(account)
+	info.InvitesUsed = ms.Used[acct]
+	info.InvitesLimit = ms.InviteLimit(acct)
 	return info
 }
 
@@ -458,7 +459,7 @@ func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	jobs := n.receipts.JobsSince(since)
 	perAccount := map[string]int{}
 	for node, j := range jobs {
-		if c, ok := n.claims.get(node); ok {
+		if c, ok := n.claims.Get(node); ok {
 			perAccount[c.Owner] += j
 		}
 	}
@@ -473,10 +474,10 @@ func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []row{}
 	for a := range ms.Member {
-		rw := row{Account: checksumAddress(a), Root: ms.roots[a], Sharer: ms.Sharers[a],
+		rw := row{Account: account.ChecksumAddress(a), Root: ms.roots[a], Sharer: ms.Sharers[a],
 			Contributor: ms.Contributors[a], Invited: ms.Used[a], Jobs7d: perAccount[a]}
 		if inv := ms.InvitedBy[a]; inv != "" {
-			rw.InvitedBy = checksumAddress(inv)
+			rw.InvitedBy = account.ChecksumAddress(inv)
 		}
 		out = append(out, rw)
 	}

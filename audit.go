@@ -358,7 +358,7 @@ func (a *audits) pickAuditor(model string, server peer.ID, used map[peer.ID]bool
 	alive := a.n.alive()
 	srvNets := a.n.peerNets(server)
 	srvOwner := ""
-	if c, ok := a.n.claims.get(server.String()); ok {
+	if c, ok := a.n.claims.Get(server.String()); ok {
 		srvOwner = c.Owner
 	}
 	a.mu.Lock()
@@ -374,7 +374,7 @@ func (a *audits) pickAuditor(model string, server peer.ID, used map[peer.ID]bool
 		if !ok || p == server || used[p] || banned[p] || !scores(ann, model) {
 			return false
 		}
-		if c, ok := a.n.claims.get(p.String()); ok && srvOwner != "" && c.Owner == srvOwner {
+		if c, ok := a.n.claims.Get(p.String()); ok && srvOwner != "" && c.Owner == srvOwner {
 			return false
 		}
 		for nw := range a.n.peerNets(p) {

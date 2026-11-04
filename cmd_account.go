@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"
@@ -47,13 +48,13 @@ func accountCmd(args []string, home string) {
 		fail(err)
 	}
 	self, _ := peer.IDFromPrivateKey(nodeKey)
-	claims := OpenClaims(filepath.Join(*data, "claims.json"))
+	claims := account.OpenClaims(filepath.Join(*data, "claims.json"))
 
 	var key *secp256k1.PrivateKey
 	switch sub {
 	case "show":
-		if c, ok := claims.get(self.String()); ok {
-			fmt.Printf("node %s\nowner %s\nname %q\nlinked %s\n", self, checksumAddress(c.Owner), c.Name, time.Unix(c.Time, 0).Format(time.RFC3339))
+		if c, ok := claims.Get(self.String()); ok {
+			fmt.Printf("node %s\nowner %s\nname %q\nlinked %s\n", self, account.ChecksumAddress(c.Owner), c.Name, time.Unix(c.Time, 0).Format(time.RFC3339))
 		} else {
 			fmt.Printf("node %s is not linked to an account.\n\n%s", self, accountUsage)
 		}
@@ -61,13 +62,13 @@ func accountCmd(args []string, home string) {
 	case "new":
 		entropy, _ := bip39.NewEntropy(128)
 		words, _ := bip39.NewMnemonic(entropy)
-		key, _ = keyFromMnemonic(words)
-		fmt.Printf("Your account: %s\n\nRecovery words (write them down; they are shown once and are the only way\nto link other machines or prove this account later):\n\n    %s\n\n", checksumAddress(ethAddress(key.PubKey())), words)
+		key, _ = account.KeyFromMnemonic(words)
+		fmt.Printf("Your account: %s\n\nRecovery words (write them down; they are shown once and are the only way\nto link other machines or prove this account later):\n\n    %s\n\n", account.ChecksumAddress(account.EthAddress(key.PubKey())), words)
 		fmt.Println("They also work in any Ethereum wallet (MetaMask, Rabby...), first account.")
 	case "link":
 		fmt.Print("Recovery words: ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if key, err = keyFromMnemonic(line); err != nil {
+		if key, err = account.KeyFromMnemonic(line); err != nil {
 			fail(err)
 		}
 	default:
@@ -75,11 +76,11 @@ func accountCmd(args []string, home string) {
 		os.Exit(2)
 	}
 
-	c, err := newClaim(self, ethAddress(key.PubKey()), *name)
+	c, err := account.NewClaim(self, account.EthAddress(key.PubKey()), *name)
 	if err != nil {
 		fail(err)
 	}
-	c.OwnerSig = hex.EncodeToString(ethSign(key, c.Message()))
+	c.OwnerSig = hex.EncodeToString(account.EthSign(key, c.Message()))
 
 	// Prefer the running node, which also gossips the claim right away.
 	body, _ := json.Marshal(map[string]any{"owner": c.Owner, "name": c.Name, "time": c.Time, "owner_sig": c.OwnerSig})
@@ -90,16 +91,16 @@ func accountCmd(args []string, home string) {
 			json.NewDecoder(resp.Body).Decode(&e)
 			fail(fmt.Errorf("node refused: %s", e.Error.Message))
 		}
-		fmt.Printf("Linked node %s to %s.\n", self, checksumAddress(c.Owner))
+		fmt.Printf("Linked node %s to %s.\n", self, account.ChecksumAddress(c.Owner))
 		return
 	}
-	if err := signClaimAsNode(c, nodeKey); err != nil {
+	if err := account.SignClaimAsNode(c, nodeKey); err != nil {
 		fail(err)
 	}
-	if !claims.add(*c) {
+	if !claims.Add(*c) {
 		fail(fmt.Errorf("claim rejected"))
 	}
-	fmt.Printf("Linked node %s to %s. It is announced when the node starts.\n", self, checksumAddress(c.Owner))
+	fmt.Printf("Linked node %s to %s. It is announced when the node starts.\n", self, account.ChecksumAddress(c.Owner))
 }
 
 func fail(err error) {
@@ -137,19 +138,19 @@ func inviteCmd(args []string) {
 	}
 	fmt.Print("Your recovery words: ")
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	key, err := keyFromMnemonic(line)
+	key, err := account.KeyFromMnemonic(line)
 	if err != nil {
 		fail(err)
 	}
-	me := ethAddress(key.PubKey())
+	me := account.EthAddress(key.PubKey())
 	var it memberItem
 	if *revoke {
 		r := &Revoke{Account: addr, Root: me, Time: time.Now().Unix()}
-		r.Sig = hex.EncodeToString(ethSign(key, r.Message()))
+		r.Sig = hex.EncodeToString(account.EthSign(key, r.Message()))
 		it.Revoke = r
 	} else {
 		i := &Invite{Inviter: me, Invitee: addr, Time: time.Now().Unix()}
-		i.Sig = hex.EncodeToString(ethSign(key, i.Message()))
+		i.Sig = hex.EncodeToString(account.EthSign(key, i.Message()))
 		it.Invite = i
 	}
 	body, _ := json.Marshal(it)
@@ -164,8 +165,8 @@ func inviteCmd(args []string) {
 		fail(fmt.Errorf("node refused: %s", e.Error.Message))
 	}
 	if *revoke {
-		fmt.Printf("Revoked %s.\n", checksumAddress(addr))
+		fmt.Printf("Revoked %s.\n", account.ChecksumAddress(addr))
 	} else {
-		fmt.Printf("Invited %s from %s. It counts once the network sees it (seconds).\n", checksumAddress(addr), checksumAddress(me))
+		fmt.Printf("Invited %s from %s. It counts once the network sees it (seconds).\n", account.ChecksumAddress(addr), account.ChecksumAddress(me))
 	}
 }

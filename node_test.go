@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bitllm-network/bitllm/internal/account"
 )
 
 // mockUpstream is an OpenAI-compatible server with one model; every reply
@@ -98,6 +100,10 @@ func post(n *Node, body string) *httptest.ResponseRecorder {
 	n.Gateway().ServeHTTP(w, r)
 	return w
 }
+
+// The well-known Hardhat/Anvil test mnemonic and its first account.
+const testMnemonic = "test test test test test test test test test test test junk"
+const testAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 func TestNetwork(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -388,10 +394,10 @@ func TestOwnerAccounts(t *testing.T) {
 	a, b := srv(), srv()
 	client := testNode(t, ctx, Config{Bootstrap: bs})
 
-	owner, _ := keyFromMnemonic(testMnemonic)
+	owner, _ := account.KeyFromMnemonic(testMnemonic)
 	for _, n := range []*Node{a, b} {
-		c, _ := newClaim(n.host.ID(), testAddress, "alice")
-		sig := hex.EncodeToString(ethSign(owner, c.Message()))
+		c, _ := account.NewClaim(n.host.ID(), testAddress, "alice")
+		sig := hex.EncodeToString(account.EthSign(owner, c.Message()))
 		if _, err := n.Link(testAddress, "alice", c.Time, sig); err != nil {
 			t.Fatal(err)
 		}
@@ -415,13 +421,13 @@ func TestOwnerAccounts(t *testing.T) {
 		}
 	}
 
-	alice := func(n *Node) (OwnerCredits, bool) {
+	alice := func(n *Node) (account.OwnerCredits, bool) {
 		for _, r := range n.creditsTable() {
 			if r.Owner == testAddress {
 				return r, true
 			}
 		}
-		return OwnerCredits{}, false
+		return account.OwnerCredits{}, false
 	}
 	wait := func(n *Node, who string) {
 		t.Helper()
