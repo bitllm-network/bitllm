@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -34,12 +35,6 @@ import (
 // shows how many distinct clients each server had in a month (a one-client
 // server farming itself stands out) but cannot link a client across servers
 // or across months. Distinct keys are free, so this is a weak signal only.
-const (
-	ReceiptProto = "/bitllm/receipt/1.0.0"
-	SyncProto    = "/bitllm/receipts-sync/1.0.0"
-	ReceiptTopic = "bitllm/receipts/1"
-)
-
 type Receipt struct {
 	Job        string `json:"job"`
 	Model      string `json:"model"`
@@ -60,19 +55,6 @@ type SignedReceipt struct {
 
 func (r Receipt) bytes() []byte { b, _ := json.Marshal(r); return b }
 
-func verifySig(id string, data, sig []byte) bool {
-	p, err := peer.Decode(id)
-	if err != nil {
-		return false
-	}
-	pk, err := p.ExtractPublicKey()
-	if err != nil {
-		return false
-	}
-	ok, err := pk.Verify(data, sig)
-	return err == nil && ok
-}
-
 // maxJobTokens bounds the token counts of one receipt, so a pair of colluding
 // keys cannot mint arbitrary credits in a single signed line.
 const maxJobTokens = 4 << 20
@@ -88,7 +70,7 @@ func (sr *SignedReceipt) Valid() bool {
 		return false
 	}
 	b := r.bytes()
-	return verifySig(r.Client, b, sr.ClientSig) && verifySig(r.Server, b, sr.ServerSig)
+	return protocol.VerifySig(r.Client, b, sr.ClientSig) && protocol.VerifySig(r.Server, b, sr.ServerSig)
 }
 
 // pendingJob is what a server remembers about a job until the client's receipt arrives.
@@ -237,7 +219,7 @@ func (rs *Receipts) countersign(sr *SignedReceipt, from peer.ID) error {
 		return errUnknownJob
 	case r.Server != rs.self.String() || p.client != from:
 		return fmt.Errorf("wrong parties")
-	case !verifySig(r.Client, r.bytes(), sr.ClientSig):
+	case !protocol.VerifySig(r.Client, r.bytes(), sr.ClientSig):
 		return fmt.Errorf("bad client signature")
 	}
 	if prompt, completion := p.m.tokens(); r.Model != p.model || r.Output != p.m.sum() ||
@@ -322,7 +304,7 @@ func (n *Node) deliverReceipt(p peer.ID, sr SignedReceipt) error {
 	// the retry above open a fresh stream instead of blocking here.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "receipt"), p, ReceiptProto)
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "receipt"), p, protocol.ReceiptProto)
 	if err != nil {
 		return err
 	}
@@ -374,7 +356,7 @@ func (n *Node) handleSync(s network.Stream) {
 }
 
 func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (int, error) {
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "sync"), p, SyncProto)
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "sync"), p, protocol.SyncProto)
 	if err != nil {
 		return 0, err
 	}

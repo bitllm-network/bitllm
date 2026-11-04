@@ -21,13 +21,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
 	// maxQueue is the most waiters one server holds. Peer ids are free, so
 	// without a cap anyone could make the queue grow without limit.
-	maxQueue = 64
+	maxQueue = protocol.MaxQueueDepth
 
 	// maxWait is the longest a peer may ask to wait, whatever it sends.
 	maxWait = 5 * time.Minute

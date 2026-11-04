@@ -23,7 +23,6 @@ import (
 //     quota, and an account that has ever served gets 10 invites, not 3.
 
 const (
-	MembersTopic       = "bitllm/invites/1"
 	memberInvites      = 3
 	contributorInvites = 10
 	contributorWindow  = 7 * 24 * time.Hour

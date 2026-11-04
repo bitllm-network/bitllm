@@ -16,9 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
+	p2pproto "github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // InferProto: the client writes one JSON line {path, body}, then closes its
@@ -30,11 +31,6 @@ import (
 // slot answers with one {status: 202, position, eta_ms} line per check and
 // keeps the stream open; when a slot is free it sends {status: 200} and the
 // body follows. Old clients never send wait_ms, so they never see a 202.
-const (
-	InferProto  = "/bitllm/infer/1.0.0"
-	InferProto2 = "/bitllm/infer/1.1.0"
-)
-
 const maxRequest = 16 << 20
 
 // readTimeout bounds how long a peer may take to send its request line.
@@ -439,7 +435,7 @@ func (n *Node) handleInfer(s network.Stream) {
 	// room for it. The body is at most maxRequest bytes, so this is bounded.
 	amount := price(int64(len(req.Body))/4, worst)
 	wait := time.Duration(0)
-	if s.Protocol() == InferProto2 {
+	if s.Protocol() == protocol.InferProto2 {
 		ms := min(req.Wait, int64(maxWait/time.Millisecond)) // clamp first: no overflow
 		if ms < 0 {
 			ms = 0
@@ -531,7 +527,7 @@ func (n *Node) handleInfer(s network.Stream) {
 func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, stream bool,
 	w http.ResponseWriter, wait time.Duration) (started bool, err error) {
 	n.addRelayPaths(p)
-	proto := protocol.ID(InferProto2)
+	proto := p2pproto.ID(protocol.InferProto2)
 	req := inferReq{Job: rand.Text(), Path: path, Body: body}
 	if wait > 0 {
 		req.Wait = wait.Milliseconds()
@@ -539,7 +535,7 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
 	if err != nil {
 		// An older node has no queue: ask it the old way.
-		proto, req.Wait = InferProto, 0
+		proto, req.Wait = protocol.InferProto, 0
 		s, err = n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
 	}
 	if err != nil {

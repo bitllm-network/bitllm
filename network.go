@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bitllm-network/bitllm/internal/protocol"
 )
 
 // Node map. A serving node may say roughly where it is with --location. The
@@ -140,7 +142,7 @@ type networkView struct {
 
 // networkSnapshot aggregates the live announces (and our own, if we serve).
 func (n *Node) networkSnapshot() networkView {
-	anns := []Announce{}
+	anns := []protocol.Announce{}
 	for _, a := range n.alive() {
 		anns = append(anns, a)
 	}
@@ -150,7 +152,7 @@ func (n *Node) networkSnapshot() networkView {
 	return aggregate(anns, time.Now().UTC())
 }
 
-func aggregate(anns []Announce, now time.Time) networkView {
+func aggregate(anns []protocol.Announce, now time.Time) networkView {
 	v := networkView{Updated: now, CellKM: 156, Models: []networkModel{}, Cells: []networkCell{}, Versions: map[string]int{}}
 	models := map[string]*networkModel{}
 	cells := map[string]*networkCell{}
@@ -209,7 +211,7 @@ func aggregate(anns []Announce, now time.Time) networkView {
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
 
 // ownAnnounce is what we last gossiped, or nil if we serve nothing right now.
-func (n *Node) ownAnnounce() *Announce {
+func (n *Node) ownAnnounce() *protocol.Announce {
 	a := n.lastAnn.Load()
 	if a == nil || len(a.Models) == 0 {
 		return nil

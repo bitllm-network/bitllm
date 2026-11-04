@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/models"
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -311,16 +312,16 @@ func TestHashModel(t *testing.T) {
 
 func TestWeightsClaim(t *testing.T) {
 	h := strings.Repeat("ab", 32)
-	ok := Announce{Models: []string{"m"}, Free: 1, Max: 1, Audit: []string{"m"}, Weights: map[string]string{"m": h}}
-	if !validAnnounce(&ok) {
+	ok := protocol.Announce{Models: []string{"m"}, Free: 1, Max: 1, Audit: []string{"m"}, Weights: map[string]string{"m": h}}
+	if !protocol.ValidAnnounce(&ok) {
 		t.Fatal("valid announce refused")
 	}
-	for name, a := range map[string]Announce{
+	for name, a := range map[string]protocol.Announce{
 		"audit unserved":   {Models: []string{"m"}, Free: 1, Max: 1, Audit: []string{"x"}},
 		"weights unserved": {Models: []string{"m"}, Free: 1, Max: 1, Weights: map[string]string{"x": h}},
 		"bad hash":         {Models: []string{"m"}, Free: 1, Max: 1, Weights: map[string]string{"m": "zz"}},
 	} {
-		if validAnnounce(&a) {
+		if protocol.ValidAnnounce(&a) {
 			t.Fatalf("%s: accepted", name)
 		}
 	}

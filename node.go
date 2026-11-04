@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/models"
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -34,15 +35,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multihash"
-)
-
-const (
-	Rendezvous    = "bitllm/v1"
-	AnnounceTopic = "bitllm/announce/1"
-	// HelloProto answers with a node's current announce. It is how a node
-	// that found a provider in the DHT learns its models at once, instead of
-	// waiting for the next gossip round (up to an announce period).
-	HelloProto = "/bitllm/hello/1.0.0"
 )
 
 type Config struct {
@@ -77,22 +69,11 @@ type Config struct {
 }
 
 // Announce is what a serving node gossips about itself.
-type Announce struct {
-	Version string   `json:"v,omitempty"` // program version, so a future release can tell old nodes apart
-	Models  []string `json:"models"`
-	Free    int      `json:"free"`
-	Max     int      `json:"max"`
-	// Added in v0.2 (older nodes ignore them):
-	Audit   []string          `json:"audit,omitempty"`   // models our server can score (prompt logprobs): we can be an auditor
-	Weights map[string]string `json:"weights,omitempty"` // model -> hash of the weight files, as the operator states it
-	// Added in v0.2.1:
-	Loc string `json:"loc,omitempty"` // geohash cell (~156 km) for the node map, only if the operator set --location
-	// Added in v0.3:
-	Q int `json:"q,omitempty"` // requests waiting for a slot right now
-}
-
+//
+// The type lives in the protocol package so a reader can find the whole wire
+// contract in one place.
 type peerInfo struct {
-	Announce
+	protocol.Announce
 	seen time.Time
 }
 
@@ -123,9 +104,9 @@ type Node struct {
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
 	inflight     atomic.Int32
-	upOK         atomic.Bool              // upstream answered its last health check
-	lastAnn      atomic.Pointer[Announce] // what announceLoop last gossiped (GET /network counts us too)
-	openInflight atomic.Int32             // slots held by uninvited nodes on an open server
+	upOK         atomic.Bool                       // upstream answered its last health check
+	lastAnn      atomic.Pointer[protocol.Announce] // what announceLoop last gossiped (GET /network counts us too)
+	openInflight atomic.Int32                      // slots held by uninvited nodes on an open server
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 	audits       *audits        // nil without --audit
@@ -259,8 +240,8 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 				return nil, fmt.Errorf("upstream %s: %w", cfg.Upstream, err)
 			}
 		}
-		n.host.SetStreamHandler(InferProto, n.handleInfer)
-		n.host.SetStreamHandler(InferProto2, n.handleInfer)
+		n.host.SetStreamHandler(protocol.InferProto, n.handleInfer)
+		n.host.SetStreamHandler(protocol.InferProto2, n.handleInfer)
 	}
 
 	n.nodeKey = key
@@ -274,19 +255,19 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
 	n.members = OpenMembers(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
-	n.host.SetStreamHandler(ReceiptProto, n.handleReceipt)
-	n.host.SetStreamHandler(SyncProto, n.handleSync)
-	n.host.SetStreamHandler(HelloProto, n.handleHello)
+	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
+	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
+	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
 
 	ps, err := pubsub.NewGossipSub(ctx, n.host)
 	if err != nil {
 		return nil, err
 	}
-	ps.RegisterTopicValidator(ReceiptTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
+	ps.RegisterTopicValidator(protocol.ReceiptTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
 		var sr SignedReceipt
 		return json.Unmarshal(msg.Data, &sr) == nil && n.receipts.acceptGossip(msg.GetFrom(), &sr)
 	})
-	if n.receipts.topic, err = ps.Join(ReceiptTopic); err != nil {
+	if n.receipts.topic, err = ps.Join(protocol.ReceiptTopic); err != nil {
 		return nil, err
 	}
 	rsub, err := n.receipts.topic.Subscribe()
@@ -297,13 +278,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	// A claim is gossiped by the node it names, at most once per 2 s (the node
 	// re-gossips its claim 5 s after start and then every 5 min).
 	n.claimRate.every = 2 * time.Second
-	ps.RegisterTopicValidator(ClaimTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
+	ps.RegisterTopicValidator(protocol.ClaimTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
 		var c Claim
 		return json.Unmarshal(msg.Data, &c) == nil && c.Node == msg.GetFrom().String() &&
 			c.Valid() && n.claimRate.allow(msg.GetFrom(), time.Now())
 	})
 	n.memRate.every = time.Second
-	ps.RegisterTopicValidator(MembersTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
+	ps.RegisterTopicValidator(protocol.MembersTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
 		var it memberItem
 		if json.Unmarshal(msg.Data, &it) != nil || !n.memRate.allow(msg.GetFrom(), time.Now()) {
 			return false
@@ -316,7 +297,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		}
 		return n.members.known(it) || n.members.check(it) == nil
 	})
-	if n.memTop, err = ps.Join(MembersTopic); err != nil {
+	if n.memTop, err = ps.Join(protocol.MembersTopic); err != nil {
 		return nil, err
 	}
 	msub, err := n.memTop.Subscribe()
@@ -325,11 +306,11 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.readMembers(ctx, msub)
 	n.annRate.every = cfg.AnnounceEvery / 2
-	ps.RegisterTopicValidator(AnnounceTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
-		var a Announce
-		return json.Unmarshal(msg.Data, &a) == nil && validAnnounce(&a) && n.annRate.allow(msg.GetFrom(), time.Now())
+	ps.RegisterTopicValidator(protocol.AnnounceTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
+		var a protocol.Announce
+		return json.Unmarshal(msg.Data, &a) == nil && protocol.ValidAnnounce(&a) && n.annRate.allow(msg.GetFrom(), time.Now())
 	})
-	if n.claimTop, err = ps.Join(ClaimTopic); err != nil {
+	if n.claimTop, err = ps.Join(protocol.ClaimTopic); err != nil {
 		return nil, err
 	}
 	csub, err := n.claimTop.Subscribe()
@@ -338,7 +319,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.readClaims(ctx, csub)
 	go n.claimLoop(ctx)
-	if n.topic, err = ps.Join(AnnounceTopic); err != nil {
+	if n.topic, err = ps.Join(protocol.AnnounceTopic); err != nil {
 		return nil, err
 	}
 	sub, err := n.topic.Subscribe()
@@ -362,7 +343,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	if cfg.MDNS {
-		mdns.NewMdnsService(n.host, Rendezvous, n).Start()
+		mdns.NewMdnsService(n.host, protocol.Rendezvous, n).Start()
 	}
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
@@ -477,9 +458,9 @@ func (n *Node) HandlePeerFound(ai peer.AddrInfo) {
 
 func (n *Node) discoverLoop(ctx context.Context) {
 	disc := drouting.NewRoutingDiscovery(n.dht)
-	dutil.Advertise(ctx, disc, Rendezvous)
+	dutil.Advertise(ctx, disc, protocol.Rendezvous)
 	for {
-		if ch, err := disc.FindPeers(ctx, Rendezvous); err == nil {
+		if ch, err := disc.FindPeers(ctx, protocol.Rendezvous); err == nil {
 			for ai := range ch {
 				if ai.ID != n.host.ID() && n.host.Network().Connectedness(ai.ID) != network.Connected {
 					n.host.Connect(ctx, ai)
@@ -516,7 +497,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 			}
 		}
 		free := n.cfg.Concurrency - int(n.inflight.Load())
-		a := Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth()}
+		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth()}
 		if n.upOK.Load() {
 			a.Models = models
 			if n.cfg.AuditServe && !probed {
@@ -571,7 +552,7 @@ func (n *Node) readAnnounces(ctx context.Context, sub *pubsub.Subscription) {
 		if from == n.host.ID() {
 			continue
 		}
-		var a Announce
+		var a protocol.Announce
 		if json.Unmarshal(msg.Data, &a) != nil {
 			continue
 		}
@@ -581,7 +562,7 @@ func (n *Node) readAnnounces(ctx context.Context, sub *pubsub.Subscription) {
 
 // remember stores what a peer announced, evicting the least recently seen
 // when the table is full.
-func (n *Node) remember(from peer.ID, a Announce) {
+func (n *Node) remember(from peer.ID, a protocol.Announce) {
 	n.mu.Lock()
 	if _, ok := n.peers[from]; !ok && len(n.peers) >= maxPeers {
 		oldest, at := peer.ID(""), time.Now()
@@ -672,7 +653,7 @@ func (n *Node) findModelPeers(ctx context.Context, model string) {
 func (n *Node) hello(ctx context.Context, p peer.ID) {
 	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	s, err := n.host.NewStream(hctx, p, HelloProto)
+	s, err := n.host.NewStream(hctx, p, protocol.HelloProto)
 	if err != nil {
 		return
 	}
@@ -681,11 +662,11 @@ func (n *Node) hello(ctx context.Context, p peer.ID) {
 	// that accepts the stream and says nothing blocks the caller for long
 	// past the five seconds promised above.
 	s.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var a Announce
+	var a protocol.Announce
 	if err := json.NewDecoder(io.LimitReader(s, 1<<14)).Decode(&a); err != nil {
 		return
 	}
-	if len(a.Models) > 0 && validAnnounce(&a) {
+	if len(a.Models) > 0 && protocol.ValidAnnounce(&a) {
 		n.remember(p, a)
 	}
 }
@@ -695,7 +676,7 @@ func (n *Node) hello(ctx context.Context, p peer.ID) {
 func (n *Node) handleHello(s network.Stream) {
 	defer s.Close()
 	s.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	a := Announce{Version: Version, Models: []string{}}
+	a := protocol.Announce{Version: Version, Models: []string{}}
 	if last := n.lastAnn.Load(); last != nil {
 		a = *last
 	}
@@ -732,10 +713,10 @@ func (n *Node) redialLoop(ctx context.Context) {
 }
 
 // alive returns announces seen within three announce periods.
-func (n *Node) alive() map[peer.ID]Announce {
+func (n *Node) alive() map[peer.ID]protocol.Announce {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	out := map[peer.ID]Announce{}
+	out := map[peer.ID]protocol.Announce{}
 	for p, pi := range n.peers {
 		if time.Since(pi.seen) < 3*n.cfg.AnnounceEvery+5*time.Second {
 			out[p] = pi.Announce

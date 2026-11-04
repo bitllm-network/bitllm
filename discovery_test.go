@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -43,7 +44,7 @@ func TestHelloFillsCandidates(t *testing.T) {
 	server := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1]})
 	client := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1]})
 
-	server.lastAnn.Store(&Announce{Version: Version, Models: []string{"m"}, Free: 1, Max: 1})
+	server.lastAnn.Store(&protocol.Announce{Version: Version, Models: []string{"m"}, Free: 1, Max: 1})
 	if err := client.host.Connect(ctx, peer.AddrInfo{ID: server.host.ID(), Addrs: server.host.Addrs()}); err != nil {
 		t.Fatal(err)
 	}
