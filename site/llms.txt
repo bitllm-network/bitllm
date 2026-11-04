@@ -170,4 +170,4 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 
 - Human-readable guide: https://bitllm.org
 - README: https://github.com/bitllm-network/bitllm#readme
-- 中文说明: https://github.com/bitllm-network/bitllm/blob/main/JOIN.zh.md
+- 中文说明: https://github.com/bitllm-network/bitllm/blob/main/docs/JOIN.zh.md
