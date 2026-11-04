@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -67,7 +68,7 @@ func validAnnounce(a *Announce) bool {
 		}
 	}
 	for m, h := range a.Weights {
-		if !served[m] || !validHash(h) {
+		if !served[m] || !models.ValidHash(h) {
 			return false
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -755,7 +756,7 @@ func (n *Node) candidates(model string) []peer.ID {
 		demoted bool // an audit suspect: used only when nobody else can answer
 	}
 	var cs []c
-	want := manifest[model].Weights
+	want := models.Manifest[model].Weights
 	for p, a := range n.alive() {
 		// A peer that says it loads other weights than the name stands for
 		// is serving another model under this name, by its own account.

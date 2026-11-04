@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -89,7 +90,7 @@ type sampler struct {
 // latest real request (temperature 1 if it named none, since a server's
 // default is unknown).
 func canarySampler(model string, rp reqParams) sampler {
-	if f := manifest[model].Sampling; f != nil {
+	if f := models.Manifest[model].Sampling; f != nil {
 		return sampler{f.Temperature, f.TopP}
 	}
 	if rand.IntN(2) == 0 {
@@ -434,7 +435,7 @@ func (n *Node) peerNets(p peer.ID) map[string]bool {
 func canaryBody(model, prompt, answer string, stream bool, sp sampler) []byte {
 	msgs := []map[string]string{{"role": "user", "content": prompt}}
 	body := map[string]any{"model": model}
-	for k, v := range manifest[model].Extra {
+	for k, v := range models.Manifest[model].Extra {
 		body[k] = v
 	}
 	if answer == "" {
