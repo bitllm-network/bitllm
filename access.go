@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/members"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -116,7 +117,7 @@ func (q *Quota) settle(key string, reserved, credits int64, now time.Time) {
 }
 
 // memberSet returns the current member set, recomputed at most every 10 s.
-func (n *Node) memberSet() *MemberSet {
+func (n *Node) memberSet() *members.MemberSet {
 	n.accessMu.Lock()
 	defer n.accessMu.Unlock()
 	if n.access != nil && time.Since(n.accessAt) < 10*time.Second {
@@ -144,7 +145,7 @@ func (n *Node) servedSets() (ever, recent map[string]bool) {
 	if n.servedEver != nil && time.Since(n.servedAt) < 10*time.Second {
 		return n.servedEver, n.servedRecent
 	}
-	since := time.Now().Add(-contributorWindow).Unix()
+	since := time.Now().Add(-members.ContributorWindow).Unix()
 	servers := n.receipts.ServersSince(since) // node -> served recently
 	ever, recent = map[string]bool{}, map[string]bool{}
 	for s, rec := range servers {
@@ -365,16 +366,16 @@ func (n *Node) readMembers(ctx context.Context, sub *pubsub.Subscription) {
 		if err != nil {
 			return
 		}
-		var it memberItem
-		if json.Unmarshal(msg.Data, &it) == nil && n.members.add(it) {
+		var it members.Item
+		if json.Unmarshal(msg.Data, &it) == nil && n.members.Add(it) {
 			n.invalidateMembers()
 		}
 	}
 }
 
 // publishMember stores an invite or revocation and gossips it.
-func (n *Node) publishMember(it memberItem) bool {
-	if !n.members.add(it) {
+func (n *Node) publishMember(it members.Item) bool {
+	if !n.members.Add(it) {
 		return false
 	}
 	n.invalidateMembers()
@@ -405,7 +406,7 @@ func (n *Node) memberInfo(acct string) MemberInfo {
 		return info
 	}
 	info.Member = ms.Member[acct]
-	info.Root = ms.roots[acct]
+	info.Root = ms.IsRoot(acct)
 	info.Contributor = ms.Contributors[acct]
 	if inv := ms.InvitedBy[acct]; inv != "" {
 		info.InvitedBy = account.ChecksumAddress(inv)
@@ -421,16 +422,16 @@ func (n *Node) membersMe(w http.ResponseWriter, r *http.Request) {
 
 // membersPost accepts a signed invite or revocation (from the CLI) and gossips it.
 func (n *Node) membersPost(w http.ResponseWriter, r *http.Request) {
-	var it memberItem
+	var it members.Item
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&it); err != nil {
 		jsonErr(w, 400, "bad json")
 		return
 	}
-	if err := sigShapeErr(sigOf(it)); err != nil {
+	if err := account.SignatureShapeError(sigOf(it)); err != nil {
 		jsonErr(w, 400, err.Error())
 		return
 	}
-	if err := n.members.check(it); err != nil {
+	if err := n.members.Check(it); err != nil {
 		jsonErr(w, 400, err.Error())
 		return
 	}
@@ -441,7 +442,7 @@ func (n *Node) membersPost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func sigOf(it memberItem) string {
+func sigOf(it members.Item) string {
 	switch {
 	case it.Invite != nil:
 		return it.Invite.Sig
@@ -455,7 +456,7 @@ func sigOf(it memberItem) string {
 // served lately, so a root can spot a receipt farm and revoke it.
 func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	ms := n.memberSet()
-	since := time.Now().Add(-contributorWindow).Unix()
+	since := time.Now().Add(-members.ContributorWindow).Unix()
 	jobs := n.receipts.JobsSince(since)
 	perAccount := map[string]int{}
 	for node, j := range jobs {
@@ -474,7 +475,7 @@ func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []row{}
 	for a := range ms.Member {
-		rw := row{Account: account.ChecksumAddress(a), Root: ms.roots[a], Sharer: ms.Sharers[a],
+		rw := row{Account: account.ChecksumAddress(a), Root: ms.IsRoot(a), Sharer: ms.Sharers[a],
 			Contributor: ms.Contributors[a], Invited: ms.Used[a], Jobs7d: perAccount[a]}
 		if inv := ms.InvitedBy[a]; inv != "" {
 			rw.InvitedBy = account.ChecksumAddress(inv)

@@ -302,7 +302,7 @@ func (n *Node) accountLink(w http.ResponseWriter, r *http.Request) {
 		OwnerSig    string `json:"owner_sig"`
 	}
 	json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req)
-	if err := sigShapeErr(req.OwnerSig); err != nil {
+	if err := account.SignatureShapeError(req.OwnerSig); err != nil {
 		jsonErr(w, 400, err.Error())
 		return
 	}

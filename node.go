@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/members"
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/bitllm-network/bitllm/internal/receipts"
@@ -89,14 +90,14 @@ type Node struct {
 	claims       *account.Claims
 	claimTop     *pubsub.Topic
 	nodeKey      crypto.PrivKey
-	members      *Members
+	members      *members.Members
 	memTop       *pubsub.Topic
 	memRate      originRate // membership gossip, per origin
 	quota        *Quota
 	accessMu     sync.Mutex
 	accessAt     time.Time
-	access       *MemberSet // cached, see memberSet
-	servedMu     sync.Mutex // own lock: memberSet holds accessMu while Compute calls servedSets
+	access       *members.MemberSet // cached, see memberSet
+	servedMu     sync.Mutex         // own lock: memberSet holds accessMu while Compute calls servedSets
 	servedAt     time.Time
 	servedEver   map[string]bool // cached, see servedSets
 	servedRecent map[string]bool
@@ -256,7 +257,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
-	n.members = OpenMembers(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
+	n.members = members.Open(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
 	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
 	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
 	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
@@ -287,7 +288,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	})
 	n.memRate.every = time.Second
 	ps.RegisterTopicValidator(protocol.MembersTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
-		var it memberItem
+		var it members.Item
 		if json.Unmarshal(msg.Data, &it) != nil || !n.memRate.allow(msg.GetFrom(), time.Now()) {
 			return false
 		}
@@ -297,7 +298,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		if it.Invite != nil && n.members.Enabled() && !n.memberSet().Member[it.Invite.Inviter] {
 			return false
 		}
-		return n.members.known(it) || n.members.check(it) == nil
+		return n.members.Known(it) || n.members.Check(it) == nil
 	})
 	if n.memTop, err = ps.Join(protocol.MembersTopic); err != nil {
 		return nil, err
