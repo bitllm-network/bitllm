@@ -1,5 +1,3 @@
 bitllm
-llmpool
 dist/
 *.db
-__pycache__/
