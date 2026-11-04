@@ -29,6 +29,7 @@ func keccak(b ...[]byte) []byte {
 	return h.Sum(nil)
 }
 
+// EthAddress is the lowercase 0x address of a public key.
 func EthAddress(pub *secp256k1.PublicKey) string {
 	return "0x" + hex.EncodeToString(keccak(pub.SerializeUncompressed()[1:])[12:])
 }
