@@ -349,7 +349,7 @@ already streaming through your relay is cut when it goes down, and the user's ag
 
 ## Build and test
 
-Go 1.26 or newer (`mise.toml` pins the toolchain). No C dependencies, one package, one binary.
+Go 1.26 or newer (`mise.toml` pins the toolchain). No C dependencies, one binary; packages follow the domain under `cmd/` and `internal/`.
 
 ```bash
 go build -o bitllm ./cmd/bitllm

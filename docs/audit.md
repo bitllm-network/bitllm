@@ -112,7 +112,7 @@ Catches:
 
 Does not catch:
 - **A server that recognizes canaries** and answers them with the real model. The pool is public
-  (`canaries.txt`) and canaries ask for 256 tokens at most, so a determined cheater can spot many
+  (`internal/assets/canaries.txt`) and canaries ask for 256 tokens at most, so a determined cheater can spot many
   of them. Copying your sampling settings and streaming makes it harder, not impossible.
 - **A quant swap on sampled requests only**: under sampling a Q4-level swap does not move z enough.
 - **A fine-tune swap** such as official weights for heretic: only 2 of 40 greedy and 7 of 40 sampled
