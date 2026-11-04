@@ -22,6 +22,7 @@ import (
 
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/netmap"
+	"github.com/bitllm-network/bitllm/internal/tui"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -58,7 +59,7 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "top" {
-		topCmd(os.Args[2:])
+		tui.Run(os.Args[2:])
 		return
 	}
 	var (

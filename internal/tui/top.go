@@ -1,4 +1,7 @@
-package main
+// Package tui draws `bitllm top`, the live terminal view of a running node.
+// It only talks to the local gateway over HTTP, so it works whatever started
+// the node.
+package tui
 
 import (
 	"context"
@@ -61,7 +64,8 @@ type view struct {
 	haveWork bool
 }
 
-func topCmd(args []string) {
+// Run draws the live node view until the user quits.
+func Run(args []string) {
 	fs := flag.NewFlagSet("top", flag.ExitOnError)
 	gateway := fs.String("gateway", "127.0.0.1:7778", "local gateway to watch")
 	every := fs.Duration("interval", time.Second, "refresh interval")
