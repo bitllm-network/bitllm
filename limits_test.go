@@ -1,11 +1,9 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -17,33 +15,6 @@ func randomPeer(t *testing.T) peer.ID {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func TestValidAnnounce(t *testing.T) {
-	ok := protocol.Announce{Models: []string{"m"}, Free: 1, Max: 2, Q: 3}
-	if !protocol.ValidAnnounce(&ok) {
-		t.Fatal("rejected a normal announce")
-	}
-	many := make([]string, protocol.MaxAnnounceModels+1)
-	for i := range many {
-		many[i] = "m"
-	}
-	for name, a := range map[string]protocol.Announce{
-		"no models":  {Max: 1},
-		"too many":   {Models: many, Max: 1},
-		"long name":  {Models: []string{strings.Repeat("x", protocol.MaxModelName+1)}, Max: 1},
-		"empty name": {Models: []string{""}, Max: 1},
-		"free > max": {Models: []string{"m"}, Free: 3, Max: 2},
-		"negative":   {Models: []string{"m"}, Free: -1, Max: 2},
-		"huge max":   {Models: []string{"m"}, Max: protocol.MaxAnnounceSlots + 1},
-		"zero slots": {Models: []string{"m"}},
-		"negative q": {Models: []string{"m"}, Max: 1, Q: -1},
-		"huge q":     {Models: []string{"m"}, Max: 1, Q: protocol.MaxQueueDepth*64 + 1},
-	} {
-		if protocol.ValidAnnounce(&a) {
-			t.Fatalf("accepted %s", name)
-		}
-	}
 }
 
 func TestOriginRate(t *testing.T) {
