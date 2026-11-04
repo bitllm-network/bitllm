@@ -9,7 +9,7 @@ rm -rf dist && mkdir dist
 for t in darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
   os=${t%/*} arch=${t#*/} ext=""
   [ "$os" = windows ] && ext=.exe
-  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.Version=$V" -o "dist/bitllm-$os-$arch$ext" .
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X github.com/bitllm-network/bitllm/internal/node.Version=$V" -o "dist/bitllm-$os-$arch$ext" ./cmd/bitllm
 done
 (cd dist && sha256sum bitllm-* > SHA256SUMS)
 if grep -l -a -e "$HOME" -e "$(whoami)@" dist/bitllm-* >/dev/null; then

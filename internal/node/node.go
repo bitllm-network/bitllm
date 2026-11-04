@@ -1,4 +1,7 @@
-package main
+// Package node is one BitLLM node: the libp2p host, the DHT and gossip
+// topics, the serving queue, the local OpenAI/Anthropic gateway, signed
+// receipts, membership and auditing. cmd/bitllm builds one and serves it.
+package node
 
 import (
 	"context"
@@ -42,6 +45,8 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
+// Config is everything a node needs from its operator. Zero values are the
+// defaults described here, and New fills in the rest.
 type Config struct {
 	Upstream         string            // OpenAI-compatible base URL to share; empty = client only
 	UpstreamKey      string            //
@@ -81,6 +86,7 @@ type peerInfo struct {
 	seen time.Time
 }
 
+// Node is a running node. Call New, then Gateway for the local API.
 type Node struct {
 	cfg          Config
 	host         host.Host
@@ -130,7 +136,8 @@ type Node struct {
 	started time.Time // when this node came up, shown by GET /status
 }
 
-func loadKey(path string) (crypto.PrivKey, error) {
+// LoadKey reads the node key, creating it on first run.
+func LoadKey(path string) (crypto.PrivKey, error) {
 	if b, err := os.ReadFile(path); err == nil {
 		return crypto.UnmarshalPrivateKey(b)
 	}
@@ -142,14 +149,15 @@ func loadKey(path string) (crypto.PrivKey, error) {
 	return k, os.WriteFile(path, b, 0o600)
 }
 
-func NewNode(ctx context.Context, cfg Config) (*Node, error) {
+// New starts a node: key, host, DHT, gossip, storage, then the loops.
+func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.RedialEvery <= 0 {
 		cfg.RedialEvery = 15 * time.Second
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
-	key, err := loadKey(filepath.Join(cfg.DataDir, "identity.key"))
+	key, err := LoadKey(filepath.Join(cfg.DataDir, "identity.key"))
 	if err != nil {
 		return nil, err
 	}
@@ -845,10 +853,29 @@ func mapKeys(m map[string]string) []string {
 	return out
 }
 
+// ID is this node's peer id.
+func (n *Node) ID() string { return n.host.ID().String() }
+
+// Addrs is where peers can reach this node, with its peer id appended.
 func (n *Node) Addrs() []string {
 	var out []string
 	for _, a := range n.host.Addrs() {
 		out = append(out, a.Encapsulate(ma.StringCast("/p2p/"+n.host.ID().String())).String())
 	}
 	return out
+}
+
+// ListenAddrs is where the p2p host accepts connections: TCP and QUIC on every
+// IPv4 address, and on every IPv6 address unless ipv6 is off.
+func ListenAddrs(port int, ipv6 bool) []string {
+	addrs := []string{
+		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+	}
+	if ipv6 {
+		addrs = append(addrs,
+			fmt.Sprintf("/ip6/::/tcp/%d", port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port))
+	}
+	return addrs
 }

@@ -1,4 +1,4 @@
-package main
+package node
 
 // A bounded queue of peer requests for serving slots.
 //

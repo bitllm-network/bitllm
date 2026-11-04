@@ -11,7 +11,7 @@ checks to run, and how to point Claude Code or an OpenAI client at the node.
 ## Build and test
 
 ```sh
-go build -o bitllm .
+go build -o bitllm ./cmd/bitllm
 go test -race ./...        # must pass before every commit; tests spin up real libp2p nodes on 127.0.0.1
 go vet ./...
 ```
@@ -22,26 +22,22 @@ from `scripts/release.sh vX.Y.Z`, which builds all four targets with `-trimpath`
 
 ## Layout
 
-One `main` package, one binary.
+Two binaries' worth of code: a small CLI in `cmd/bitllm`, and everything else under `internal/`, one
+package per domain. Tests live with the package they test.
 
-| file | what it does |
+| path | what it does |
 |---|---|
-| `main.go` | flags, default bootstrap and roots, starts the node and the gateway |
-| `node.go` | libp2p host, DHT, gossip topics and validators, peer discovery, relays |
-| `infer.go` | `/bitllm/infer/1.1.0` and `1.0.0`: serving a peer's request, the queue's 202 lines, metering tokens, request clamps |
-| `queue.go` | bounded per-peer queue for serving slots: classes, fairness, position and ETA |
-| `gateway.go` | local HTTP API on 127.0.0.1:7778 (OpenAI + Anthropic), peer selection, queue wait, Host/Origin guard |
-| `receipts.go` | signed job receipts, gossip limits, sync, per-server client pseudonyms |
-| `account.go`, `cmd_account.go` | Ethereum-address accounts, node claims, `bitllm account` |
-| `members.go`, `access.go` | invite tree, revocation, the three access rules, daily quotas, `--open` |
-| `limits.go` | caps on gossip state (peers, claims, models) |
-| `ledger.go` | per-peer exchange record (data only) |
-| `network.go` | `--location` (coarse geohash cell in the announce) and `GET /network`, the aggregate behind the bitllm.org node map ([docs/network-map.md](docs/network-map.md)) |
-| `audit.go`, `canaries.txt` | `--audit`: canary requests, scoring by an auditor node, verdicts, `GET /audits` ([docs/audit.md](docs/audit.md)) |
-| `models.go`, `models.json` | canonical model records (weights hash, canary settings), `bitllm hash-model` |
-| `ui.html` | dashboard served at the gateway root (embedded) |
-| `top.go` | `bitllm top`: live terminal view of the running node, over the local HTTP API |
-| `logs.go` | in-memory tail of the log, served as `GET /logs` |
+| `cmd/bitllm/` | flags, default bootstrap and roots, `bitllm account`, `bitllm invite`, `bitllm hash-model`; starts the node and the gateway |
+| `internal/node/` | the running node: libp2p host, DHT, gossip, discovery and relays, the serving queue, inference and the gateway, access rules, receipts, audits, `GET /network`, `GET /logs` |
+| `internal/protocol/` | wire contract: protocol ids, gossip topics, `Announce`, validators, gossip bounds |
+| `internal/account/` | Ethereum-address accounts, signed node claims, the claims store, per-owner credits |
+| `internal/members/` | invite tree, revocation, the member set, invite limits |
+| `internal/receipts/` | signed job receipts, gossip limits, pending jobs, per-server pseudonyms |
+| `internal/quota/` | daily credit quotas, reservations and rollover |
+| `internal/ledger/` | per-peer exchange record (data only) |
+| `internal/netmap/` | `--location` geohash cells and the aggregate behind the bitllm.org node map ([docs/network-map.md](docs/network-map.md)) |
+| `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
+| `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |

@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go build -o bitllm .
+      - run: go build -o bitllm ./cmd/bitllm
       - name: join and request
         env:
           MODEL: ${{ inputs.model }}
