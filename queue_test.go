@@ -178,6 +178,46 @@ func TestQueueAging(t *testing.T) {
 	n.done(wm.t, 0, now)
 }
 
+// TestQueueAgingStops: aging stops at the best class. An idle waiter that
+// has waited far past it ranks as a contributor, and from there arrival
+// decides, so an even older contributor stays ahead and a fresh member waits.
+func TestQueueAgingStops(t *testing.T) {
+	ctx := t.Context()
+	n := testNode(t, ctx, Config{Concurrency: 1, Open: true})
+	now := time.Now()
+	slot := takeSlot(t, n, randomPeer(t), now)
+
+	aged, older, fresh := randomPeer(t), randomPeer(t), randomPeer(t)
+	wo := queueDirect(t, n, aged, classIdle, now.Add(-100*ageStep))
+	wc := queueDirect(t, n, older, classContributor, now.Add(-200*ageStep))
+	wm := queueDirect(t, n, fresh, classMember, now)
+	if got := ageClass(wo, now); got != classContributor {
+		t.Fatalf("aged idle waiter class = %d, want contributor (%d)", got, classContributor)
+	}
+	if p := n.position(wo); p != 2 {
+		t.Fatalf("aged waiter position = %d, want 2, behind an older contributor", p)
+	}
+	n.done(slot, 10, now)
+	select {
+	case <-wc.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the older contributor was not served first")
+	}
+	n.done(wc.t, 0, now)
+	select {
+	case <-wo.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the aged waiter, now a contributor, was not served next")
+	}
+	select {
+	case <-wm.ready:
+		t.Fatal("the fresh member was served before an aged waiter")
+	default:
+	}
+	n.done(wo.t, 0, now)
+	n.done(wm.t, 0, now)
+}
+
 // TestQueueFairness: one peer may not hold every slot while another waits.
 func TestQueueFairness(t *testing.T) {
 	ctx := t.Context()

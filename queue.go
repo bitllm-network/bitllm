@@ -5,8 +5,11 @@ package main
 // Before this, a peer that found every slot taken was told "busy" and had to
 // ask again; the gateway did that once a second for a minute, opening a new
 // stream every time. Here the request waits on one stream instead, in a queue
-// ordered by class and then by arrival, so a request that has waited does not
-// lose to one that just arrived.
+// ordered by class and then by arrival. A waiter gains one class every
+// ageStep, but never past the best one, so the classes keep their meaning for
+// a short wait and then arrival decides: a request that has waited long
+// enough is not pushed back by every later request of a lower class, and
+// among equals the longest wait goes first.
 //
 // Slots are the server's --concurrency. A waiter costs no slot until it is
 // granted one, so a long queue does not consume GPU time. The queue is bounded

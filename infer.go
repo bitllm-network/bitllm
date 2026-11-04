@@ -71,6 +71,7 @@ type meter struct {
 	chars              int64
 	reported           bool
 	done               bool      // the stream reached its terminal event
+	end                bool      // the end of the last event: metering stops here
 	out                hash.Hash // sha256 of the exact response bytes, for the receipt
 }
 
@@ -139,7 +140,7 @@ func (m *meter) sseLine(line []byte) {
 	}
 	data = bytes.TrimSpace(data)
 	if bytes.Equal(data, []byte("[DONE]")) {
-		m.done = true
+		m.done, m.end = true, true
 		return
 	}
 	var d usageDoc
@@ -147,7 +148,7 @@ func (m *meter) sseLine(line []byte) {
 		return
 	}
 	if d.Type == "message_stop" {
-		m.done = true
+		m.done, m.end = true, true
 	}
 	if d.Delta.StopReason != nil && *d.Delta.StopReason != "" {
 		m.done = true
@@ -183,6 +184,18 @@ func (m *meter) tokens() (prompt, completion int64) {
 
 func (m *meter) credits() int64 { return price(m.tokens()) }
 
+// line meters one SSE line. Nothing after the last event counts: the client
+// and the server may each read a different amount past it (whichever one the
+// other's reset or the local client's hang-up reaches first), and the receipt
+// they sign has to match, so both stop at the same place.
+func (m *meter) line(b []byte) {
+	if m.end {
+		return
+	}
+	m.sseLine(b) // this line may be the end
+	m.raw(b)
+}
+
 // pipe copies a response body to dst, line by line for SSE so each event is
 // flushed as it arrives, and meters it on the way.
 func pipe(dst io.Writer, flush func(), src io.Reader, stream bool, m *meter) error {
@@ -200,8 +213,7 @@ func pipe(dst io.Writer, flush func(), src io.Reader, stream bool, m *meter) err
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
-			m.sseLine(line)
-			m.raw(line)
+			m.line(line)
 			if _, werr := dst.Write(line); werr != nil {
 				return werr
 			}

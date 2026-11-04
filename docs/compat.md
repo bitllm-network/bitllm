@@ -22,8 +22,14 @@ In each run the client must:
    only ever asks `1.0.0`, and a new server answers it as before, so the queue is invisible to it,
 3. end up with the signed receipt in its `GET /credits` (the `/bitllm/receipt` protocol).
 
+The second run also starts the server with `--concurrency 1` and sends two requests at the same
+moment. The client there is an old release, so it speaks `1.0.0` (no `wait_ms`): the server must
+refuse the second request with a `429` busy answer and the old gateway must retry, which both
+answers prove. A `202` would be unreadable to it. The run fails if either answer is missing, or if
+the server never refused (which would mean the two requests did not actually overlap).
+
 It never touches the public network (mDNS, UPnP and the default bootstrap are off) and takes about
-20 seconds. Run it yourself:
+25 seconds. Run it yourself:
 
 ```sh
 go build -o /tmp/bitllm-new .

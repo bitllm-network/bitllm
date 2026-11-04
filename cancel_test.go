@@ -122,9 +122,39 @@ func TestClientCancelAfterLastEvent(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no receipt after a complete response: %+v", server.receipts.Tally())
+			t.Fatalf("no receipt after a complete response: %+v\nlogs:\n%s", server.receipts.Tally(), logs.String())
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestMeterStopsAtLastEvent: after the last event, a client that hung up and
+// a server that read a little further must still sign the same receipt (the
+// bytes past the end are not part of it, whichever side gets them).
+func TestMeterStopsAtLastEvent(t *testing.T) {
+	lines := []string{
+		"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n",
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
+		"data: [DONE]\n",
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}\n",
+		"\n",
+	}
+	var short, long, before meter
+	for _, l := range lines[:3] { // stops at [DONE]
+		short.line([]byte(l))
+	}
+	for _, l := range lines { // reads past it
+		long.line([]byte(l))
+	}
+	for _, l := range lines[:2] { // stops before [DONE]
+		before.line([]byte(l))
+	}
+	if short.sum() != long.sum() || short.credits() != long.credits() {
+		t.Fatalf("bytes past the last event changed the receipt: %s %d vs %s %d",
+			short.sum(), short.credits(), long.sum(), long.credits())
+	}
+	if before.sum() == long.sum() {
+		t.Fatal("the last event itself was not metered")
 	}
 }
 
