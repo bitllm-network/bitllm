@@ -1,4 +1,4 @@
-package main
+package node
 
 // Spot checks of which model a peer really serves (--audit).
 //

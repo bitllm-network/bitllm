@@ -1,7 +1,8 @@
-package main
+package node
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,10 @@ import (
 // it: `bitllm top` reads it through GET /logs, and anything else watching the
 // node locally can read the same. main() sends log output through it.
 var recentLogs = &logRing{max: 500}
+
+// LogOutput is where the node keeps its recent log lines for GET /logs and
+// `bitllm top`. Pass it to log.SetOutput alongside stderr.
+var LogOutput = io.Writer(recentLogs)
 
 type logRing struct {
 	mu    sync.Mutex

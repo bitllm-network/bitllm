@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -86,7 +86,7 @@ func testNode(t *testing.T, ctx context.Context, cfg Config) *Node {
 	if cfg.Concurrency == 0 {
 		cfg.Concurrency = 2
 	}
-	n, err := NewNode(ctx, cfg)
+	n, err := New(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestRelayed(t *testing.T) {
 	natted := func(cfg Config) *Node {
 		cfg.Bootstrap, cfg.Private, cfg.DataDir = bs, true, t.TempDir()
 		cfg.AnnounceEvery, cfg.Concurrency = 300*time.Millisecond, 2
-		n, err := NewNode(ctx, cfg) // no Listen: unreachable except via relay
+		n, err := New(ctx, cfg) // no Listen: unreachable except via relay
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -312,7 +312,7 @@ func TestWebSocketBootstrap(t *testing.T) {
 	defer cancel()
 	up := mockUpstream(t, "local-ds")
 	defer up.Close()
-	boot, err := NewNode(ctx, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0/ws"}, DataDir: t.TempDir(),
+	boot, err := New(ctx, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0/ws"}, DataDir: t.TempDir(),
 		DHTServer: true, AnnounceEvery: 300 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

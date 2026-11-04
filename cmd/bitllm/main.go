@@ -22,12 +22,10 @@ import (
 
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/netmap"
+	"github.com/bitllm-network/bitllm/internal/node"
 	"github.com/bitllm-network/bitllm/internal/tui"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-// Version is set at release time with -ldflags "-X main.Version=v0.1.3".
-var Version = "dev"
 
 // DefaultBootstrap is used when no --bootstrap is given. Anyone can run a
 // bootstrap node; this one sits behind a Cloudflare Tunnel.
@@ -63,7 +61,7 @@ func main() {
 		return
 	}
 	var (
-		cfg              Config
+		cfg              node.Config
 		modelFlags, boot listFlag
 		announce         listFlag
 		roots            listFlag
@@ -105,13 +103,13 @@ func main() {
 	location := flag.String("location", "", "where to show this node on the bitllm.org map: LAT,LON of any point in your city, e.g. 52.52,13.40. Only a ~156 km cell is announced, never the point. Default: not shown")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("bitllm", Version)
+		fmt.Println("bitllm", node.Version)
 		return
 	}
 
 	// Keep the last log lines in memory as well, so `bitllm top` and GET /logs
 	// can show what the node has been doing without reading a terminal.
-	log.SetOutput(io.MultiWriter(os.Stderr, recentLogs))
+	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
 	cfg.Bootstrap = boot
@@ -124,7 +122,7 @@ func main() {
 	}
 	cfg.Private = !cfg.DHTServer
 	cfg.AnnounceEvery = 10 * time.Second
-	cfg.Listen = listenAddrs(port, ipv6)
+	cfg.Listen = node.ListenAddrs(port, ipv6)
 	if len(allow) > 0 {
 		cfg.Allow = map[peer.ID]bool{}
 		for _, s := range allow {
@@ -158,7 +156,7 @@ func main() {
 		}
 	}
 	if len(auditors) == 0 {
-		auditors = DefaultAuditors
+		auditors = node.DefaultAuditors
 	}
 	for _, s := range auditors {
 		if s == "none" {
@@ -184,11 +182,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	n, err := NewNode(ctx, cfg)
+	n, err := node.New(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("bitllm %s, peer id %s", Version, n.host.ID())
+	log.Printf("bitllm %s, peer id %s", node.Version, n.ID())
 	for _, a := range n.Addrs() {
 		log.Printf("listening %s", a)
 	}
@@ -196,7 +194,7 @@ func main() {
 		log.Printf("sharing %v from %s", cfg.Models, cfg.Upstream)
 	}
 	if cfg.Audit {
-		if len(cfg.Auditors) > 0 && len(auditors) == len(DefaultAuditors) && auditors[0] == DefaultAuditors[0] {
+		if len(cfg.Auditors) > 0 && len(auditors) == len(node.DefaultAuditors) && auditors[0] == node.DefaultAuditors[0] {
 			log.Printf("audit: on; preferred auditor %v is the seed run by the BitLLM maintainers (replace it with --auditor PEER_ID, drop it with --auditor none)", cfg.Auditors)
 		} else {
 			log.Printf("audit: on; preferred auditors %v", cfg.Auditors)
@@ -208,19 +206,4 @@ func main() {
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-}
-
-// listenAddrs is where the p2p host accepts connections: TCP and QUIC on every
-// IPv4 address, and on every IPv6 address unless ipv6 is off.
-func listenAddrs(port int, ipv6 bool) []string {
-	addrs := []string{
-		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
-		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-	}
-	if ipv6 {
-		addrs = append(addrs,
-			fmt.Sprintf("/ip6/::/tcp/%d", port),
-			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port))
-	}
-	return addrs
 }

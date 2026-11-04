@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -150,7 +150,7 @@ func TestBootstrapRestart(t *testing.T) {
 		var n *Node
 		var err error
 		for i := 0; i < 40; i++ { // the old listener may take a moment to go
-			n, err = NewNode(bctx, Config{Listen: []string{addr}, DataDir: dir, DHTServer: true,
+			n, err = New(bctx, Config{Listen: []string{addr}, DataDir: dir, DHTServer: true,
 				AnnounceEvery: 300 * time.Millisecond, Concurrency: 2})
 			if err == nil {
 				break
@@ -171,7 +171,7 @@ func TestBootstrapRestart(t *testing.T) {
 		cfg.Bootstrap, cfg.Private, cfg.DataDir = bs, true, t.TempDir()
 		cfg.AnnounceEvery, cfg.Concurrency = 300*time.Millisecond, 2
 		cfg.RedialEvery = 200 * time.Millisecond
-		n, err := NewNode(ctx, cfg) // no Listen: unreachable except via relay
+		n, err := New(ctx, cfg) // no Listen: unreachable except via relay
 		if err != nil {
 			t.Fatal(err)
 		}

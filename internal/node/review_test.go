@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -64,7 +64,7 @@ func TestClamp(t *testing.T) {
 func TestBootstrapAddrsMergedPerPeer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	boot, err := NewNode(ctx, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic-v1"},
+	boot, err := New(ctx, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic-v1"},
 		DataDir: t.TempDir(), DHTServer: true, AnnounceEvery: time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestRelayBehindProxyReservations(t *testing.T) {
 	const n = 11
 	var natted []*Node
 	for range n {
-		nd, err := NewNode(ctx, Config{Bootstrap: bs, Private: true, DataDir: t.TempDir(), AnnounceEvery: time.Second})
+		nd, err := New(ctx, Config{Bootstrap: bs, Private: true, DataDir: t.TempDir(), AnnounceEvery: time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,7 +100,7 @@ func TestRelayBehindProxyReservations(t *testing.T) {
 		natted = append(natted, nd)
 	}
 	// The client accepts no inbound connections either, so the relay is the only path.
-	client, err := NewNode(ctx, Config{Bootstrap: bs, Private: true, DataDir: t.TempDir(), AnnounceEvery: time.Second})
+	client, err := New(ctx, Config{Bootstrap: bs, Private: true, DataDir: t.TempDir(), AnnounceEvery: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

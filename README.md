@@ -352,7 +352,7 @@ already streaming through your relay is cut when it goes down, and the user's ag
 Go 1.26 or newer (`mise.toml` pins the toolchain). No C dependencies, one package, one binary.
 
 ```bash
-go build -o bitllm .
+go build -o bitllm ./cmd/bitllm
 go vet ./...
 go test -race ./...              # real libp2p nodes on 127.0.0.1; 30 to 60 s
 ```

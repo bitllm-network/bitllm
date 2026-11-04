@@ -37,8 +37,8 @@ const (
 	MaxAnnounceModels = 16
 	MaxModelName      = 128
 	MaxAnnounceSlots  = 256
-	MaxLocJSON        = 16  // longest "loc" we accept from a peer (later versions may send other forms)
-	MaxQueueDepth     = 64  // waiters one server holds; see the queue package
+	MaxLocJSON        = 16 // longest "loc" we accept from a peer (later versions may send other forms)
+	MaxQueueDepth     = 64 // waiters one server holds; see the queue package
 )
 
 // Announce is what a serving node gossips about itself.

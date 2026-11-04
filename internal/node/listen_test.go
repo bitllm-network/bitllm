@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -18,10 +18,10 @@ func TestListenAddrs(t *testing.T) {
 		"/ip6/::/tcp/4001",
 		"/ip6/::/udp/4001/quic-v1",
 	}
-	if got := listenAddrs(4001, true); !slices.Equal(got, want) {
+	if got := ListenAddrs(4001, true); !slices.Equal(got, want) {
 		t.Fatalf("default changed:\n got %v\nwant %v", got, want)
 	}
-	if got := listenAddrs(4001, false); !slices.Equal(got, want[:2]) {
+	if got := ListenAddrs(4001, false); !slices.Equal(got, want[:2]) {
 		t.Fatalf("--ipv6=false: %v", got)
 	}
 }
@@ -31,7 +31,7 @@ func TestListenAddrs(t *testing.T) {
 func TestNoIPv6Listener(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	n, err := NewNode(ctx, Config{Listen: listenAddrs(0, false), DataDir: t.TempDir(), Concurrency: 1})
+	n, err := New(ctx, Config{Listen: ListenAddrs(0, false), DataDir: t.TempDir(), Concurrency: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

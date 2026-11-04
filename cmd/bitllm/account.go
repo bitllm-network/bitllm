@@ -15,6 +15,7 @@ import (
 
 	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/bitllm-network/bitllm/internal/members"
+	"github.com/bitllm-network/bitllm/internal/node"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"
@@ -44,7 +45,7 @@ func accountCmd(args []string, home string) {
 	fs.Parse(args)
 
 	os.MkdirAll(*data, 0o700)
-	nodeKey, err := loadKey(filepath.Join(*data, "identity.key"))
+	nodeKey, err := node.LoadKey(filepath.Join(*data, "identity.key"))
 	if err != nil {
 		fail(err)
 	}
