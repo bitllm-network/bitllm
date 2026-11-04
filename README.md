@@ -17,7 +17,7 @@ relay plus hole punching when both sides are behind NAT.
 Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org), and the
 [access rules](#how-access-works) decide who gets a slot. Using it needs no account and no wallet.
 
-![The dashboard a running node serves: pick a model online, copy the setup for your agent, send a test message](site/dashboard.png)
+![The dashboard a running node serves: pick a model online, copy the setup for your agent, send a test message](docs/images/dashboard.png)
 
 Contents: [Install](#install-and-run) · [Share a model](#share-a-model) ·
 [Use the network](#use-the-network) · [Manage your node](#watch-and-manage-your-node) ·
@@ -49,7 +49,7 @@ macOS use curl, not a browser, to avoid the quarantine flag.
 
 The node runs in the foreground. Then open http://127.0.0.1:7778, pick a model, copy the setup
 for your agent, and send a test message. To leave it running after you close the terminal, see
-[keep it running](#keep-it-running). 中文说明见 [JOIN.zh.md](JOIN.zh.md).
+[keep it running](#keep-it-running). 中文说明见 [docs/JOIN.zh.md](docs/JOIN.zh.md).
 
 While it runs, `bitllm top` in another terminal shows peers, work exchanged and the log; see
 [Watch and manage your node](#watch-and-manage-your-node).
@@ -366,7 +366,7 @@ the request waits for a slot, then one `200` header and the upstream body verbat
 older `/bitllm/infer/1.0.0`, which a client falls back to when a server does not know `1.1.0`.
 Nodes find a model's servers through the DHT under a key derived from the model name, ask a provider
 for its current announce over `/bitllm/hello/1.0.0`, and keep gossip (`bitllm/announce/1`) as the
-fast path for free slots. The first, centralized Python prototype is in `legacy/`.
+fast path for free slots.
 
 ## Contributing
 
@@ -376,7 +376,7 @@ change to networking, access or the gateway, run the external test workflow
 (`.github/workflows/external-test.yml`), which joins the live network and sends real requests.
 
 Other docs: [audit](docs/audit.md), [network map](docs/network-map.md),
-[compatibility](docs/compat.md), [中文说明](JOIN.zh.md), and
+[compatibility](docs/compat.md), [中文说明](docs/JOIN.zh.md), and
 [site/llms.txt](site/llms.txt) (the same instructions for AI agents).
 
 ## License

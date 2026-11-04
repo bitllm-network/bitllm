@@ -65,7 +65,7 @@ One `main` package, one binary.
   with a per-server pseudonym, never the node key.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
-- **User-facing copy** (README, JOIN.zh.md, site): plain sentences, no em dashes. Keep the three access
+- **User-facing copy** (README, docs/JOIN.zh.md, site): plain sentences, no em dashes. Keep the three access
   rules worded the same everywhere, and keep `site/llms.txt` in step with flags and error messages.
 
 ## Testing changes against the live network
