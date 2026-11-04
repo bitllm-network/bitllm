@@ -20,6 +20,7 @@ import (
 	"github.com/bitllm-network/bitllm/internal/members"
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-network/bitllm/internal/quota"
 	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
@@ -94,7 +95,7 @@ type Node struct {
 	members      *members.Members
 	memTop       *pubsub.Topic
 	memRate      originRate // membership gossip, per origin
-	quota        *Quota
+	quota        *quota.Store
 	accessMu     sync.Mutex
 	accessAt     time.Time
 	access       *members.MemberSet // cached, see memberSet
@@ -253,7 +254,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
-	n.quota = OpenQuota(filepath.Join(cfg.DataDir, "quota.json"))
+	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
 	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
 		return nil, err
 	}

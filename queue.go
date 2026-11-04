@@ -260,9 +260,9 @@ func (n *Node) cancelWait(w *waiter) bool {
 	n.qmu.Unlock()
 	// The place is gone, so the credits it held go back to the day's room.
 	now := time.Now()
-	n.quota.drop(w.t.key, w.t.reserved, now)
+	n.quota.Drop(w.t.key, w.t.reserved, now)
 	if w.open {
-		n.quota.drop(openPool, w.t.poolReserved, now)
+		n.quota.Drop(openPool, w.t.poolReserved, now)
 	}
 	return true
 }

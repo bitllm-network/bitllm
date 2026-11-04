@@ -364,17 +364,15 @@ func TestQuotaReservation(t *testing.T) {
 	}
 
 	n.done(first.t, 10, now)
-	n.quota.mu.Lock()
-	used := n.quota.Used[key]
-	n.quota.mu.Unlock()
+	used := n.quota.Used(key, now)
 	if used != 10 {
 		t.Fatalf("used = %d, want 10", used)
 	}
-	if room := n.quota.room(key, 100, now); room != 50 {
+	if room := n.quota.Room(key, 100, now); room != 50 {
 		t.Fatalf("room = %d, want 50 (100 - 10 used - 40 reserved)", room)
 	}
 	n.done(second.t, 20, now)
-	if room := n.quota.room(key, 100, now); room != 70 {
+	if room := n.quota.Room(key, 100, now); room != 70 {
 		t.Fatalf("room = %d after both jobs, want 70", room)
 	}
 
@@ -386,12 +384,12 @@ func TestQuotaReservation(t *testing.T) {
 	slot := takeSlot(t, q, p2, now)
 	if s, msg, w := q.admit(p2, "", now, time.Minute, 60); s != 202 || w.w == nil {
 		t.Fatalf("queued admit: %d %s", s, msg)
-	} else if room := q.quota.room(key2, 100, now); room != 40 {
+	} else if room := q.quota.Room(key2, 100, now); room != 40 {
 		t.Fatalf("room while one request waits = %d, want 40", room)
 	} else if !q.cancelWait(w.w) {
 		t.Fatal("queued request was already granted")
 	}
-	if room := q.quota.room(key2, 100, now); room != 100 {
+	if room := q.quota.Room(key2, 100, now); room != 100 {
 		t.Fatalf("room after the waiter gave up = %d, want 100", room)
 	}
 	q.done(slot, 0, now)
