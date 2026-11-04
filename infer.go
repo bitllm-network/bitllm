@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	p2pproto "github.com/libp2p/go-libp2p/core/protocol"
@@ -178,7 +179,7 @@ func (m *meter) tokens() (prompt, completion int64) {
 	return m.prompt, m.completion
 }
 
-func (m *meter) credits() int64 { return price(m.tokens()) }
+func (m *meter) credits() int64 { return receipts.Price(m.tokens()) }
 
 // line meters one SSE line. Nothing after the last event counts: the client
 // and the server may each read a different amount past it (whichever one the
@@ -433,7 +434,7 @@ func (n *Node) handleInfer(s network.Stream) {
 	}
 	// A job also pays for its prompt (a quarter credit per token), so leave
 	// room for it. The body is at most maxRequest bytes, so this is bounded.
-	amount := price(int64(len(req.Body))/4, worst)
+	amount := receipts.Price(int64(len(req.Body))/4, worst)
 	wait := time.Duration(0)
 	if s.Protocol() == protocol.InferProto2 {
 		ms := min(req.Wait, int64(maxWait/time.Millisecond)) // clamp first: no overflow
@@ -516,7 +517,8 @@ func (n *Node) handleInfer(s network.Stream) {
 	if req.Job != "" {
 		var model struct{ Model string }
 		json.Unmarshal(req.Body, &model)
-		n.receipts.served(req.Job, remote, model.Model, m)
+		prompt, completion := m.tokens()
+		n.receipts.Served(req.Job, remote, model.Model, prompt, completion, m.sum(), m.credits())
 	}
 }
 

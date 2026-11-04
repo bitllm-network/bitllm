@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -182,12 +183,12 @@ func TestAccessRules(t *testing.T) {
 	// Rule 3: a contributor served a job recently (a receipt names its node as server).
 	ck, _, _ := crypto.GenerateEd25519Key(nil)
 	cid, _ := peer.IDFromPrivateKey(ck)
-	r := Receipt{Job: "j1", Model: "m", Client: cid.String(), Server: contribNode.String(),
-		Prompt: 4, Completion: 1, Credits: price(4, 1), Output: "x", TS: now.Unix()}
-	sr := SignedReceipt{Receipt: r}
-	sr.ClientSig, _ = ck.Sign(r.bytes())
-	sr.ServerSig, _ = contribKey.Sign(r.bytes())
-	if !n.receipts.add(sr) {
+	r := receipts.Receipt{Job: "j1", Model: "m", Client: cid.String(), Server: contribNode.String(),
+		Prompt: 4, Completion: 1, Credits: receipts.Price(4, 1), Output: "x", TS: now.Unix()}
+	sr := receipts.SignedReceipt{Receipt: r}
+	sr.ClientSig, _ = ck.Sign(r.Bytes())
+	sr.ServerSig, _ = contribKey.Sign(r.Bytes())
+	if !n.receipts.Add(sr) {
 		t.Fatal("receipt refused")
 	}
 	n.invalidateMembers()
