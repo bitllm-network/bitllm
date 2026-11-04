@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bitllm-network/bitllm/internal/account"
 )
 
 // Membership is an invite tree of Ethereum accounts, private-tracker style.
@@ -69,7 +71,7 @@ func signedBy(msg, sigHex, addr string) bool {
 	if err != nil {
 		return false
 	}
-	got, err := ethRecover(msg, sig)
+	got, err := account.EthRecover(msg, sig)
 	return err == nil && got == addr
 }
 
@@ -177,13 +179,13 @@ func (m *Members) check(it memberItem) error {
 		ms := m.Compute()
 		switch lim := ms.InviteLimit(i.Inviter); {
 		case !ms.Member[i.Inviter]:
-			return fmt.Errorf("%s is not a member, so its invites do not count", checksumAddress(i.Inviter))
+			return fmt.Errorf("%s is not a member, so its invites do not count", account.ChecksumAddress(i.Inviter))
 		case lim >= 0 && ms.Used[i.Inviter] >= lim:
-			return fmt.Errorf("%s has used all %d invites", checksumAddress(i.Inviter), lim)
+			return fmt.Errorf("%s has used all %d invites", account.ChecksumAddress(i.Inviter), lim)
 		case ms.Member[i.Invitee]:
-			return fmt.Errorf("%s is already a member", checksumAddress(i.Invitee))
+			return fmt.Errorf("%s is already a member", account.ChecksumAddress(i.Invitee))
 		case ms.revoked[i.Invitee]:
-			return fmt.Errorf("%s was revoked by a root", checksumAddress(i.Invitee))
+			return fmt.Errorf("%s was revoked by a root", account.ChecksumAddress(i.Invitee))
 		}
 		return nil
 	case it.Revoke != nil:

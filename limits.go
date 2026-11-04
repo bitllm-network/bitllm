@@ -11,10 +11,7 @@ import (
 // Gossip limits. Peer ids cost nothing, so these do not stop a determined
 // attacker alone; they keep gossip state from growing without limit.
 
-const (
-	maxPeers  = protocol.MaxPeers // announcing peers we remember
-	maxClaims = 20000
-)
+const maxPeers = protocol.MaxPeers // announcing peers we remember
 
 // originRate allows one gossip message per origin per interval.
 type originRate struct {

@@ -10,11 +10,12 @@ import (
 	"log"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/bitllm-network/bitllm/internal/receipts"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 // handleReceipt: a client hands us its signed receipt for a job we served.
@@ -90,9 +91,9 @@ func (n *Node) deliverReceipt(p peer.ID, sr receipts.SignedReceipt) error {
 // syncItem is one line of the sync stream: a receipt, or a node claim.
 type syncItem struct {
 	receipts.SignedReceipt
-	Claim  *Claim  `json:"claim,omitempty"`
-	Invite *Invite `json:"invite,omitempty"`
-	Revoke *Revoke `json:"revoke,omitempty"`
+	Claim  *account.Claim `json:"claim,omitempty"`
+	Invite *Invite        `json:"invite,omitempty"`
+	Revoke *Revoke        `json:"revoke,omitempty"`
 }
 
 // handleSync streams every receipt and claim we know, so a new node can catch up.
@@ -104,7 +105,7 @@ func (n *Node) handleSync(s network.Stream) {
 			return
 		}
 	}
-	for _, c := range n.claims.all() {
+	for _, c := range n.claims.All() {
 		if enc.Encode(map[string]any{"claim": c}) != nil {
 			return
 		}
@@ -133,7 +134,7 @@ func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (int, error) {
 			return added, err
 		}
 		if it.Claim != nil {
-			n.claims.add(*it.Claim)
+			n.claims.Add(*it.Claim)
 		} else if it.Invite != nil || it.Revoke != nil {
 			if n.members.add(memberItem{Invite: it.Invite, Revoke: it.Revoke}) {
 				n.invalidateMembers()
@@ -158,6 +159,6 @@ func (n *Node) readReceipts(ctx context.Context, sub *pubsub.Subscription) {
 }
 
 // creditsTable is the tally grouped by owner, for the gateway.
-func (n *Node) creditsTable() []OwnerCredits {
-	return ownerTable(n.receipts.Tally(), n.claims)
+func (n *Node) creditsTable() []account.OwnerCredits {
+	return account.OwnerTable(n.receipts.Tally(), n.claims)
 }

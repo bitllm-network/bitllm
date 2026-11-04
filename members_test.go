@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/bitllm-network/bitllm/internal/receipts"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -22,18 +23,18 @@ func newEthKey(t *testing.T) ethKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ethKey{k, ethAddress(k.PubKey())}
+	return ethKey{k, account.EthAddress(k.PubKey())}
 }
 
 func (e ethKey) invite(to string, at int64) memberItem {
 	i := &Invite{Inviter: e.addr, Invitee: to, Time: at}
-	i.Sig = hex.EncodeToString(ethSign(e.k, i.Message()))
+	i.Sig = hex.EncodeToString(account.EthSign(e.k, i.Message()))
 	return memberItem{Invite: i}
 }
 
 func (e ethKey) revoke(acct string, at int64) memberItem {
 	r := &Revoke{Account: acct, Root: e.addr, Time: at}
-	r.Sig = hex.EncodeToString(ethSign(e.k, r.Message()))
+	r.Sig = hex.EncodeToString(account.EthSign(e.k, r.Message()))
 	return memberItem{Revoke: r}
 }
 
@@ -153,15 +154,15 @@ func TestInviteSpamCannotBlock(t *testing.T) {
 func claimNode(t *testing.T, n *Node, owner ethKey) (peer.ID, crypto.PrivKey) {
 	nk, _, _ := crypto.GenerateEd25519Key(nil)
 	id, _ := peer.IDFromPrivateKey(nk)
-	c, err := newClaim(id, owner.addr, "")
+	c, err := account.NewClaim(id, owner.addr, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.OwnerSig = hex.EncodeToString(ethSign(owner.k, c.Message()))
-	if err := signClaimAsNode(c, nk); err != nil {
+	c.OwnerSig = hex.EncodeToString(account.EthSign(owner.k, c.Message()))
+	if err := account.SignClaimAsNode(c, nk); err != nil {
 		t.Fatal(err)
 	}
-	if !n.claims.add(*c) {
+	if !n.claims.Add(*c) {
 		t.Fatal("claim refused")
 	}
 	return id, nk

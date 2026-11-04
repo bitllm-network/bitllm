@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/bitllm-network/bitllm/internal/receipts"
@@ -85,7 +86,7 @@ type Node struct {
 	ledger       *Ledger
 	receipts     *receipts.Receipts
 	receiptTop   *pubsub.Topic
-	claims       *Claims
+	claims       *account.Claims
 	claimTop     *pubsub.Topic
 	nodeKey      crypto.PrivKey
 	members      *Members
@@ -249,7 +250,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	if n.receiptSeed, err = receipts.LoadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
 		return nil, err
 	}
-	n.claims = OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
+	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = OpenQuota(filepath.Join(cfg.DataDir, "quota.json"))
 	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
 		return nil, err
@@ -280,7 +281,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	// re-gossips its claim 5 s after start and then every 5 min).
 	n.claimRate.every = 2 * time.Second
 	ps.RegisterTopicValidator(protocol.ClaimTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
-		var c Claim
+		var c account.Claim
 		return json.Unmarshal(msg.Data, &c) == nil && c.Node == msg.GetFrom().String() &&
 			c.Valid() && n.claimRate.allow(msg.GetFrom(), time.Now())
 	})
@@ -366,9 +367,9 @@ func (n *Node) readClaims(ctx context.Context, sub *pubsub.Subscription) {
 		if err != nil {
 			return
 		}
-		var c Claim
+		var c account.Claim
 		if json.Unmarshal(msg.Data, &c) == nil {
-			n.claims.add(c)
+			n.claims.Add(c)
 		}
 	}
 }
@@ -382,7 +383,7 @@ func (n *Node) claimLoop(ctx context.Context) {
 			return
 		case <-time.After(5 * time.Second):
 		}
-		if c, ok := n.claims.get(n.host.ID().String()); ok {
+		if c, ok := n.claims.Get(n.host.ID().String()); ok {
 			b, _ := json.Marshal(c)
 			n.claimTop.Publish(ctx, b)
 		}
@@ -396,16 +397,16 @@ func (n *Node) claimLoop(ctx context.Context) {
 
 // Link records a claim of this node by owner, given the owner's signature
 // over the claim message, countersigns it, and gossips it.
-func (n *Node) Link(owner, name string, t int64, ownerSig string) (*Claim, error) {
-	c, err := newClaim(n.host.ID(), owner, name)
+func (n *Node) Link(owner, name string, t int64, ownerSig string) (*account.Claim, error) {
+	c, err := account.NewClaim(n.host.ID(), owner, name)
 	if err != nil {
 		return nil, err
 	}
 	c.Time, c.OwnerSig = t, ownerSig
-	if err := signClaimAsNode(c, n.nodeKey); err != nil {
+	if err := account.SignClaimAsNode(c, n.nodeKey); err != nil {
 		return nil, err
 	}
-	if !n.claims.add(*c) {
+	if !n.claims.Add(*c) {
 		return nil, fmt.Errorf("claim rejected (invalid, or older than the current one)")
 	}
 	b, _ := json.Marshal(c)

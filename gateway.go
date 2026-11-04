@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/account"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -275,9 +276,9 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 
 func (n *Node) account(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"node": n.host.ID().String(), "claim": nil}
-	if c, ok := n.claims.get(n.host.ID().String()); ok {
+	if c, ok := n.claims.Get(n.host.ID().String()); ok {
 		out["claim"] = c
-		out["owner"] = checksumAddress(c.Owner)
+		out["owner"] = account.ChecksumAddress(c.Owner)
 	}
 	json.NewEncoder(w).Encode(out)
 }
@@ -286,7 +287,7 @@ func (n *Node) account(w http.ResponseWriter, r *http.Request) {
 func (n *Node) accountMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Owner, Name string }
 	json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req)
-	c, err := newClaim(n.host.ID(), req.Owner, req.Name)
+	c, err := account.NewClaim(n.host.ID(), req.Owner, req.Name)
 	if err != nil {
 		jsonErr(w, 400, err.Error())
 		return
@@ -310,5 +311,5 @@ func (n *Node) accountLink(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, 400, err.Error())
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"claim": c, "owner": checksumAddress(c.Owner)})
+	json.NewEncoder(w).Encode(map[string]any{"claim": c, "owner": account.ChecksumAddress(c.Owner)})
 }
