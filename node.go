@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-network/bitllm/internal/ledger"
 	"github.com/bitllm-network/bitllm/internal/members"
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
@@ -84,7 +85,7 @@ type Node struct {
 	host         host.Host
 	dht          *dht.IpfsDHT
 	topic        *pubsub.Topic
-	ledger       *Ledger
+	ledger       *ledger.Ledger
 	receipts     *receipts.Receipts
 	receiptTop   *pubsub.Topic
 	claims       *account.Claims
@@ -168,7 +169,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 
 	n := &Node{
 		cfg:       cfg,
-		ledger:    OpenLedger(filepath.Join(cfg.DataDir, "ledger.json")),
+		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      &http.Client{},
 		peers:     map[peer.ID]*peerInfo{},
 		peerSlots: map[peer.ID]int32{},
