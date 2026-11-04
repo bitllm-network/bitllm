@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bitllm-network/bitllm/internal/assets"
 	"github.com/bitllm-network/bitllm/internal/models"
 	"github.com/bitllm-network/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -48,12 +49,9 @@ import (
 // other node that announces it can score a model is used after them.
 var DefaultAuditors = []string{"12D3KooWSCjSmNqem7jVEwc3scunEjpTqSZPgPdhMx6VbZ5piETF"}
 
-//go:embed canaries.txt
-var canariesTxt string
-
 var canaries = func() []string {
 	var out []string
-	for _, l := range strings.Split(canariesTxt, "\n") {
+	for _, l := range strings.Split(assets.Canaries, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
 			out = append(out, l)
 		}
