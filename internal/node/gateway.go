@@ -256,7 +256,7 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 			"relayed": strings.Contains(c.RemoteMultiaddr().String(), "/p2p-circuit"),
 		})
 	}
-	json.NewEncoder(w).Encode(map[string]any{
+	out := map[string]any{
 		"version":     Version,
 		"id":          n.host.ID().String(),
 		"addrs":       n.Addrs(),
@@ -268,7 +268,11 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 		"refusals":    n.refused.snapshot(),
 		"uptime":      int64(time.Since(n.started).Seconds()),
 		"ledger":      n.ledger.Snapshot(),
-	})
+	}
+	if n.cfg.UpdateStatus != nil {
+		out["update"] = n.cfg.UpdateStatus()
+	}
+	json.NewEncoder(w).Encode(out)
 }
 
 func (n *Node) account(w http.ResponseWriter, r *http.Request) {

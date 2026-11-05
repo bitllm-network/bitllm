@@ -140,6 +140,8 @@ loginctl enable-linger "$USER"   # keep it running after logout
 
 Add the sharing flags to `ExecStart` for Task 3. On macOS, a LaunchAgent in `~/Library/LaunchAgents` with `KeepAlive` does the same job.
 
+Updates: a release build checks for a newer release 30 seconds after start and every 6 hours, installs the binary after checking it against the release's `SHA256SUMS`, and restarts itself in place when the node is idle (same terminal, same systemd unit, same peer id). `--auto-update=false` turns it off; `bitllm update` checks and installs now, `bitllm update --check` only reports. The replaced binary is kept as `bitllm.prev`. On Windows the new binary is used at the next start. Builds from source and CI builds never update themselves.
+
 ## Access rules (invite-only beta)
 
 1. An invite gets you served on any free slot. Uninvited nodes are served only when a server is idle, unless its owner opens it to everyone.
@@ -161,7 +163,8 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 ## Local API
 
 - `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`: inference.
-- `GET /status`: version, peer id, connections, models served, slots in use, requests queued.
+- `GET /status`: version, peer id, connections, models served, slots in use, requests queued, the
+  last update check.
 - `GET /queue`: slots, running jobs, wait-list depth per model, the age of the oldest waiter, and
   counts of refusals by reason.
 - `GET /members/me`, `GET /members`: membership. `GET /credits`: credits per account.

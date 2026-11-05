@@ -202,8 +202,20 @@ journalctl --user -u bitllm -f      # the log
 Add the sharing flags to `ExecStart` if the node also serves a model. On macOS, a LaunchAgent in
 `~/Library/LaunchAgents` with `KeepAlive` does the same job.
 
-To update, run the install script again and restart the node; the binary is replaced in place and
-`~/.bitllm` is kept. `bitllm --version` prints what is running.
+### Updates
+
+A release build checks for a newer release 30 seconds after it starts, and every 6 hours after
+that. When there is one, it downloads the binary for this machine, checks it against the release's
+`SHA256SUMS`, runs it once to confirm the version it reports, and swaps it in. If the node is
+serving, it waits until no job is running and the queue is empty, then restarts itself in place:
+same terminal, same systemd unit, same peer id. On Windows a running `.exe` cannot be replaced, so
+the new binary is installed and used at the next start.
+
+`--auto-update=false` stays on the version you have. `bitllm update` runs the same check now
+(`--check` only reports), which is also the way to update a node under a supervisor. The replaced
+binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one version.
+Builds from source (`dev`) and CI builds never update themselves. `bitllm --version` prints what
+is running, and `GET /status` shows the last check.
 
 ### Where things live
 

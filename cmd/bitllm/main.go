@@ -24,6 +24,7 @@ import (
 	"github.com/bitllm-network/bitllm/internal/netmap"
 	"github.com/bitllm-network/bitllm/internal/node"
 	"github.com/bitllm-network/bitllm/internal/tui"
+	"github.com/bitllm-network/bitllm/internal/update"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -58,6 +59,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "top" {
 		tui.Run(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		updateCmd(os.Args[2:])
 		return
 	}
 	var (
@@ -101,6 +106,7 @@ func main() {
 	flag.Var(&auditors, "auditor", "with --audit: peer id of an auditor to try first (repeatable; default: the BitLLM maintainers' node; none: no preferred auditor)")
 	flag.BoolVar(&cfg.AuditServe, "audit-serve", false, "offer to be an auditor: if your server returns prompt logprobs (vLLM), announce that this node can score answers for other nodes' --audit (they pay for it like any request)")
 	location := flag.String("location", "", "where to show this node on the bitllm.org map: LAT,LON of any point in your city, e.g. 52.52,13.40. Only a ~156 km cell is announced, never the point. Default: not shown")
+	autoUpdate := flag.Bool("auto-update", true, "check for a newer release after startup, install it, and restart into it when the node is idle; --auto-update=false stays on this version")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("bitllm", node.Version)
@@ -182,6 +188,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The updater is wired before the node, so GET /status can report it.
+	// Only a release build takes part; dev and CI builds never replace
+	// themselves.
+	exe, _ := executable()
+	var upd *update.Runner
+	if *autoUpdate && update.IsRelease(node.Version) && exe != "" {
+		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New()}
+		cfg.UpdateStatus = upd.Status
+	}
 	n, err := node.New(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -203,6 +218,18 @@ func main() {
 	log.Printf("gateway http://%s/v1", gateway)
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}
 	go func() { <-ctx.Done(); srv.Close() }()
+	if upd != nil {
+		upd.Idle = n.Idle
+		if update.InPlace {
+			// The listening sockets close on exec, so nothing has to be shut
+			// down first, and a failed exec leaves the node serving.
+			upd.Restart = func(path string) error {
+				log.Printf("update: restarting into %s", path)
+				return update.Restart(path, append([]string{path}, os.Args[1:]...), os.Environ())
+			}
+		}
+		go upd.Run(ctx)
+	}
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
