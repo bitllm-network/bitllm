@@ -2,7 +2,14 @@
 # Turn a fresh Ubuntu VM with a public IP into a BitLLM bootstrap + relay node.
 #
 #   curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
-#   (or: sudo bash bootstrap-vps.sh [version] [hostname])
+#   (or: sudo bash bootstrap-vps.sh [version] [hostname] [seed])
+#
+# A --dht-server node does not join the default seeds on its own, so pass the
+# multiaddr (or /dnsaddr/ name) of a live seed as the third argument when this
+# is not the first one in the network. For example:
+#
+#   sudo bash bootstrap-vps.sh latest seed2.example.org \
+#     /dns4/seed1.example.org/tcp/4001/p2p/12D3KooW...
 #
 # Run at least two of these on different providers. Publish each one at
 # _dnsaddr.bootstrap.bitllm.org (the script prints the TXT records) so a new
@@ -17,6 +24,7 @@ set -euo pipefail
 
 VERSION="${1:-latest}"
 HOST="${2:-}"
+SEED="${3:-}"
 PORT=4001
 if [ -n "$HOST" ]; then
   case "$HOST" in
@@ -90,6 +98,10 @@ IP6=$(curl -fsS6 --max-time 5 https://api6.ipify.org 2>/dev/null | tr -d '[:spac
 case "$IP6" in ""|fe80:*|fd*|fc*|::1*) IP6="" ;; esac
 ANNOUNCE=""
 add_announce() { ANNOUNCE="$ANNOUNCE --announce $1"; }
+JOIN=""
+if [ -n "$SEED" ]; then
+  JOIN=" --bootstrap $SEED"
+fi
 if [ -n "$HOST" ]; then
   add_announce "/dns4/$HOST/tcp/$PORT"
   add_announce "/dns4/$HOST/udp/$PORT/quic-v1"
@@ -111,7 +123,7 @@ Wants=network-online.target
 
 [Service]
 User=bitllm
-ExecStart=/var/lib/bitllm/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778$ANNOUNCE
+ExecStart=/var/lib/bitllm/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778$JOIN$ANNOUNCE
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -146,6 +158,10 @@ ID=$(journalctl -u bitllm-boot -n 50 --no-pager | grep -o 'peer id [^ ]*' | tail
 echo
 echo "bootstrap running, peer id $ID"
 echo "back up /var/lib/bitllm/identity.key: the peer id is baked into clients"
+if [ -z "$SEED" ]; then
+  echo "this seed has no --bootstrap, so it is the first node of its own network."
+  echo "rerun with a live seed as the third argument to join an existing one."
+fi
 echo
 echo "publish these at _dnsaddr.bootstrap.bitllm.org (one TXT record each):"
 if [ -n "$HOST" ]; then

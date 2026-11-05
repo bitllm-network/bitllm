@@ -51,8 +51,13 @@ seeds answer.
 Any machine with a public IP can be one:
 
 ```sh
-bitllm --dht-server --port 4001
+bitllm --dht-server --port 4001 --bootstrap /dnsaddr/bootstrap.bitllm.org
 ```
+
+`--dht-server` tells the node it is public, and it deliberately does not fall
+back to the default seeds. A seed that should join an existing network needs
+`--bootstrap` with a live seed (or its own entry is fine: it dials the others
+in the list). Only the very first seed in a new network starts without one.
 
 Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` also
 installs the systemd unit and prints the TXT records to publish:
@@ -62,10 +67,10 @@ curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/boots
 ```
 
 The script takes an optional hostname, which is the stable way to publish a
-seed:
+seed, and an optional seed to join from:
 
 ```sh
-sudo bash bootstrap-vps.sh latest boot.example.org
+sudo bash bootstrap-vps.sh latest boot.example.org /dnsaddr/bootstrap.bitllm.org
 ```
 
 Point a DNS-only A and AAAA record at the VM first. A proxied Cloudflare

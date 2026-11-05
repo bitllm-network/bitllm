@@ -333,6 +333,11 @@ Rerunning the script installs the newest binary, keeps `/var/lib/bitllm`, and re
 Installed this way the node also updates itself, because its binary lives in `/var/lib/bitllm/bin`
 where the unit may write.
 
+A `--dht-server` node does not join the default seeds by itself, so a new seed has to be pointed at
+a live one: `bitllm --dht-server --bootstrap /dnsaddr/bootstrap.bitllm.org`, or pass the seed as
+the script's third argument (`sudo bash bootstrap-vps.sh latest seed2.example.org
+/dnsaddr/bootstrap.bitllm.org`). Only the very first seed in a new network starts alone.
+
 The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Keep at least two seeds
 on different providers, publish them with `deploy/seed-dns.py`, and a new node joins through any
 of them. Adding or retiring a seed is a DNS change, not a release. The current list and the
