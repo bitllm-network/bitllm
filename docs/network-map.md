@@ -1,7 +1,8 @@
 # Node map
 
-bitllm.org shows a live map of the nodes that serve models: roughly where they are and what they
-serve. This page says where that data comes from and what it does not reveal.
+Every node can report a live picture of the network: roughly where the serving nodes are and what
+they serve. This page says where that data comes from and what it does not reveal. The public map
+at bitllm.org is offline for now; the data is still served at `GET /network` on every node.
 
 ## Where the location comes from
 
@@ -20,8 +21,8 @@ not shared" and nothing else.
 Locations are **not** guessed from IP addresses, on purpose:
 
 - It would place people who never asked to be placed. Some operators run nodes where that matters.
-- It is often wrong anyway: most home nodes are reached through relays, and the public bootstrap
-  sits behind a tunnel that sees every peer as 127.0.0.1.
+- It is often wrong anyway: most home nodes are reached through relays, so the address a seed sees
+  belongs to the relay, not to the node.
 
 A location is what the operator says, not something proven. Treat the map as a picture of the
 network, not as evidence about any node.
@@ -46,20 +47,19 @@ gossip, its own announce included:
 
 - Only nodes that serve something right now are counted (client-only nodes do not announce).
 - `lat`/`lon` are the middle of the cell, not of any node.
-- No peer ids and no addresses, so the map cannot link a node's identity to its region. (Peer ids
-  and their cells do travel in the gossip itself; anyone running a node can see them. The
-  aggregate is what we publish to the web.)
+- No peer ids and no addresses, so a published copy cannot link a node's identity to its region.
+  (Peer ids and their cells do travel in the gossip itself; anyone running a node can see them.)
 - A cell with a single node still says "someone in this region serves model X". That is what the
   operator opted into with `--location`.
 
 Old nodes ignore the `loc` field; nodes from this version ignore a `loc` they cannot read and
 cut finer cells down to 3 characters, so the format can change later without breaking anyone.
 
-## How bitllm.org gets it
+## Publishing it
 
-An always-on node runs `scripts/network-kv.sh`, which copies its `/network` into Cloudflare KV
-every two minutes. It can be a bootstrap seed or any other node; the script takes the gateway URL.
-The Worker behind bitllm.org serves that value at `/network.json`, so the landing page reads a
-plain JSON file and the machine accepts no inbound requests. No node API is exposed to the
-internet. The landing page source is
+The map is paused. It needed an always-on node to copy its `/network` into Cloudflare KV, and that
+was one more moving part than the beta needed. `GET /network` on any node still returns the same
+aggregate, so the map can come back without changing the wire format or the node code.
+
+When it returns, the landing page source is
 [bitllm-org/landing-page](https://github.com/bitllm-org/landing-page).

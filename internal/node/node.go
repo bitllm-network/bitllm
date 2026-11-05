@@ -864,6 +864,13 @@ func (n *Node) Addrs() []string {
 	return out
 }
 
+// Seeds is the resolved bootstrap list: the peers this node dials first. It is
+// empty when no --bootstrap was given or when the DNS seed list did not
+// resolve, which is what lets cmd/bitllm print a join code instead.
+func (n *Node) Seeds() []peer.AddrInfo {
+	return append([]peer.AddrInfo(nil), n.relays...)
+}
+
 // ListenAddrs is where the p2p host accepts connections: TCP and QUIC on every
 // IPv4 address, and on every IPv6 address unless ipv6 is off.
 func ListenAddrs(port int, ipv6 bool) []string {
