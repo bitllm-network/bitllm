@@ -4,6 +4,10 @@
 name: install-test
 on:
   workflow_dispatch:
+  release:
+    types: [published]
+permissions:
+  contents: read
 jobs:
   unix:
     strategy:
@@ -18,7 +22,7 @@ jobs:
       - name: start and wait for the API
         run: |
           nohup ~/.local/bin/bitllm --mdns=false --upnp=false > bitllm.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:7778/status > /dev/null && break; sleep 1; done
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:7778/status > /dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:7778/status
           sleep 20
           curl -s http://127.0.0.1:7778/v1/models; echo

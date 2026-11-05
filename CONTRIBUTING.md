@@ -37,8 +37,9 @@ Everyone else: fork and open a pull request.
 2. **A bug fix comes with a test that fails without the fix.** The reviewer checks this by taking
    the fix out and running the test.
 3. **Checks pass:** `gofmt -l .` prints nothing, `go vet ./...` and `go test -race ./...` pass.
-   The `test` workflow runs these on every PR, builds the four release targets, and checks that
-   a node built from your branch still works with older releases ([docs/compat.md](docs/compat.md)).
+   The `test` workflow runs these on every PR, plus the pinned `staticcheck` and `actionlint`
+   versions, builds the four release targets, and checks that a node built from your branch still
+   works with older releases ([docs/compat.md](docs/compat.md)).
 4. **It follows [AGENTS.md](AGENTS.md):** wire compatibility, bounded state for anything a stranger
    can send, localhost-only gateway, receipt rules, and plain user-facing copy without em dashes.
 5. **The description says** what was wrong, why, what changed, and any trade-off.

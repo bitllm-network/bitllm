@@ -7,13 +7,15 @@ on:
       model:
         description: model to request
         default: deepseek-v4.1-flash-1017-heretic
+permissions:
+  contents: read
 jobs:
   join:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build -o bitllm ./cmd/bitllm
@@ -22,7 +24,7 @@ jobs:
           MODEL: ${{ inputs.model }}
         run: |
           ./bitllm --mdns=false --upnp=false > node.log 2>&1 &
-          for i in $(seq 1 90); do
+          for _ in $(seq 1 90); do
             curl -s localhost:7778/v1/models | grep -q "\"$MODEL\"" && break
             sleep 2
           done
@@ -35,15 +37,18 @@ jobs:
           curl -s localhost:7778/credits; echo
           grep -q "^HTTP/1.1 200" headers.txt
           # Four newcomers at once: all must be served.
-          pids=""
+          pids=()
           for i in 1 2 3 4; do
             curl -s -m 120 -o "c$i.json" -w "concurrent $i: %{http_code} %{time_total}s\n" localhost:7778/v1/chat/completions \
               -d "{\"model\":\"$MODEL\",\"max_tokens\":40,\"messages\":[{\"role\":\"user\",\"content\":\"Count to five.\"}]}" > "s$i.txt" &
-            pids="$pids $!"
+            pids+=("$!")
           done
-          wait $pids  # not a bare wait: the node itself is a background job
+          wait "${pids[@]}"  # not a bare wait: the node itself is a background job
           cat s1.txt s2.txt s3.txt s4.txt
-          ! grep -v ": 200 " s1.txt s2.txt s3.txt s4.txt
+          if grep -v ": 200 " s1.txt s2.txt s3.txt s4.txt; then
+            echo "a concurrent request did not return 200" >&2
+            exit 1
+          fi
           # What a newcomer sees for a model nobody serves.
           curl -s localhost:7778/v1/chat/completions -d '{"model":"no-such-model","messages":[]}'; echo
       - if: always()

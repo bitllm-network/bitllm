@@ -1,5 +1,5 @@
 # Runs on every pull request and every push to main. All jobs run in
-# parallel, so the whole check takes about as long as the slowest job (~1 min).
+# parallel, so the whole check takes about as long as the slowest job (~2 min).
 # Collaborators push to main directly; keep this green (see CONTRIBUTING.md).
 name: test
 on:
@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: gofmt
@@ -25,37 +25,54 @@ jobs:
       - run: go vet ./...
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  # go vet is deliberately conservative. staticcheck catches dead code and
+  # deprecated fields that vet leaves alone; the version is pinned so a new
+  # release cannot turn a green branch red without a code change.
+  staticcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
 
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test -race -count=1 ./...
+      - run: go test -race -shuffle=on -count=1 ./...
 
   # The same binaries scripts/release.sh makes, kept for 7 days as a
   # downloadable artifact of the run (handy for testing a PR on a real machine).
+  # Running the real script here keeps the release asset names, the SHA256SUMS
+  # format and the version string from drifting away from what self-update reads.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: build all release targets
+      - name: build release assets
+        run: scripts/release.sh "ci-${GITHUB_SHA::7}"
+      - name: check the release contract
         run: |
-          mkdir dist
-          for t in darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
-            os=${t%/*} arch=${t#*/} ext=""
-            [ "$os" = windows ] && ext=.exe
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X github.com/bitllm-network/bitllm/internal/node.Version=ci-${GITHUB_SHA::7}" -o "dist/bitllm-$os-$arch$ext" ./cmd/bitllm || exit 1
+          test "$(dist/bitllm-linux-amd64 --version)" = "bitllm ci-${GITHUB_SHA::7}"
+          (cd dist && sha256sum -c SHA256SUMS)
+          for f in bitllm-darwin-arm64 bitllm-linux-amd64 bitllm-linux-arm64 bitllm-windows-amd64.exe SHA256SUMS; do
+            test -s "dist/$f" || { echo "missing or empty dist/$f"; exit 1; }
           done
-          (cd dist && sha256sum bitllm-* > SHA256SUMS && cat SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bitllm-${{ github.sha }}
           path: dist/
@@ -73,17 +90,23 @@ jobs:
       matrix:
         old: [latest, v0.1.11]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build -o bitllm-new ./cmd/bitllm
-      - name: download ${{ matrix.old }}
+      - name: download and verify ${{ matrix.old }}
         run: |
           if [ "${{ matrix.old }}" = latest ]; then
-            url=https://github.com/${{ github.repository }}/releases/latest/download/bitllm-linux-amd64
+            base=https://github.com/${{ github.repository }}/releases/latest/download
           else
-            url=https://github.com/${{ github.repository }}/releases/download/${{ matrix.old }}/bitllm-linux-amd64
+            base=https://github.com/${{ github.repository }}/releases/download/${{ matrix.old }}
           fi
-          curl -fsSL -o bitllm-old "$url" && chmod +x bitllm-old && ./bitllm-old --version
+          curl -fsSL -o bitllm-old "$base/bitllm-linux-amd64"
+          curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
+          want=$(awk '$2 == "bitllm-linux-amd64" || $2 == "*bitllm-linux-amd64" { print $1 }' SHA256SUMS)
+          got=$(sha256sum bitllm-old | awk '{ print $1 }')
+          test -n "$want" && test "$want" = "$got"
+          chmod +x bitllm-old
+          ./bitllm-old --version
       - run: scripts/compat.sh ./bitllm-old ./bitllm-new
