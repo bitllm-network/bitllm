@@ -1,7 +1,8 @@
 #!/bin/sh
 # Copies a node's GET /network into a static network.json for the website,
-# once a minute. bitllm.org runs this next to the bootstrap node, so the map
-# on the landing page reads a plain file and no node API is exposed publicly.
+# once a minute. The bootstrap machine serves that directory at
+# data.bitllm.org, and the Worker behind bitllm.org proxies /network.json
+# from it, so the map reads a plain file and no node API is exposed publicly.
 #   scripts/network-json.sh http://127.0.0.1:7779 ~/bitllm-site
 # The file only holds counts per model and per ~156 km cell (see network.go);
 # it names no peer ids and no addresses.

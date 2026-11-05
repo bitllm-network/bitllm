@@ -3,8 +3,9 @@
 Instructions for AI agents working in this repository.
 
 **Setting BitLLM up for a user** (install, use models, share a GPU)? You don't need this repo. Follow
-https://bitllm.org/llms.txt (the same file is `site/llms.txt` here). It has the install command, the
-checks to run, and how to point Claude Code or an OpenAI client at the node.
+https://bitllm.org/llms.txt (the same file is `public/llms.txt` in
+[bitllm-org/landing-page](https://github.com/bitllm-org/landing-page)). It has the install command,
+the checks to run, and how to point Claude Code or an OpenAI client at the node.
 
 **Changing the code?** Read on, and see [CONTRIBUTING.md](CONTRIBUTING.md) for how PRs are reviewed and merged.
 
@@ -40,11 +41,14 @@ package per domain. Tests live with the package they test.
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
 | `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
-| `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1`. `scripts/site-sync.sh` publishes it within minutes of `test` passing on main |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
+
+The public site at bitllm.org is a separate repository,
+[bitllm-org/landing-page](https://github.com/bitllm-org/landing-page). The dashboard the binary
+serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
 
 ## Rules that are easy to break
 
@@ -68,8 +72,9 @@ package per domain. Tests live with the package they test.
   print `bitllm <tag>` for `--version`; `internal/update` refuses it otherwise.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
-- **User-facing copy** (README, docs/JOIN.zh.md, site): plain sentences, no em dashes. Keep the three access
-  rules worded the same everywhere, and keep `site/llms.txt` in step with flags and error messages.
+- **User-facing copy** (README, docs/JOIN.zh.md, and `public/` in bitllm-org/landing-page): plain
+  sentences, no em dashes. Keep the three access rules worded the same everywhere, and keep
+  `public/llms.txt` there in step with flags and error messages.
 
 ## Testing changes against the live network
 

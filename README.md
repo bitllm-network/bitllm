@@ -398,7 +398,8 @@ change to networking, access or the gateway, run the external test workflow
 
 Other docs: [audit](docs/audit.md), [network map](docs/network-map.md),
 [compatibility](docs/compat.md), [中文说明](docs/JOIN.zh.md), and
-[site/llms.txt](site/llms.txt) (the same instructions for AI agents). Brand assets live in
+[llms.txt](https://github.com/bitllm-org/landing-page/blob/main/public/llms.txt) (the same
+instructions for AI agents). Brand assets live in
 [bitllm-org/branding](https://github.com/bitllm-org/branding).
 
 ## License

@@ -23,9 +23,9 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
       - name: public links use the current GitHub org
-        run: "! git grep -n 'bitllm-network' -- site README.md deploy docs"
-      - name: site-sync.sh parses
-        run: sh -n scripts/site-sync.sh
+        run: "! git grep -n 'bitllm-network' -- README.md deploy docs"
+      - name: network-json.sh parses
+        run: sh -n scripts/network-json.sh
       - run: go vet ./...
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff
