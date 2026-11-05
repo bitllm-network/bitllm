@@ -218,7 +218,9 @@ they do not protect against a compromised repository; a signed manifest is the n
 (`--check` only reports), which is also the way to update a node under a supervisor. The replaced
 binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one version.
 Builds from source (`dev`) and CI builds never update themselves. `bitllm --version` prints what
-is running, and `GET /status` shows the last check.
+is running, and `GET /status` shows the last check. The updater writes in the directory that holds
+the binary, so a package-manager install or a read-only mount needs `--auto-update=false`;
+otherwise the node logs the error and keeps running.
 
 ### Where things live
 
