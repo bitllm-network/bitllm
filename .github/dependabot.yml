@@ -21,3 +21,9 @@ updates:
       go-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # libp2p's last major tag, v6.0.23+incompatible, is an old tree without
+      # the packages we import. Releases are v0.x now, so treat a major bump
+      # as something to do by hand, not as a routine update.
+      - dependency-name: github.com/libp2p/go-libp2p
+        update-types: ["version-update:semver-major"]
