@@ -136,37 +136,48 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
     # back with the model's text, and either the server refused at least
     # once or a request was seen waiting in its queue; if it answered both
     # at once, neither counter moves.
-    local before after maxq q i p1 p2
-    before=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
-      || fail "$label: no refusals in the server's /status"
+    #
+    # A loaded CI runner can start the second curl only after the first has
+    # already finished, so give the pair three tries before calling it a
+    # failure. Each try still checks both answers and both counters.
+    local before after maxq q i p1 p2 attempt overlapped=""
     local body="{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"slow\"}]}"
-    curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par1" &
-    p1=$!
-    curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par2" &
-    p2=$!
-    # The requests take about a second each, so this catches the queue even
-    # though it is empty again by the time they return.
-    maxq=0
-    while kill -0 "$p1" 2>/dev/null || kill -0 "$p2" 2>/dev/null; do
-      q=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["queued"])' 2>/dev/null) || q=0
-      if [ "$q" -gt "$maxq" ] 2>/dev/null; then maxq=$q; fi
-      sleep 0.05
+    for attempt in 1 2 3; do
+      before=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
+        || fail "$label: no refusals in the server's /status"
+      curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par1" &
+      p1=$!
+      curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par2" &
+      p2=$!
+      # The requests take about a second each, so this catches the queue even
+      # though it is empty again by the time they return.
+      maxq=0
+      while kill -0 "$p1" 2>/dev/null || kill -0 "$p2" 2>/dev/null; do
+        q=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["queued"])' 2>/dev/null) || q=0
+        if [ "$q" -gt "$maxq" ] 2>/dev/null; then maxq=$q; fi
+        sleep 0.02
+      done
+      wait "$p1" || true
+      wait "$p2" || true
+      for i in 1 2; do
+        grep -q "hello world" "$work/$label.par$i" \
+          || fail "$label: concurrent request $i: $(cat "$work/$label.par$i")"
+      done
+      after=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
+        || fail "$label: no refusals in the server's /status"
+      if [ "$after" -gt "$before" ]; then
+        echo "   ok: two concurrent requests answered, the second refused while the first served (1.0.0 path)"
+        overlapped=1
+        break
+      elif [ "$maxq" -gt 0 ]; then
+        echo "   ok: two concurrent requests answered, the second waited in the queue (1.1.0 path)"
+        overlapped=1
+        break
+      fi
+      echo "   retry $attempt: the two requests did not overlap (busy refusals $before -> $after, queued max $maxq)"
     done
-    wait "$p1" || true
-    wait "$p2" || true
-    for i in 1 2; do
-      grep -q "hello world" "$work/$label.par$i" \
-        || fail "$label: concurrent request $i: $(cat "$work/$label.par$i")"
-    done
-    after=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
-      || fail "$label: no refusals in the server's /status"
-    if [ "$after" -gt "$before" ]; then
-      echo "   ok: two concurrent requests answered, the second refused while the first served (1.0.0 path)"
-    elif [ "$maxq" -gt 0 ]; then
-      echo "   ok: two concurrent requests answered, the second waited in the queue (1.1.0 path)"
-    else
-      fail "$label: the two requests never overlapped (busy refusals $before -> $after, queued max $maxq)"
-    fi
+    [ -n "$overlapped" ] \
+      || fail "$label: the two requests never overlapped (busy refusals $before -> $after, queued max $maxq)"
   fi
 
   local q
