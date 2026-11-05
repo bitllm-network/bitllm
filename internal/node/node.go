@@ -48,34 +48,35 @@ import (
 // Config is everything a node needs from its operator. Zero values are the
 // defaults described here, and New fills in the rest.
 type Config struct {
-	Upstream         string            // OpenAI-compatible base URL to share; empty = client only
-	UpstreamKey      string            //
-	Models           map[string]string // public name -> upstream name; empty = discover
-	Concurrency      int               //
-	Listen           []string          // libp2p listen multiaddrs
-	Bootstrap        []string          // multiaddrs with /p2p/ID
-	DataDir          string            //
-	DHTServer        bool              // force DHT server mode (bootstrap nodes, tests)
-	MDNS             bool              //
-	UPnP             bool              // ask the router to forward our port (exposes the node publicly)
-	Private          bool              // assume we are behind NAT: reserve a slot on the bootstrap relays
-	RelayBehindProxy bool              // peers reach our relay through a tunnel, all from one IP
-	Announce         []string          // extra public addrs, e.g. /dns4/boot.example.com/tcp/443/wss behind a tunnel
-	FreeDaily        int64             // credits a member may use per UTC day on this server; contributors are unlimited
-	Roots            []string          // accounts at the top of the invite tree; none = membership off
-	Open             bool              // serve uninvited nodes like members (any free slot, quota per node)
-	Allow            map[peer.ID]bool  // if set, serve only these peers (like members), and refuse every other peer
-	OpenSlots        int               // most slots uninvited nodes may hold on an open server; 0 = half
-	OpenDaily        int64             // credits all uninvited nodes together may use per UTC day on an open server; 0 = no limit
-	MaxTokens        int               // cap on new tokens per request we serve; 0 = none
-	AnnounceEvery    time.Duration     //
-	RedialEvery      time.Duration     // how often to reconnect a lost bootstrap; 0 = 15s
-	Weights          map[string]string // public name -> bitllm hash-model of the files our server loads (announced, not proven)
-	Audit            bool              // spot-check the peers that answer us (audit.go)
-	AuditEvery       int               // real requests to a peer between its spot checks
-	Auditors         []peer.ID         // auditors tried first
-	AuditServe       bool              // announce the models our server can score, so others may use us as an auditor
-	Location         string            // coarse geohash cell for the node map (network.go); empty = not shown
+	Upstream         string                // OpenAI-compatible base URL to share; empty = client only
+	UpstreamKey      string                //
+	Models           map[string]string     // public name -> upstream name; empty = discover
+	Concurrency      int                   //
+	Listen           []string              // libp2p listen multiaddrs
+	Bootstrap        []string              // multiaddrs with /p2p/ID
+	DataDir          string                //
+	DHTServer        bool                  // force DHT server mode (bootstrap nodes, tests)
+	MDNS             bool                  //
+	UPnP             bool                  // ask the router to forward our port (exposes the node publicly)
+	Private          bool                  // assume we are behind NAT: reserve a slot on the bootstrap relays
+	RelayBehindProxy bool                  // peers reach our relay through a tunnel, all from one IP
+	Announce         []string              // extra public addrs, e.g. /dns4/boot.example.com/tcp/443/wss behind a tunnel
+	FreeDaily        int64                 // credits a member may use per UTC day on this server; contributors are unlimited
+	Roots            []string              // accounts at the top of the invite tree; none = membership off
+	Open             bool                  // serve uninvited nodes like members (any free slot, quota per node)
+	Allow            map[peer.ID]bool      // if set, serve only these peers (like members), and refuse every other peer
+	OpenSlots        int                   // most slots uninvited nodes may hold on an open server; 0 = half
+	OpenDaily        int64                 // credits all uninvited nodes together may use per UTC day on an open server; 0 = no limit
+	MaxTokens        int                   // cap on new tokens per request we serve; 0 = none
+	AnnounceEvery    time.Duration         //
+	RedialEvery      time.Duration         // how often to reconnect a lost bootstrap; 0 = 15s
+	Weights          map[string]string     // public name -> bitllm hash-model of the files our server loads (announced, not proven)
+	Audit            bool                  // spot-check the peers that answer us (audit.go)
+	AuditEvery       int                   // real requests to a peer between its spot checks
+	Auditors         []peer.ID             // auditors tried first
+	AuditServe       bool                  // announce the models our server can score, so others may use us as an auditor
+	Location         string                // coarse geohash cell for the node map (network.go); empty = not shown
+	UpdateStatus     func() map[string]any // what the updater reports, for GET /status; nil = no updater
 }
 
 // peerInfo is one peer's latest announce and when we heard it. The announce
@@ -855,6 +856,13 @@ func mapKeys(m map[string]string) []string {
 
 // ID is this node's peer id.
 func (n *Node) ID() string { return n.host.ID().String() }
+
+// Idle reports whether the node is serving nothing right now: no running job
+// and nobody in the queue. cmd/bitllm restarts for an update only when this
+// is true, so a release is never installed in the middle of an answer.
+func (n *Node) Idle() bool {
+	return n.inflight.Load() == 0 && n.queueDepth() == 0
+}
 
 // Addrs is where peers can reach this node, with its peer id appended.
 func (n *Node) Addrs() []string {

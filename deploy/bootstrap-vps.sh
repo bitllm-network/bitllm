@@ -21,17 +21,31 @@ esac
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
 
 if [ "$VERSION" = latest ]; then
-  URL="https://github.com/bitllm-network/bitllm/releases/latest/download/bitllm-linux-$ARCH"
+  BASE="https://github.com/bitllm-network/bitllm/releases/latest/download"
 else
-  URL="https://github.com/bitllm-network/bitllm/releases/download/$VERSION/bitllm-linux-$ARCH"
+  BASE="https://github.com/bitllm-network/bitllm/releases/download/$VERSION"
 fi
-echo "downloading $URL"
-curl -fsSL -o /usr/local/bin/bitllm.new "$URL"
-chmod 755 /usr/local/bin/bitllm.new
-mv /usr/local/bin/bitllm.new /usr/local/bin/bitllm
-/usr/local/bin/bitllm --version
-
+NAME="bitllm-linux-$ARCH"
+URL="$BASE/$NAME"
+# /var/lib/bitllm, not /usr/local/bin: the unit runs as the bitllm user with
+# ProtectSystem=strict, so the node must be able to replace its own binary
+# when it updates itself (see README, Updates).
+BIN=/var/lib/bitllm/bin/bitllm
 id bitllm >/dev/null 2>&1 || useradd --system --home-dir /var/lib/bitllm --create-home --shell /usr/sbin/nologin bitllm
+# The unit runs as bitllm and must be able to rename its binary when it
+# updates itself, so the directory belongs to that user too.
+install -d -o bitllm "$(dirname "$BIN")"
+echo "downloading $URL"
+curl -fsSL -o "$BIN.new" "$URL"
+want=$(curl -fsSL "$BASE/SHA256SUMS" | awk -v n="$NAME" '$2 == n || $2 == "*" n { print $1; exit }')
+[ -n "$want" ] || { echo "no checksum for $NAME in $BASE/SHA256SUMS" >&2; exit 1; }
+got=$(sha256sum "$BIN.new" | awk '{ print $1 }')
+[ "$want" = "$got" ] || { echo "checksum mismatch for $NAME: got $got, want $want" >&2; rm -f "$BIN.new"; exit 1; }
+chmod 755 "$BIN.new"
+mv "$BIN.new" "$BIN"
+chown bitllm "$BIN"
+rm -f /usr/local/bin/bitllm
+"$BIN" --version
 
 cat > /etc/systemd/system/bitllm-boot.service <<EOF
 [Unit]
@@ -41,7 +55,7 @@ Wants=network-online.target
 
 [Service]
 User=bitllm
-ExecStart=/usr/local/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778
+ExecStart=/var/lib/bitllm/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -68,6 +82,7 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now bitllm-boot
+systemctl restart bitllm-boot # re-run: pick up the new binary path and version
 sleep 4
 
 ID=$(journalctl -u bitllm-boot -n 50 --no-pager | grep -o 'peer id [^ ]*' | tail -1 | awk '{print $3}')

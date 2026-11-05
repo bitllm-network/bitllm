@@ -27,7 +27,7 @@ package per domain. Tests live with the package they test.
 
 | path | what it does |
 |---|---|
-| `cmd/bitllm/` | flags, default bootstrap and roots, `bitllm account`, `bitllm invite`, `bitllm hash-model`; starts the node and the gateway |
+| `cmd/bitllm/` | flags, default bootstrap and roots, `bitllm account`, `bitllm invite`, `bitllm hash-model`, `bitllm update`; starts the node and the gateway |
 | `internal/node/` | the running node: libp2p host, DHT, gossip, discovery and relays, the serving queue, inference and the gateway, access rules, receipts, audits, `GET /network`, `GET /logs` |
 | `internal/protocol/` | wire contract: protocol ids, gossip topics, `Announce`, validators, gossip bounds |
 | `internal/account/` | Ethereum-address accounts, signed node claims, the claims store, per-owner credits |
@@ -38,6 +38,7 @@ package per domain. Tests live with the package they test.
 | `internal/netmap/` | `--location` geohash cells and the aggregate behind the bitllm.org node map ([docs/network-map.md](docs/network-map.md)) |
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
+| `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
@@ -59,6 +60,11 @@ package per domain. Tests live with the package they test.
   POSTs. Keep both checks on any new route.
 - **Receipts:** credits must equal `prompt/4 + completion`, token counts are bounded, and clients sign
   with a per-server pseudonym, never the node key.
+- **Release assets are a contract.** `scripts/release.sh` names them `bitllm-<os>-<arch>`
+  (`bitllm-windows-amd64.exe` on Windows) and writes one `SHA256SUMS` line per file. A running
+  release build finds, downloads and verifies its next binary from exactly those names, so renaming
+  an asset or changing the sums format breaks self-update silently. The downloaded file must also
+  print `bitllm <tag>` for `--version`; `internal/update` refuses it otherwise.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
 - **User-facing copy** (README, docs/JOIN.zh.md, site): plain sentences, no em dashes. Keep the three access
