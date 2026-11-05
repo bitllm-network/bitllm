@@ -21,20 +21,29 @@ esac
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
 
 if [ "$VERSION" = latest ]; then
-  URL="https://github.com/bitllm-network/bitllm/releases/latest/download/bitllm-linux-$ARCH"
+  BASE="https://github.com/bitllm-network/bitllm/releases/latest/download"
 else
-  URL="https://github.com/bitllm-network/bitllm/releases/download/$VERSION/bitllm-linux-$ARCH"
+  BASE="https://github.com/bitllm-network/bitllm/releases/download/$VERSION"
 fi
+NAME="bitllm-linux-$ARCH"
+URL="$BASE/$NAME"
 # /var/lib/bitllm, not /usr/local/bin: the unit runs as the bitllm user with
 # ProtectSystem=strict, so the node must be able to replace its own binary
 # when it updates itself (see README, Updates).
 BIN=/var/lib/bitllm/bin/bitllm
 id bitllm >/dev/null 2>&1 || useradd --system --home-dir /var/lib/bitllm --create-home --shell /usr/sbin/nologin bitllm
-mkdir -p "$(dirname "$BIN")"
+# The unit runs as bitllm and must be able to rename its binary when it
+# updates itself, so the directory belongs to that user too.
+install -d -o bitllm -g bitllm "$(dirname "$BIN")"
 echo "downloading $URL"
 curl -fsSL -o "$BIN.new" "$URL"
+want=$(curl -fsSL "$BASE/SHA256SUMS" | awk -v n="$NAME" '$2 == n || $2 == "*" n { print $1; exit }')
+[ -n "$want" ] || { echo "no checksum for $NAME in $BASE/SHA256SUMS" >&2; exit 1; }
+got=$(sha256sum "$BIN.new" | awk '{ print $1 }')
+[ "$want" = "$got" ] || { echo "checksum mismatch for $NAME: got $got, want $want" >&2; rm -f "$BIN.new"; exit 1; }
 chmod 755 "$BIN.new"
 mv "$BIN.new" "$BIN"
+chown bitllm:bitllm "$BIN"
 rm -f /usr/local/bin/bitllm
 "$BIN" --version
 

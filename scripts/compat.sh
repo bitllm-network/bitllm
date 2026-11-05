@@ -11,7 +11,8 @@
 # and checks that the client sees the model through gossip, gets a plain and a
 # streamed answer, that the signed receipt reaches the client's ledger, and in
 # case 2 that two concurrent requests against a server with one slot are both
-# answered (the old client speaks 1.0.0, so it must never see a 202).
+# answered and serialized, whether the old client queues with 1.1.0 or is
+# refused with 429 and retries with 1.0.0.
 # Nothing touches the public network: mDNS, UPnP and the default bootstrap
 # are off. Needs bash, curl and python3. Takes about 25 seconds.
 set -euo pipefail
@@ -128,14 +129,14 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
   echo "   ok: receipt recorded"
 
   if [ -n "$one" ]; then
-    # One serving slot, two requests at the same moment. The client here is an
-    # old release: it speaks 1.0.0, which has no wait_ms, so the server must
-    # refuse the second request with 429 (busy) and let the old gateway retry,
-    # not queue it with a 202 the old client cannot read (it would see a failed
-    # peer and answer 502). Both requests must come back with the model's text,
-    # and the server must have refused at least once, which is only possible
-    # if the two really overlapped and no 202 was sent.
-    local before after i p1 p2
+    # One serving slot, two requests at the same moment. The second must be
+    # serialized behind the first, whichever protocol the old client speaks:
+    # 1.1.0 (v0.3.0 and later) queues it with a 202, older clients have no
+    # wait_ms and must get a 429 (busy) to retry. Both requests must come
+    # back with the model's text, and either the server refused at least
+    # once or a request was seen waiting in its queue; if it answered both
+    # at once, neither counter moves.
+    local before after maxq q i p1 p2
     before=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
       || fail "$label: no refusals in the server's /status"
     local body="{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"slow\"}]}"
@@ -143,17 +144,29 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
     p1=$!
     curl -s -m 30 "127.0.0.1:$cg/v1/chat/completions" -d "$body" > "$work/$label.par2" &
     p2=$!
+    # The requests take about a second each, so this catches the queue even
+    # though it is empty again by the time they return.
+    maxq=0
+    while kill -0 "$p1" 2>/dev/null || kill -0 "$p2" 2>/dev/null; do
+      q=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["queued"])' 2>/dev/null) || q=0
+      if [ "$q" -gt "$maxq" ] 2>/dev/null; then maxq=$q; fi
+      sleep 0.05
+    done
     wait "$p1" || true
     wait "$p2" || true
     for i in 1 2; do
       grep -q "hello world" "$work/$label.par$i" \
-        || fail "$label: concurrent 1.0.0 request $i: $(cat "$work/$label.par$i")"
+        || fail "$label: concurrent request $i: $(cat "$work/$label.par$i")"
     done
     after=$(curl -s "127.0.0.1:$sg/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["refusals"]["busy"])') \
       || fail "$label: no refusals in the server's /status"
-    [ "$after" -gt "$before" ] \
-      || fail "$label: the two requests never overlapped (busy refusals $before -> $after)"
-    echo "   ok: two concurrent 1.0.0 requests answered, second after a busy refusal (no 202)"
+    if [ "$after" -gt "$before" ]; then
+      echo "   ok: two concurrent requests answered, the second refused while the first served (1.0.0 path)"
+    elif [ "$maxq" -gt 0 ]; then
+      echo "   ok: two concurrent requests answered, the second waited in the queue (1.1.0 path)"
+    else
+      fail "$label: the two requests never overlapped (busy refusals $before -> $after, queued max $maxq)"
+    fi
   fi
 
   local q
@@ -165,7 +178,7 @@ sys.exit(0 if any(v for v in (d.values() if isinstance(d, dict) else d)) else 1)
 
 scenario old-network-new-client "$OLD" "$OLD" "$NEW" 19000
 # One serving slot, so the second of two concurrent requests must wait for the
-# first: an old client has to be refused with 429 and retry, never queued with
-# a 202 it cannot read.
+# first: a 1.1.0 client queues it, an older one is refused with 429 and
+# retries. Both paths are checked in scenario().
 scenario new-network-old-client "$NEW" "$NEW" "$OLD" 19100 one
 echo "compatible: $("$OLD" --version) <-> $("$NEW" --version)"

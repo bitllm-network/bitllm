@@ -64,8 +64,10 @@ func New() *Client {
 		HTTP: &http.Client{Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 20 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
 		}},
 	}
 }
@@ -230,9 +232,13 @@ func PrevPath(dst string) string {
 // AssetName is the release asset for this machine, named as
 // scripts/release.sh builds it. Empty when there is no build for it.
 func AssetName() string {
-	switch runtime.GOOS + "/" + runtime.GOARCH {
+	return assetName(runtime.GOOS, runtime.GOARCH)
+}
+
+func assetName(goos, arch string) string {
+	switch goos + "/" + arch {
 	case "darwin/arm64", "linux/amd64", "linux/arm64":
-		return "bitllm-" + runtime.GOOS + "-" + runtime.GOARCH
+		return "bitllm-" + goos + "-" + arch
 	case "windows/amd64":
 		return "bitllm-windows-amd64.exe"
 	}

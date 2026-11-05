@@ -211,6 +211,9 @@ serving, it waits until no job is running and the queue is empty, then restarts 
 same terminal, same systemd unit, same peer id. On Windows a running `.exe` cannot be replaced, so
 the new binary is installed and used at the next start.
 
+HTTPS and the checksum catch a corrupted or truncated download. Both come from the release page, so
+they do not protect against a compromised repository; a signed manifest is the next step.
+
 `--auto-update=false` stays on the version you have. `bitllm update` runs the same check now
 (`--check` only reports), which is also the way to update a node under a supervisor. The replaced
 binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one version.
@@ -319,6 +322,10 @@ On a fresh Ubuntu VM there is a script for it, which also installs the systemd u
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bitllm-network/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
 ```
+
+Rerunning the script installs the newest binary, keeps `/var/lib/bitllm`, and restarts the unit.
+Installed this way the node also updates itself, because its binary lives in `/var/lib/bitllm/bin`
+where the unit may write.
 
 No public IP? Put it behind an HTTPS tunnel that passes WebSockets (Cloudflare Tunnel, free):
 `bitllm --dht-server --ws-port 4002 --announce /dns4/boot.example.org/tcp/443/wss` and point

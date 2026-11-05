@@ -39,6 +39,31 @@ func TestNewer(t *testing.T) {
 	}
 }
 
+func TestAssetName(t *testing.T) {
+	// The four targets scripts/release.sh builds. Renaming one of these
+	// without updating assetName breaks self-update for that platform.
+	for _, tc := range []struct{ goos, arch, want string }{
+		{"linux", "amd64", "bitllm-linux-amd64"},
+		{"linux", "arm64", "bitllm-linux-arm64"},
+		{"darwin", "arm64", "bitllm-darwin-arm64"},
+		{"windows", "amd64", "bitllm-windows-amd64.exe"},
+	} {
+		if got := assetName(tc.goos, tc.arch); got != tc.want {
+			t.Errorf("assetName(%q, %q) = %q, want %q", tc.goos, tc.arch, got, tc.want)
+		}
+	}
+	for _, tc := range []struct{ goos, arch string }{
+		{"darwin", "amd64"}, {"windows", "arm64"}, {"linux", "386"},
+	} {
+		if got := assetName(tc.goos, tc.arch); got != "" {
+			t.Errorf("assetName(%q, %q) = %q, want no asset", tc.goos, tc.arch, got)
+		}
+	}
+	if got, want := AssetName(), assetName(runtime.GOOS, runtime.GOARCH); got != want {
+		t.Errorf("AssetName() = %q, want %q", got, want)
+	}
+}
+
 func TestIsRelease(t *testing.T) {
 	for _, s := range []string{"v0.3.0", "v10.20.30"} {
 		if !IsRelease(s) {
