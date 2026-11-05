@@ -28,9 +28,7 @@ type logRing struct {
 func (r *logRing) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, line := range strings.Split(strings.TrimSuffix(string(p), "\n"), "\n") {
-		r.lines = append(r.lines, line)
-	}
+	r.lines = append(r.lines, strings.Split(strings.TrimSuffix(string(p), "\n"), "\n")...)
 	if over := len(r.lines) - r.max; over > 0 {
 		r.lines = append(r.lines[:0], r.lines[over:]...)
 	}

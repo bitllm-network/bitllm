@@ -473,7 +473,7 @@ func TestUpstreamDown(t *testing.T) {
 	var down atomic.Bool
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if down.Load() {
-			http.Error(w, "stopped", 502)
+			http.Error(w, "stopped", http.StatusBadGateway)
 			return
 		}
 		up.Config.Handler.ServeHTTP(w, r)

@@ -371,7 +371,7 @@ func TestAuditServeOff(t *testing.T) {
 			resp, err = http.Get(sc.URL + r.URL.Path)
 		}
 		if err != nil {
-			http.Error(w, err.Error(), 502)
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
