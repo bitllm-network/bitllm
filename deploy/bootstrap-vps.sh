@@ -2,7 +2,11 @@
 # Turn a fresh Ubuntu VM with a public IP into a BitLLM bootstrap + relay node.
 #
 #   curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
-#   (or: sudo bash bootstrap-vps.sh [version], default: latest release)
+#   (or: sudo bash bootstrap-vps.sh [version] [hostname])
+#
+# Run at least two of these on different providers. Publish each one at
+# _dnsaddr.bootstrap.bitllm.org (the script prints the TXT records) so a new
+# node can join through any of them; see docs/bootstrap.md.
 #
 # Oracle Cloud: the VM firewall is not the only one. Also open 4001 in the
 # subnet's security list (VCN > Subnet > Security List > Ingress rules):
@@ -12,7 +16,13 @@
 set -euo pipefail
 
 VERSION="${1:-latest}"
+HOST="${2:-}"
 PORT=4001
+if [ -n "$HOST" ]; then
+  case "$HOST" in
+    *[!A-Za-z0-9.-]*) echo "bad hostname: $HOST" >&2; exit 1 ;;
+  esac
+fi
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
@@ -47,6 +57,29 @@ chown bitllm "$BIN"
 rm -f /usr/local/bin/bitllm
 "$BIN" --version
 
+IP4=$(curl -fsS4 --max-time 5 https://api.ipify.org || true)
+IP6=$(curl -fsS6 --max-time 5 https://api6.ipify.org || true)
+if [ -z "$IP4" ]; then
+  IP4=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") print $(i+1)}' || true)
+  if [ -n "$IP4" ]; then
+    echo "could not look up the public IPv4. $IP4 is the local address; on Oracle and most clouds it is private, so use the public IP from the cloud console instead."
+  fi
+fi
+ANNOUNCE=""
+add_announce() { ANNOUNCE="$ANNOUNCE --announce $1"; }
+if [ -n "$HOST" ]; then
+  add_announce "/dns4/$HOST/tcp/$PORT"
+  add_announce "/dns4/$HOST/udp/$PORT/quic-v1"
+fi
+if [ -n "$IP4" ]; then
+  add_announce "/ip4/$IP4/tcp/$PORT"
+  add_announce "/ip4/$IP4/udp/$PORT/quic-v1"
+fi
+if [ -n "$IP6" ]; then
+  add_announce "/ip6/$IP6/tcp/$PORT"
+  add_announce "/ip6/$IP6/udp/$PORT/quic-v1"
+fi
+
 cat > /etc/systemd/system/bitllm-boot.service <<EOF
 [Unit]
 Description=BitLLM bootstrap and relay node
@@ -55,7 +88,7 @@ Wants=network-online.target
 
 [Service]
 User=bitllm
-ExecStart=/var/lib/bitllm/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778
+ExecStart=/var/lib/bitllm/bin/bitllm --dht-server --port $PORT --mdns=false --upnp=false --data /var/lib/bitllm --gateway 127.0.0.1:7778$ANNOUNCE
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -86,18 +119,30 @@ systemctl restart bitllm-boot # re-run: pick up the new binary path and version
 sleep 4
 
 ID=$(journalctl -u bitllm-boot -n 50 --no-pager | grep -o 'peer id [^ ]*' | tail -1 | awk '{print $3}')
-IP4=$(curl -fsS4 --max-time 5 https://api.ipify.org || true)
-IP6=$(curl -fsS6 --max-time 5 https://api6.ipify.org || true)
+[ -n "$ID" ] || { echo "could not read the peer id from journalctl -u bitllm-boot" >&2; exit 1; }
 echo
 echo "bootstrap running, peer id $ID"
 echo "back up /var/lib/bitllm/identity.key: the peer id is baked into clients"
 echo
-if [ -z "$IP4" ]; then
-  IP4=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") print $(i+1)}' || true)
-  echo "could not look up the public IP. ${IP4:+$IP4 is the address of this machine; on Oracle and most clouds it is private, so use the public IP from the cloud console instead.}"
-  echo
+echo "publish these at _dnsaddr.bootstrap.bitllm.org (one TXT record each):"
+if [ -n "$HOST" ]; then
+  echo "  dnsaddr=/dns4/$HOST/tcp/$PORT/p2p/$ID"
+  echo "  dnsaddr=/dns4/$HOST/udp/$PORT/quic-v1/p2p/$ID"
+  echo "  (the A/AAAA record for $HOST must be DNS-only, not proxied by Cloudflare)"
+elif [ -n "$IP4" ]; then
+  echo "  dnsaddr=/ip4/$IP4/tcp/$PORT/p2p/$ID"
+  echo "  dnsaddr=/ip4/$IP4/udp/$PORT/quic-v1/p2p/$ID"
 fi
-echo "add these to DefaultBootstrap in main.go (before the boot.bitllm.org entry):"
+if [ -n "$IP6" ] && [ -z "$HOST" ]; then
+  echo "  dnsaddr=/ip6/$IP6/tcp/$PORT/p2p/$ID"
+  echo "  dnsaddr=/ip6/$IP6/udp/$PORT/quic-v1/p2p/$ID"
+fi
+echo
+echo "or add them to DefaultBootstrap in cmd/bitllm/main.go:"
+if [ -n "$HOST" ]; then
+  echo "  \"/dns4/$HOST/tcp/$PORT/p2p/$ID\","
+  echo "  \"/dns4/$HOST/udp/$PORT/quic-v1/p2p/$ID\","
+fi
 if [ -n "$IP4" ]; then
   echo "  \"/ip4/$IP4/tcp/$PORT/p2p/$ID\","
   echo "  \"/ip4/$IP4/udp/$PORT/quic-v1/p2p/$ID\","
@@ -107,4 +152,10 @@ if [ -n "$IP6" ]; then
   echo "  \"/ip6/$IP6/udp/$PORT/quic-v1/p2p/$ID\","
 fi
 echo
-echo "check from another machine: bitllm --bootstrap /ip4/${IP4:-PUBLIC_IP}/tcp/$PORT/p2p/$ID"
+if [ -n "$HOST" ]; then
+  echo "check from another machine: bitllm --bootstrap /dns4/$HOST/tcp/$PORT/p2p/$ID"
+elif [ -n "$IP4" ]; then
+  echo "check from another machine: bitllm --bootstrap /ip4/$IP4/tcp/$PORT/p2p/$ID"
+else
+  echo "check from another machine: bitllm --bootstrap /ip6/$IP6/tcp/$PORT/p2p/$ID"
+fi

@@ -164,17 +164,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// Several addresses of one peer (tcp, quic...) must become one AddrInfo, or
 	// the same node is dialed, synced and used as a relay once per address.
-	var baddrs []ma.Multiaddr
-	for _, s := range cfg.Bootstrap {
-		a, err := ma.NewMultiaddr(s)
-		if err != nil {
-			return nil, fmt.Errorf("bootstrap %q: %w", s, err)
-		}
-		baddrs = append(baddrs, a)
-	}
-	bootstrap, err := peer.AddrInfosFromP2pAddrs(baddrs...)
+	bootstrap, err := ResolveBootstrap(ctx, cfg.Bootstrap)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: %w", err)
+		return nil, err
 	}
 
 	n := &Node{

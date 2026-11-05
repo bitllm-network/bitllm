@@ -29,7 +29,7 @@ package per domain. Tests live with the package they test.
 
 | path | what it does |
 |---|---|
-| `cmd/bitllm/` | flags, default bootstrap and roots, `bitllm account`, `bitllm invite`, `bitllm hash-model`, `bitllm update`; starts the node and the gateway |
+| `cmd/bitllm/` | flags, default bootstrap and roots, `bitllm account`, `bitllm invite`, `bitllm hash-model`, `bitllm update`; starts the node and the gateway. The seed list is [docs/bootstrap.md](docs/bootstrap.md) |
 | `internal/node/` | the running node: libp2p host, DHT, gossip, discovery and relays, the serving queue, inference and the gateway, access rules, receipts, audits, `GET /network`, `GET /logs` |
 | `internal/protocol/` | wire contract: protocol ids, gossip topics, `Announce`, validators, gossip bounds |
 | `internal/account/` | Ethereum-address accounts, signed node claims, the claims store, per-owner credits |
@@ -41,10 +41,11 @@ package per domain. Tests live with the package they test.
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
 | `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
-| `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
+| `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node and prints the DNS TXT records |
+| `deploy/seed-dns.py` | replaces the `_dnsaddr.bootstrap.bitllm.org` seed list through the Cloudflare API |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
-| `scripts/network-kv.sh` | publishes the bootstrap node's `/network` aggregate to Cloudflare KV for the bitllm.org map |
+| `scripts/network-kv.sh` | publishes an always-on node's `/network` aggregate to Cloudflare KV for the bitllm.org map |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
 
 The public site at bitllm.org is a separate repository,
@@ -79,6 +80,6 @@ serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
 
 ## Testing changes against the live network
 
-`external-test.yml` (manual dispatch) starts a fresh node on a GitHub runner, joins through
-`boot.bitllm.org`, and sends real requests. Run it after anything that touches networking, access or
+`external-test.yml` (manual dispatch) starts a fresh node on a GitHub runner, joins through the
+default bootstrap seeds, and sends real requests. Run it after anything that touches networking, access or
 the gateway.

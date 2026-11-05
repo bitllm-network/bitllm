@@ -28,9 +28,14 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// DefaultBootstrap is used when no --bootstrap is given. Anyone can run a
-// bootstrap node; this one sits behind a Cloudflare Tunnel.
+// DefaultBootstrap is used when no --bootstrap is given. The /dnsaddr/ name
+// is the seed list: every TXT record at _dnsaddr.bootstrap.bitllm.org names
+// an independent bootstrap node, so seeds can be added or retired without a
+// release. The literal entry is the old Cloudflare Tunnel seed, kept as a
+// fallback while the direct seeds are being deployed; remove it once two
+// direct seeds answer. See docs/bootstrap.md.
 var DefaultBootstrap = []string{
+	"/dnsaddr/bootstrap.bitllm.org",
 	"/dns4/boot.bitllm.org/tcp/443/wss/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib",
 }
 
@@ -82,7 +87,7 @@ func main() {
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
 	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
-	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3... (repeatable; default: boot.bitllm.org)")
+	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3..., or a /dnsaddr/ seed name (repeatable; default: the DNS seed list plus boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
 	flag.IntVar(&port, "port", 4001, "p2p port, TCP and UDP (QUIC)")
 	flag.IntVar(&wsPort, "ws-port", 0, "also accept libp2p over WebSocket on 127.0.0.1:PORT, for an HTTPS tunnel (Cloudflare Tunnel etc.) in front of a bootstrap node")

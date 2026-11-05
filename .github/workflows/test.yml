@@ -26,6 +26,10 @@ jobs:
         run: "! git grep -n 'bitllm-network' -- README.md deploy docs"
       - name: network-kv.sh parses
         run: sh -n scripts/network-kv.sh
+      - name: deploy scripts parse
+        run: |
+          bash -n deploy/bootstrap-vps.sh
+          python3 -m py_compile deploy/seed-dns.py
       - run: go vet ./...
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff

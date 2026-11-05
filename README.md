@@ -28,7 +28,8 @@ Contents: [Install](#install-and-run) · [Share a model](#share-a-model) ·
 ## Install and run
 
 No port forwarding, no configuration. The script picks the build for your machine, verifies its
-checksum and installs to `~/.local/bin` (no sudo). The node joins through `boot.bitllm.org`.
+checksum and installs to `~/.local/bin` (no sudo). The node joins through the public bootstrap
+seeds in [docs/bootstrap.md](docs/bootstrap.md).
 
 ```bash
 # macOS (Apple silicon), Linux (x86-64, arm64)
@@ -316,10 +317,13 @@ Separately, each node keeps a private ledger of work exchanged with each peer
 
 ## Run a bootstrap node
 
-Any machine with a public IP: `bitllm --dht-server --port 4001`, open TCP and UDP 4001.
-It also relays for NATed peers until they hole-punch a direct connection.
+A bootstrap seed is the first peer a new node dials. It answers DHT queries and relays for NATed
+peers until they hole-punch a direct connection. It does not answer inference requests or decide
+membership. Any machine with a public IP can be one:
+`bitllm --dht-server --port 4001`, with TCP and UDP 4001 open.
 
-On a fresh Ubuntu VM there is a script for it, which also installs the systemd unit:
+On a fresh Ubuntu VM there is a script for it, which also installs the systemd unit and prints the
+DNS TXT records to publish:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
@@ -329,10 +333,16 @@ Rerunning the script installs the newest binary, keeps `/var/lib/bitllm`, and re
 Installed this way the node also updates itself, because its binary lives in `/var/lib/bitllm/bin`
 where the unit may write.
 
+The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Keep at least two seeds
+on different providers, publish them with `deploy/seed-dns.py`, and a new node joins through any
+of them. Adding or retiring a seed is a DNS change, not a release. The current list and the
+failure behavior are in [docs/bootstrap.md](docs/bootstrap.md).
+
 No public IP? Put it behind an HTTPS tunnel that passes WebSockets (Cloudflare Tunnel, free):
 `bitllm --dht-server --ws-port 4002 --announce /dns4/boot.example.org/tcp/443/wss` and point
 the tunnel at `http://127.0.0.1:4002`. Others join with
-`--bootstrap /dns4/boot.example.org/tcp/443/wss/p2p/<peer id>`.
+`--bootstrap /dns4/boot.example.org/tcp/443/wss/p2p/<peer id>`. This puts Cloudflare in the
+connection path, so use it as a fallback, not as the primary seed.
 
 Announce a restart before you do it. Nodes redial a lost bootstrap every 15 seconds, but a request
 already streaming through your relay is cut when it goes down, and the user's agent may not retry it.
@@ -348,7 +358,7 @@ already streaming through your relay is cut when it goes down, and the user's ag
   spot-check the peers that answer you: about one request in 50 to a peer is followed by a canary
   request, and another node (the auditor) scores the answer token by token; a peer that keeps
   failing gets no requests for that model for 24 h (`GET /audits` shows the results). The default
-  auditor is a seed node run by us, the maintainers; `--auditor PEER_ID` replaces it and
+  auditor is a node run by us, the maintainers; `--auditor PEER_ID` replaces it and
   `--auditor none` drops it. Turning it on does not make cheating impossible:
   - It finds a server running another model, and a coarser quant (Q4 or below) on greedy requests.
   - It does not find a server that recognizes canaries (the pool is public), a quant swap on
