@@ -14,6 +14,7 @@ checks to run, and how to point Claude Code or an OpenAI client at the node.
 go build -o bitllm ./cmd/bitllm
 go test -race ./...        # must pass before every commit; tests spin up real libp2p nodes on 127.0.0.1
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...   # same pinned version as CI
 ```
 
 Go version: see `go.mod` (`mise.toml` pins the toolchain). Tests take 30 to 60 s with -race. Release binaries come
@@ -42,7 +43,7 @@ package per domain. Tests live with the package they test.
 | `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
-| `.github/workflows/test.yml` | gofmt, vet, tidy, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
+| `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
 
 ## Rules that are easy to break
