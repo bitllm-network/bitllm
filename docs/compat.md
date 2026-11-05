@@ -18,15 +18,17 @@ In each run the client must:
 
 1. see the server's model in `GET /v1/models` (announce gossip over the bootstrap),
 2. get a plain answer and a streamed answer (the `/bitllm/infer` stream protocol). A new client
-   asks for `/bitllm/infer/1.1.0` and falls back to `1.0.0` when the server is older; an old client
-   only ever asks `1.0.0`, and a new server answers it as before, so the queue is invisible to it,
+   asks for `/bitllm/infer/1.1.0` and falls back to `1.0.0` when the server is older. A 1.1.0
+   client queues when the server is busy; a 1.0.0 client is refused with a `429` and retries, as
+   before,
 3. end up with the signed receipt in its `GET /credits` (the `/bitllm/receipt` protocol).
 
 The second run also starts the server with `--concurrency 1` and sends two requests at the same
-moment. The client there is an old release, so it speaks `1.0.0` (no `wait_ms`): the server must
-refuse the second request with a `429` busy answer and the old gateway must retry, which both
-answers prove. A `202` would be unreadable to it. The run fails if either answer is missing, or if
-the server never refused (which would mean the two requests did not actually overlap).
+moment. The second request must be serialized behind the first. A client from v0.3.0 or later
+speaks `1.1.0` and waits in the server's queue after a `202`; an older client has no `wait_ms`, so
+the server refuses it with a `429` busy answer and its gateway retries. The run fails if either
+answer is missing, or if neither a busy refusal nor a queued request was seen, which would mean the
+two requests did not actually overlap.
 
 It never touches the public network (mDNS, UPnP and the default bootstrap are off) and takes about
 25 seconds. Run it yourself:
