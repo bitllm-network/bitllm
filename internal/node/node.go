@@ -434,9 +434,8 @@ func (n *Node) Link(owner, name string, t int64, ownerSig string) (*account.Clai
 func relayResources(behindProxy bool) relay.Resources {
 	rc := relay.DefaultResources()
 	rc.Limit = nil
-	rc.MaxReservations = 1024     // NATed peers that can be reached through us
-	rc.MaxReservationsPerPeer = 2 // default 1; 2 tolerates a reconnect overlap
-	rc.MaxCircuits = 64           // open relayed connections per peer
+	rc.MaxReservations = 1024 // NATed peers that can be reached through us
+	rc.MaxCircuits = 64       // open relayed connections per peer
 	if behindProxy {
 		rc.MaxReservationsPerIP = rc.MaxReservations
 	}

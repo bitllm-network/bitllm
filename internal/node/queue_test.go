@@ -222,7 +222,7 @@ func TestQueueAgingStops(t *testing.T) {
 func TestQueueFairness(t *testing.T) {
 	ctx := t.Context()
 	n := testNode(t, ctx, Config{Concurrency: 4})
-	a, b := randomPeer(t), randomPeer(t)
+	a := randomPeer(t)
 	now := time.Now()
 
 	t1 := takeSlot(t, n, a, now)

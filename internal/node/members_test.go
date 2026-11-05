@@ -33,12 +33,6 @@ func (e ethKey) invite(to string, at int64) members.Item {
 	return members.Item{Invite: i}
 }
 
-func (e ethKey) revoke(acct string, at int64) members.Item {
-	r := &members.Revoke{Account: acct, Root: e.addr, Time: at}
-	r.Sig = hex.EncodeToString(account.EthSign(e.k, r.Message()))
-	return members.Item{Revoke: r}
-}
-
 // claimNode makes a node key owned by account and records the claim on n.
 func claimNode(t *testing.T, n *Node, owner ethKey) (peer.ID, crypto.PrivKey) {
 	nk, _, _ := crypto.GenerateEd25519Key(nil)

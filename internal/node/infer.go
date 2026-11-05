@@ -392,7 +392,7 @@ func (n *Node) clamp(path string, body map[string]any) {
 		if v, ok := body[k].(float64); ok {
 			body[k] = min(v, limit)
 			set = true
-		} else if _, ok := body[k]; ok {
+		} else {
 			delete(body, k)
 		}
 	}

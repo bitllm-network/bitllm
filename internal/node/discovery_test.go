@@ -204,7 +204,7 @@ func TestBootstrapRestart(t *testing.T) {
 	// same identity on the same address.
 	boot.host.Close()
 	stopBoot()
-	boot = startBoot()
+	startBoot()
 	waitServed("after the bootstrap restarted", 15*time.Second)
 
 	relayed := false
