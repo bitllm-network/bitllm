@@ -6,7 +6,7 @@
 #   curl -fsSL https://bitllm.org/install.sh | sh
 set -eu
 
-REPO=bitllm-network/bitllm
+REPO=bitllm-org/bitllm
 DIR=${BITLLM_DIR:-$HOME/.local/bin}
 BASE=https://github.com/$REPO/releases/latest/download
 

@@ -1,6 +1,6 @@
 # BitLLM
 
-> BitLLM is a peer-to-peer LLM inference network. Every participant runs one binary, `bitllm`. It opens an OpenAI- and Anthropic-compatible API on `http://127.0.0.1:7778` that answers from whichever peer serves the requested model, and it can share a local inference server (vLLM, SGLang, llama.cpp, Ollama, LM Studio) with the network. No port forwarding and no central server; an account is optional (see Access rules). Source: https://github.com/bitllm-network/bitllm (MIT).
+> BitLLM is a peer-to-peer LLM inference network. Every participant runs one binary, `bitllm`. It opens an OpenAI- and Anthropic-compatible API on `http://127.0.0.1:7778` that answers from whichever peer serves the requested model, and it can share a local inference server (vLLM, SGLang, llama.cpp, Ollama, LM Studio) with the network. No port forwarding and no central server; an account is optional (see Access rules). Source: https://github.com/bitllm-org/bitllm (MIT).
 
 This file is written for AI agents setting BitLLM up on behalf of a user. Follow the task that matches what the user asked for. Every step has a check; do not continue past a failed check.
 
@@ -26,7 +26,7 @@ irm https://bitllm.org/install.ps1 | iex
 
 The script installs to `~/.local/bin/bitllm` (Windows: `%LOCALAPPDATA%\bitllm\bitllm.exe`) and verifies the release checksum. Check: `bitllm --version` prints `bitllm v0.x.y`. If `~/.local/bin` is not on PATH, use the full path `~/.local/bin/bitllm` in the commands below.
 
-Manual download, if scripts are not allowed: https://github.com/bitllm-network/bitllm/releases/latest, files `bitllm-darwin-arm64`, `bitllm-linux-amd64`, `bitllm-linux-arm64`, `bitllm-windows-amd64.exe`. Use `curl -fL -o bitllm <url> && chmod +x bitllm` (curl does not set the macOS quarantine flag; a browser download does).
+Manual download, if scripts are not allowed: https://github.com/bitllm-org/bitllm/releases/latest, files `bitllm-darwin-arm64`, `bitllm-linux-amd64`, `bitllm-linux-arm64`, `bitllm-windows-amd64.exe`. Use `curl -fL -o bitllm <url> && chmod +x bitllm` (curl does not set the macOS quarantine flag; a browser download does).
 
 ## Task 2: use models from the network
 
@@ -78,7 +78,7 @@ export CLAUDE_CODE_SUBAGENT_MODEL=MODEL
 
 The dashboard at http://127.0.0.1:7778 shows the same setup for a human.
 
-Optional: start the node with `--audit` to spot-check the peers that answer the user (a canary request now and then, scored by another node; a peer that keeps failing is not used for that model for 24 h). `curl -s http://127.0.0.1:7778/audits` shows the results. It cannot catch every cheat; see https://github.com/bitllm-network/bitllm/blob/main/docs/audit.md.
+Optional: start the node with `--audit` to spot-check the peers that answer the user (a canary request now and then, scored by another node; a peer that keeps failing is not used for that model for 24 h). `curl -s http://127.0.0.1:7778/audits` shows the results. It cannot catch every cheat; see https://github.com/bitllm-org/bitllm/blob/main/docs/audit.md.
 
 ## Task 3: share a GPU with the network
 
@@ -172,5 +172,5 @@ To become a member the user needs an Ethereum address, an invite from a member, 
 ## More
 
 - Human-readable guide: https://bitllm.org
-- README: https://github.com/bitllm-network/bitllm#readme
-- 中文说明: https://github.com/bitllm-network/bitllm/blob/main/docs/JOIN.zh.md
+- README: https://github.com/bitllm-org/bitllm#readme
+- 中文说明: https://github.com/bitllm-org/bitllm/blob/main/docs/JOIN.zh.md

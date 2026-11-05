@@ -35,7 +35,7 @@ It never touches the public network (mDNS, UPnP and the default bootstrap are of
 
 ```sh
 go build -o /tmp/bitllm-new ./cmd/bitllm
-curl -fsSL -o /tmp/bitllm-old https://github.com/bitllm-network/bitllm/releases/latest/download/bitllm-linux-amd64
+curl -fsSL -o /tmp/bitllm-old https://github.com/bitllm-org/bitllm/releases/latest/download/bitllm-linux-amd64
 chmod +x /tmp/bitllm-old
 scripts/compat.sh /tmp/bitllm-old /tmp/bitllm-new
 ```
