@@ -1,4 +1,4 @@
-# BitLLM
+# BitLLM_
 
 [![test](https://github.com/bitllm-network/bitllm/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/bitllm-network/bitllm/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/bitllm-network/bitllm)](https://github.com/bitllm-network/bitllm/releases)
@@ -17,7 +17,7 @@ relay plus hole punching when both sides are behind NAT.
 Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org), and the
 [access rules](#how-access-works) decide who gets a slot. Using it needs no account and no wallet.
 
-![The dashboard a running node serves: pick a model online, copy the setup for your agent, send a test message](docs/images/dashboard.png)
+![The dashboard a running node serves: a terminal-style editor with a model list, a copyable setup snippet, and a test console](docs/images/dashboard.png)
 
 Contents: [Install](#install-and-run) · [Share a model](#share-a-model) ·
 [Use the network](#use-the-network) · [Manage your node](#watch-and-manage-your-node) ·
@@ -398,7 +398,8 @@ change to networking, access or the gateway, run the external test workflow
 
 Other docs: [audit](docs/audit.md), [network map](docs/network-map.md),
 [compatibility](docs/compat.md), [中文说明](docs/JOIN.zh.md), and
-[site/llms.txt](site/llms.txt) (the same instructions for AI agents).
+[site/llms.txt](site/llms.txt) (the same instructions for AI agents). Brand assets live in
+[bitllm-org/branding](https://github.com/bitllm-org/branding).
 
 ## License
 

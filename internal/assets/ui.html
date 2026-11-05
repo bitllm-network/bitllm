@@ -5,191 +5,554 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BitLLM</title>
 <style>
-/* One job per screen: connect an agent. Models are the first choice, the
-   snippet and test follow; sharing and credits sit quietly below. System
-   fonts only: this page is served offline from your own machine. */
+/* The dashboard is a small local editor: one window, three numbered steps,
+   one model selected, one snippet copied, one test run. Everything above
+   sharing and credits is the path from install to first answer. System
+   fonts only, because this page is served offline from your own machine. */
 :root {
-  --paper: #f2f3f0; --sheet: #fbfbfa; --ink: #15171a; --sub: #5c6168; --rule: #d8dbd5;
-  --green: #15803d; --orange: #c2410c; --red: #b91c1c;
+  --bg: #070908;
+  --win: #0c0f0d;
+  --panel: #101411;
+  --panel-2: #0a0d0b;
+  --line: #222a25;
+  --line-2: #303b34;
+  --ink: #dce6df;
+  --sub: #8b978f;
+  --dim: #5b6860;
+  --green: #5ddb96;
+  --green-dim: #2c6b4a;
+  --amber: #e4b465;
+  --red: #ef7d7d;
+  --blue: #8fc7d4;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: dark;
 }
-@media (prefers-color-scheme: dark) { :root {
-  --paper: #0f1110; --sheet: #151816; --ink: #e7e9e5; --sub: #8e958f; --rule: #272b28;
-  --green: #4ade80; --orange: #fb923c; --red: #f87171; color-scheme: dark } }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.55 var(--sans); }
-.wrap { max-width: 880px; margin: 0 auto; padding: 0 max(16px, env(safe-area-inset-right)) 56px max(16px, env(safe-area-inset-left)); }
-:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-button { font: inherit; cursor: pointer; }
-code, .mono { font-family: var(--mono); font-size: 13px; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1100px 520px at 50% -12%, #102019 0%, rgba(16, 32, 25, 0) 62%),
+    var(--bg);
+  color: var(--ink);
+  font: 14px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: rgba(93, 219, 150, .24); }
+:focus-visible { outline: 1px solid var(--green); outline-offset: 2px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+code, .mono { font-family: var(--mono); }
+a { color: inherit; }
 
-header { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; padding-block: 20px; border-bottom: 1px solid var(--rule); }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 17px; letter-spacing: -.2px; }
-.mark { width: 18px; height: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
-.mark i { background: var(--ink); } .mark i:first-child { background: var(--green); } .mark i:last-child { background: var(--orange); }
-.net { display: flex; align-items: center; gap: 8px; color: var(--sub); font-size: 14px; }
-.net i { width: 8px; height: 8px; background: var(--sub); }
-.net.on i { background: var(--green); }
-.id { margin-left: auto; font: 12px var(--mono); color: var(--sub); background: none; border: 1px solid var(--rule); padding: 4px 8px; }
-.id:hover { color: var(--ink); border-color: var(--ink); }
+.window {
+  max-width: 1080px;
+  margin: 30px auto 52px;
+  background: var(--win);
+  border: 1px solid var(--line);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .015) inset;
+}
 
-h1 { font-size: 26px; line-height: 1.2; font-weight: 800; letter-spacing: -.4px; margin: 36px 0 6px; }
-.lede { color: var(--sub); margin: 0 0 26px; max-width: 60ch; }
-.step { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 0 14px; margin-bottom: 26px; }
-.step > b { font: 600 13px/26px var(--mono); color: var(--sub); }
-.step h2 { font-size: 15px; font-weight: 650; margin: 2px 0 10px; }
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 14px;
+  background: #0a0c0b;
+  border-bottom: 1px solid var(--line);
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+.lights { display: flex; gap: 6px; }
+.lights i { width: 9px; height: 9px; border-radius: 50%; background: #2a332d; }
+.lights i:first-child { background: #5c3a38; }
+.lights i:nth-child(2) { background: #5a4c2c; }
+.lights i:nth-child(3) { background: #2f5a41; }
+.win-title { color: var(--sub); }
+.win-title .sep { color: #3b463f; }
+.host { margin-left: auto; color: var(--dim); }
 
-.models { border: 1px solid var(--rule); background: var(--sheet); }
-.model { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 14px; cursor: pointer; }
-.model + .model { border-top: 1px solid var(--rule); }
-.model input { margin: 0; accent-color: var(--green); }
-.model .name { font: 14px var(--mono); overflow-wrap: anywhere; }
-.model .meta { font-size: 13px; color: var(--sub); white-space: nowrap; display: flex; gap: 10px; align-items: center; }
-.tag { font-size: 11px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: var(--orange); border: 1px solid currentColor; padding: 1px 5px; }
-.model:has(input:checked) { background: var(--paper); }
-.model:has(input:checked) .name { font-weight: 600; }
-.empty { padding: 14px; color: var(--sub); }
+.page { padding: 0 32px; }
 
-.tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--rule); margin-bottom: 0; }
-.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--sub); padding: 8px 12px 9px; margin-bottom: -1px; }
-.tabs button:hover { color: var(--ink); }
-.tabs button.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
-.snip { position: relative; margin: 0; background: var(--sheet); border: 1px solid var(--rule); border-top: 0;
-  padding: 42px 16px 14px; font: 13px/1.7 var(--mono); white-space: pre; overflow-x: auto; }
-.copy { position: absolute; top: 8px; right: 8px; font-size: 12px; padding: 5px 9px; background: var(--paper); color: var(--sub); border: 1px solid var(--rule); }
-.copy:hover { color: var(--ink); border-color: var(--ink); }
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px 18px;
+  flex-wrap: wrap;
+  padding: 24px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; flex-direction: column; gap: 3px; margin-right: auto; min-width: 0; }
+.wordmark { font: 700 23px/1 var(--mono); letter-spacing: -.6px; color: var(--ink); }
+.caret { color: var(--green); animation: blink 1.15s steps(1) infinite; }
+.tagline { font: 10.5px var(--mono); letter-spacing: .3px; color: var(--dim); }
+.net {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font: 11px var(--mono);
+  color: var(--sub);
+  white-space: nowrap;
+}
+.dot { width: 6px; height: 6px; background: var(--dim); flex: none; }
+.net.on { color: var(--ink); border-color: var(--green-dim); }
+.net.on .dot { background: var(--green); box-shadow: 0 0 8px rgba(93, 219, 150, .8); }
+.peer {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 6px 9px;
+  border: 1px dashed var(--line-2);
+  background: transparent;
+  font: 11px var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.peer:hover { color: var(--green); border-color: var(--green-dim); }
 
-.test { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
-.btn { background: var(--ink); color: var(--paper); border: 1.5px solid var(--ink); padding: 9px 16px; font-weight: 600; }
-.btn:hover { background: transparent; color: var(--ink); }
-.btn:disabled { opacity: .5; cursor: default; }
-.result { font-size: 14px; color: var(--sub); }
-.ok { color: var(--green); font-weight: 600; } .bad { color: var(--red); }
-.note { font-size: 13px; color: var(--sub); margin: 12px 0 0; max-width: 64ch; }
+.hero { padding: 34px 0 28px; border-bottom: 1px solid var(--line); }
+.hero .comment { margin: 0 0 10px; font: 11px var(--mono); color: var(--dim); }
+h1 {
+  margin: 0 0 12px;
+  font: 600 clamp(29px, 4vw, 40px)/1.12 var(--mono);
+  letter-spacing: -1.2px;
+}
+h1 .prompt { color: var(--green); margin-right: 10px; }
+.lede { margin: 0; max-width: 72ch; color: var(--sub); font: 14px/1.65 var(--sans); }
+.lede code {
+  color: var(--green);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 0; margin-top: 22px; font: 11.5px var(--mono); }
+.flow a { padding: 5px 9px; border: 1px solid var(--line); background: var(--panel-2); color: var(--sub); text-decoration: none; }
+.flow a + a { border-left: 0; }
+.flow a:hover { color: var(--ink); background: var(--panel); }
+.flow b { color: var(--green); font-weight: 500; margin-right: 4px; }
 
-.lower { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--rule); margin-top: 40px; }
-.lower > div { padding: 24px 24px 8px 0; min-width: 0; }
-.lower > div + div { padding-left: 24px; border-left: 1px solid var(--rule); }
-.lower h3 { font-size: 12px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; color: var(--sub); margin: 0 0 12px; }
-.big { font-size: 30px; font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.big small { font-size: 14px; font-weight: 500; color: var(--sub); letter-spacing: 0; margin-left: 6px; }
-.shared { font: 14px var(--mono); color: var(--orange); overflow-wrap: anywhere; }
-.cmd { font: 12.5px/1.6 var(--mono); background: var(--sheet); border: 1px solid var(--rule); padding: 10px 12px; white-space: pre; overflow-x: auto; margin: 10px 0 0; }
+main { padding-bottom: 4px; }
+.step { padding: 28px 0 30px; border-bottom: 1px solid var(--line); scroll-margin-top: 22px; }
+.step-head { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; margin-bottom: 14px; }
+.num {
+  padding: 2px 5px;
+  border: 1px solid var(--green-dim);
+  background: rgba(93, 219, 150, .05);
+  color: var(--green);
+  font: 10.5px var(--mono);
+  font-weight: 500;
+}
+.step h2 { margin: 0; font: 600 17px var(--mono); letter-spacing: -.3px; }
+.head-meta { margin-left: auto; font: 10.5px var(--mono); color: var(--dim); }
+
+.inventory { border: 1px solid var(--line); background: var(--panel-2); }
+.list-head {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  font: 9.5px var(--mono);
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.models { background: var(--panel-2); }
+.model {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.model + .model { border-top: 1px solid var(--line); }
+.model:hover { background: #101511; }
+.model input {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-content: center;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  cursor: pointer;
+}
+.model input::before { content: ""; width: 5px; height: 5px; background: var(--green); transform: scale(0); transition: transform .1s; }
+.model input:checked::before { transform: scale(1); }
+.model:has(input:checked) { background: rgba(93, 219, 150, .055); border-left-color: var(--green); }
+.model .name { font: 13px/1.45 var(--mono); overflow-wrap: anywhere; }
+.model:has(input:checked) .name { color: #fff; }
+.model .meta { display: flex; align-items: center; gap: 9px; font: 10.5px var(--mono); color: var(--sub); white-space: nowrap; }
+.model:has(input:checked) .meta::before { content: "selected"; color: var(--green); }
+.tag {
+  padding: 1px 5px;
+  border: 1px solid rgba(228, 180, 101, .38);
+  background: rgba(228, 180, 101, .06);
+  color: var(--amber);
+  font: 9px var(--mono);
+  letter-spacing: .7px;
+  text-transform: uppercase;
+}
+.empty { padding: 16px 14px; font: 12px var(--mono); color: var(--dim); }
+
+.editor { border: 1px solid var(--line); background: var(--panel-2); }
+.editor-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: #0a0d0b; }
+.tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button {
+  flex: none;
+  padding: 10px 14px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--dim);
+  font: 11.5px var(--mono);
+  white-space: nowrap;
+}
+.tabs button:hover { color: var(--ink); background: #0e120f; }
+.tabs button.on { color: var(--ink); background: var(--panel-2); border-top-color: var(--green); }
+.copy {
+  flex: none;
+  padding: 0 14px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--sub);
+  font: 10.5px var(--mono);
+}
+.copy:hover { color: var(--green); background: #0e120f; }
+.code { display: flex; overflow-x: auto; font: 12.5px/1.75 var(--mono); }
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  min-width: 2.6em;
+  margin: 0;
+  padding: 14px 10px 16px 12px;
+  border-right: 1px solid var(--line);
+  background: #0b0e0c;
+  color: #3e4a42;
+  text-align: right;
+  user-select: none;
+  white-space: pre;
+}
+.snip { margin: 0; padding: 14px 20px 16px 14px; color: #c8d4cc; white-space: pre; }
+.cm { color: #56645b; font-style: italic; }
+.kw { color: var(--amber); }
+.var { color: var(--blue); }
+.str { color: #a9d7ab; }
+
+.console { border: 1px solid var(--line); background: #070a08; }
+.console-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 13px;
+  border-bottom: 1px solid var(--line);
+  background: #0a0d0b;
+  font: 10px var(--mono);
+  letter-spacing: .4px;
+  color: var(--dim);
+}
+.console-body { padding: 16px 14px 18px; }
+.cmdline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ps1 { color: var(--green); font: 13px var(--mono); }
+.run {
+  padding: 6px 11px;
+  border: 1px solid var(--green-dim);
+  background: rgba(93, 219, 150, .06);
+  color: var(--green);
+  font: 11.5px var(--mono);
+}
+.run:hover { background: var(--green); color: #06110b; }
+.run:disabled { opacity: .5; cursor: default; }
+.result { margin-top: 12px; min-height: 23px; font: 12px/1.7 var(--mono); color: var(--sub); }
+.result::before { content: "> "; color: var(--dim); }
+.ok { color: var(--green); font-weight: 600; }
+.bad { color: var(--red); }
+.dim { color: var(--dim); }
+.note { margin: 14px 0 0; max-width: 72ch; color: var(--sub); font: 13px/1.65 var(--sans); }
+
+.lower { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
+.panel { min-width: 0; padding: 27px 0 30px; }
+.panel:first-child { padding-right: 30px; border-right: 1px solid var(--line); }
+.panel:last-child { padding-left: 30px; }
+.panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.label { font: 600 10.5px var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--ink); }
+.label::before { content: "// "; color: var(--green); letter-spacing: 0; }
+.panel-head .head-meta { margin-left: 0; }
+.shared { font: 13px/1.7 var(--mono); color: var(--green); white-space: pre-line; overflow-wrap: anywhere; }
+.cmd {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--green-dim);
+  background: var(--panel-2);
+  color: #c8d4cc;
+  font: 11.5px/1.7 var(--mono);
+  white-space: pre;
+  overflow-x: auto;
+}
+.big {
+  font: 700 37px/1 var(--mono);
+  letter-spacing: -1.6px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.big small { margin-left: 9px; color: var(--sub); font: 10.5px var(--mono); letter-spacing: 0; white-space: nowrap; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.row input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); padding: 8px 10px; }
-.btn.line { background: transparent; color: var(--ink); }
-.btn.line:hover { border-color: var(--green); color: var(--green); }
+.row input {
+  flex: 1;
+  min-width: 150px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  font: 12px var(--mono);
+}
+.row input::placeholder { color: var(--dim); }
+.row input:focus { border-color: var(--green-dim); outline: none; }
+.btn {
+  padding: 9px 15px;
+  border: 1px solid var(--green);
+  background: var(--green);
+  color: #06110b;
+  font: 600 12px var(--mono);
+}
+.btn:hover { background: transparent; color: var(--green); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.line { border-color: var(--line-2); background: transparent; color: var(--ink); font-weight: 500; }
+.btn.line:hover { border-color: var(--green-dim); color: var(--green); }
+#access { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+#access h3 { margin: 0 0 10px; font: 600 10.5px var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--ink); }
+#access h3::before { content: "// "; color: var(--green); letter-spacing: 0; }
 
-details { margin-top: 28px; border-top: 1px solid var(--rule); }
-summary { cursor: pointer; padding: 14px 0; color: var(--sub); font-size: 14px; }
-summary:hover { color: var(--ink); }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; table-layout: fixed; font-size: 14px; }
-th, td { text-align: left; padding: 8px 6px 8px 0; border-top: 1px solid var(--rule); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-th { color: var(--sub); font-weight: 500; font-size: 12px; border-top: 0; }
-.n { text-align: right; width: 84px; }
+.ledger { border-bottom: 1px solid var(--line); padding: 4px 0 18px; }
+.ledger summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 0;
+  font: 11.5px var(--mono);
+  color: var(--sub);
+}
+.ledger summary::-webkit-details-marker { display: none; }
+.ledger summary::before { content: "+"; color: var(--green); }
+.ledger[open] summary::before { content: "-"; }
+.ledger summary:hover { color: var(--ink); }
+.ledger summary .head-meta { margin-left: auto; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel-2); }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 12px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+th { border-bottom: 1px solid var(--line-2); color: var(--dim); font: 9.5px var(--mono); font-weight: 400; letter-spacing: 1px; text-transform: uppercase; }
+td { border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: #0e120f; }
+.n { width: 92px; text-align: right; }
 .me { color: var(--green); }
 
-@media (max-width: 640px) {
+footer {
+  display: flex;
+  align-items: center;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 15px 32px;
+  border-top: 1px solid var(--line);
+  background: #0a0d0b;
+  font: 10.5px var(--mono);
+  color: var(--dim);
+}
+footer .fm { color: var(--sub); }
+footer .right { margin-left: auto; }
+
+@keyframes blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .caret { animation: none; } html { scroll-behavior: auto; } }
+
+@media (max-width: 760px) {
+  .window { margin: 0; border-left: 0; border-right: 0; }
+  .page { padding: 0 20px; }
+  header { padding: 20px 0 16px; }
+  .brand { flex-basis: 100%; }
+  .peer { max-width: 100%; }
+  .hero { padding: 28px 0 24px; }
+  .head-meta { display: none; }
   .lower { grid-template-columns: minmax(0, 1fr); }
-  .lower > div { padding-right: 0; }
-  .lower > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); }
-  .id { margin-left: 0; }
-  .step { grid-template-columns: minmax(0, 1fr); }
-  .step > b { line-height: 1.4; }
+  .panel { padding: 24px 0; }
+  .panel:first-child { padding-right: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .panel:last-child { padding-left: 0; }
+  .list-head span:last-child { display: none; }
+  .model { grid-template-columns: 14px minmax(0, 1fr); }
+  .model .meta { grid-column: 2; white-space: normal; }
+  footer { padding: 14px 20px; }
+}
+@media (max-width: 460px) {
+  .window { border-top: 0; }
+  .host { display: none; }
+  .flow a { padding: 5px 7px; }
+  .model:has(input:checked) .meta::before { content: "selected /"; }
+  .big { font-size: 32px; }
 }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>BitLLM</div>
-    <div class="net" id="net"><i></i><span id="net-text">Connecting…</span></div>
-    <button class="id" id="peerid" type="button" title="Your peer id. Click to copy.">…</button>
-  </header>
-
-  <h1>Connect your agent</h1>
-  <p class="lede">This page runs on your machine. Your agent talks to it at <code id="base-url"></code>, and it answers from whichever peer serves the model.</p>
-
-  <div class="step">
-    <b>1</b>
-    <div>
-      <h2>Pick a model</h2>
-      <div class="models" id="models" role="radiogroup" aria-label="Models on the network"><div class="empty">Looking for peers…</div></div>
-    </div>
+<div class="window">
+  <div class="titlebar">
+    <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="win-title">bitllm <span class="sep">/</span> gateway</span>
+    <span class="host" id="host">localhost</span>
   </div>
 
-  <div class="step">
-    <b>2</b>
-    <div>
-      <h2>Paste this into your tool</h2>
-      <div class="tabs" id="tabs" role="tablist"></div>
-      <pre class="snip" id="snip"></pre>
-    </div>
-  </div>
+  <div class="page">
+    <header>
+      <div class="brand">
+        <span class="wordmark">BitLLM<span class="caret" aria-hidden="true">_</span></span>
+        <span class="tagline">// local gateway for shared models</span>
+      </div>
+      <div class="net" id="net"><i class="dot" aria-hidden="true"></i><span id="net-text">Connecting...</span></div>
+      <button class="peer" id="peerid" type="button" title="Your peer id. Click to copy.">...</button>
+    </header>
 
-  <div class="step">
-    <b>3</b>
-    <div>
-      <h2>Check it answers</h2>
-      <div class="test"><button class="btn" id="test" type="button">Send a test message</button><span class="result" id="result"></span></div>
-      <p class="note">The peer that serves a request can read it, so don't send secrets. Models you share yourself are answered by your own server and never leave this machine.</p>
-    </div>
-  </div>
+    <section class="hero">
+      <p class="comment">// this page runs on your machine</p>
+      <h1><span class="prompt" aria-hidden="true">$</span>Connect your agent</h1>
+      <p class="lede">Your agent talks to this gateway at <code id="base-url"></code>, and it answers from whichever peer serves the model.</p>
+      <nav class="flow" aria-label="Setup steps">
+        <a href="#step-1"><b>01</b>model</a>
+        <a href="#step-2"><b>02</b>snippet</a>
+        <a href="#step-3"><b>03</b>test</a>
+      </nav>
+    </section>
 
-  <div class="lower">
-    <div>
-      <h3>Sharing</h3>
-      <div id="share-on" hidden>
-        <div class="shared" id="shared"></div>
-        <p class="note" style="margin-top:8px">Peers can use these now. Every job you serve earns credits.</p>
-      </div>
-      <div id="share-off" hidden>
-        <p class="note" style="margin-top:0">You're not sharing a model. If you run vLLM, SGLang, llama.cpp or Ollama, restart BitLLM pointed at it:</p>
-        <div class="cmd">bitllm --upstream http://localhost:8000/v1 \
-  --model your-name=deepseek-v4.1-flash-1017</div>
-      </div>
-    </div>
-    <div>
-      <h3>Credits</h3>
-      <div class="big"><span id="my-credits">0</span><small id="my-jobs">0 jobs served</small></div>
-      <div id="acct-linked" hidden>
-        <p class="note">Account <b id="acct-name"></b> <span class="mono" id="acct-addr"></span>. Credits from all its machines add up here.</p>
-      </div>
-      <div id="acct-unlinked" hidden>
-        <p class="note">Link this node to an Ethereum address so credits from all your machines add up. It signs a message only: no transaction, no gas.</p>
-        <div class="row">
-          <input id="acct-input" placeholder="Display name (optional)" maxlength="32" aria-label="Display name">
-          <button class="btn line" id="acct-link" type="button">Link wallet</button>
+    <main>
+      <section class="step" id="step-1">
+        <div class="step-head">
+          <span class="num">01</span>
+          <h2>Pick a model</h2>
+          <span class="head-meta">// what is online right now</span>
         </div>
-        <p class="note" id="acct-result"></p>
-      </div>
-      <div id="access" hidden>
-        <h3 style="margin-top:20px">Access</h3>
-        <p class="note" id="access-text"></p>
-        <div id="invite-box" hidden>
-          <div class="row">
-            <input id="invite-addr" placeholder="0x address to invite" maxlength="42" aria-label="Address to invite">
-            <button class="btn line" id="invite-go" type="button">Invite</button>
+        <div class="inventory">
+          <div class="list-head" aria-hidden="true"><span></span><span>model</span><span>availability</span></div>
+          <div class="models" id="models" role="radiogroup" aria-label="Models on the network"><div class="empty">Looking for peers...</div></div>
+        </div>
+      </section>
+
+      <section class="step" id="step-2">
+        <div class="step-head">
+          <span class="num">02</span>
+          <h2>Paste this into your tool</h2>
+          <span class="head-meta">// pick your client</span>
+        </div>
+        <div class="editor">
+          <div class="editor-bar">
+            <div class="tabs" id="tabs" role="tablist"></div>
+            <button class="copy" id="copy" type="button">copy</button>
           </div>
-          <p class="note" id="invite-result"></p>
+          <div class="code">
+            <pre class="gutter" id="gutter" aria-hidden="true"></pre>
+            <pre class="snip" id="snip"></pre>
+          </div>
         </div>
+      </section>
+
+      <section class="step" id="step-3">
+        <div class="step-head">
+          <span class="num">03</span>
+          <h2>Check it answers</h2>
+          <span class="head-meta">// a real request through the gateway</span>
+        </div>
+        <div class="console">
+          <div class="console-bar"><span>terminal</span><span>POST /v1/chat/completions</span></div>
+          <div class="console-body">
+            <div class="cmdline">
+              <span class="ps1" aria-hidden="true">$</span>
+              <button class="run" id="test" type="button">Send a test message</button>
+            </div>
+            <div class="result" id="result" aria-live="polite"><span class="dim">// no output yet</span></div>
+          </div>
+        </div>
+        <p class="note">The peer that serves a request can read it, so don't send secrets. Models you share yourself are answered by your own server and never leave this machine.</p>
+      </section>
+
+      <div class="lower">
+        <section class="panel">
+          <div class="panel-head"><span class="label">sharing</span><span class="head-meta">// what this node serves</span></div>
+          <div id="share-on" hidden>
+            <div class="shared" id="shared"></div>
+            <p class="note" style="margin-top:8px">Peers can use these now. Every job you serve earns credits.</p>
+          </div>
+          <div id="share-off" hidden>
+            <p class="note" style="margin-top:0">You're not sharing a model. If you run vLLM, SGLang, llama.cpp or Ollama, restart BitLLM pointed at it:</p>
+            <pre class="cmd">bitllm --upstream http://localhost:8000/v1 \
+  --model your-name=deepseek-v4.1-flash-1017</pre>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><span class="label">credits</span><span class="head-meta">// earned by this node</span></div>
+          <div class="big"><span id="my-credits">0</span><small id="my-jobs">0 jobs served</small></div>
+          <div id="acct-linked" hidden>
+            <p class="note">Account <b id="acct-name"></b> <span class="mono" id="acct-addr"></span>. Credits from all its machines add up here.</p>
+          </div>
+          <div id="acct-unlinked" hidden>
+            <p class="note">Link this node to an Ethereum address so credits from all your machines add up. It signs a message only: no transaction, no gas.</p>
+            <div class="row">
+              <input id="acct-input" placeholder="Display name (optional)" maxlength="32" aria-label="Display name">
+              <button class="btn line" id="acct-link" type="button">Link wallet</button>
+            </div>
+            <p class="note" id="acct-result"></p>
+          </div>
+          <div id="access" hidden>
+            <h3>Access</h3>
+            <p class="note" id="access-text"></p>
+            <div id="invite-box" hidden>
+              <div class="row">
+                <input id="invite-addr" placeholder="0x address to invite" maxlength="42" aria-label="Address to invite">
+                <button class="btn line" id="invite-go" type="button">Invite</button>
+              </div>
+              <p class="note" id="invite-result"></p>
+            </div>
+          </div>
+        </section>
       </div>
-    </div>
+
+      <details class="ledger">
+        <summary>Credits across the network<span class="head-meta">// signed receipts, same table on every node</span></summary>
+        <div class="table-wrap">
+          <table><thead><tr><th>Account</th><th class="n">Jobs</th><th class="n">Credits</th></tr></thead><tbody id="credits"></tbody></table>
+        </div>
+        <p class="note">Counted from receipts signed by both sides and gossiped to every node. Every node computes the same table.</p>
+      </details>
+    </main>
   </div>
 
-  <details>
-    <summary>Credits across the network</summary>
-    <table><thead><tr><th>Account</th><th class="n">Jobs</th><th class="n">Credits</th></tr></thead><tbody id="credits"></tbody></table>
-    <p class="note">Counted from receipts signed by both sides and gossiped to every node. Every node computes the same table.</p>
-  </details>
+  <footer>
+    <span class="fm">BitLLM_</span>
+    <span>served from this machine</span>
+    <span class="right" id="version"></span>
+  </footer>
 </div>
+
 <script>
 const $ = id => document.getElementById(id);
-const short = id => id ? id.slice(0, 8) + "…" + id.slice(-6) : "";
+const short = id => id ? id.slice(0, 8) + "..." + id.slice(-6) : "";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const base = location.origin;
 $("base-url").textContent = base + "/v1";
+$("host").textContent = location.host;
 let me = "", model = "", modelsKey = "";
 try { model = localStorage.getItem("bitllm-model") || ""; } catch {}
 
@@ -204,6 +567,8 @@ async function refresh() {
     ]);
     me = st.id;
     $("peerid").textContent = short(me);
+    $("peerid").title = me + ". Click to copy.";
+    $("version").textContent = st.version || "";
     const byPeer = {};
     for (const c of st.conns) (byPeer[c.peer] ||= []).push(c);
     const peers = Object.keys(byPeer).length;
@@ -222,7 +587,7 @@ async function refresh() {
         <label class="model"><input type="radio" name="model" value="${esc(m.id)}" ${m.id === model ? "checked" : ""}>
           <span class="name">${esc(m.id)}</span>
           <span class="meta">${st.serving.includes(m.id) ? `<span class="tag">yours</span>` : ""}${m.nodes} node${m.nodes === 1 ? "" : "s"}</span></label>`).join("")
-        : `<div class="empty">No models on the network yet. Waiting for peers…</div>`;
+        : `<div class="empty">No models on the network yet. Waiting for peers...</div>`;
       renderSnip();
     }
 
@@ -240,7 +605,7 @@ async function refresh() {
     $("acct-unlinked").hidden = !!myOwner;
     if (myOwner) {
       $("acct-name").textContent = acct.claim.name || "unnamed";
-      $("acct-addr").textContent = myOwner.slice(0, 6) + "…" + myOwner.slice(-4);
+      $("acct-addr").textContent = myOwner.slice(0, 6) + "..." + myOwner.slice(-4);
       $("acct-addr").title = myOwner;
     } else if (!window.ethereum) {
       $("acct-link").hidden = $("acct-input").hidden = true;
@@ -255,15 +620,15 @@ async function refresh() {
         ? `Not a member yet. Uninvited nodes are served only when a server is idle. Ask a member to invite your address, then link this node to it.`
         : !mem.member
         ? `Not a member yet. Ask a member to invite <span class="mono">${esc(mem.account)}</span>. Until then servers answer you only when idle.`
-        : `${mem.root ? "Root member" : mem.contributor ? "Contributor: never limited by quota" : "Member: served on any free slot"}${mem.invited_by ? `, invited by <span class="mono">${esc(mem.invited_by.slice(0, 6) + "…" + mem.invited_by.slice(-4))}</span>` : ""}. ${left}. ${count}.`;
+        : `${mem.root ? "Root member" : mem.contributor ? "Contributor: never limited by quota" : "Member: served on any free slot"}${mem.invited_by ? `, invited by <span class="mono">${esc(mem.invited_by.slice(0, 6) + "..." + mem.invited_by.slice(-4))}</span>` : ""}. ${left}. ${count}.`;
       $("invite-box").hidden = !(mem.member && window.ethereum && (mem.invites_limit < 0 || mem.invites_used < mem.invites_limit));
     }
 
     $("credits").innerHTML = credits.length ? credits.map(c => {
-      const label = c.owner ? (c.name || c.owner.slice(0, 6) + "…" + c.owner.slice(-4)) : short(c.nodes[0].node);
-      const title = (c.owner || c.nodes[0].node) + ` · ${c.nodes.length} node${c.nodes.length === 1 ? "" : "s"}`;
+      const label = c.owner ? (c.name || c.owner.slice(0, 6) + "..." + c.owner.slice(-4)) : short(c.nodes[0].node);
+      const title = (c.owner || c.nodes[0].node) + ` / ${c.nodes.length} node${c.nodes.length === 1 ? "" : "s"}`;
       return `<tr><td class="${c.owner ? "" : "mono "}${isMine(c) ? "me" : ""}" title="${esc(title)}">${esc(isMine(c) ? label + " (you)" : label)}</td><td class="n">${c.jobs.toLocaleString()}</td><td class="n">${c.credits.toLocaleString()}</td></tr>`;
-    }).join("") : `<tr><td colspan="3" style="color:var(--sub)">No receipts yet.</td></tr>`;
+    }).join("") : `<tr><td colspan="3" class="dim">No receipts yet.</td></tr>`;
   } catch (e) {
     $("net").classList.remove("on");
     $("net-text").textContent = "BitLLM is not running";
@@ -297,16 +662,39 @@ let tab = "Claude Code";
 try { tab = localStorage.getItem("bitllm-tab") || tab; } catch {}
 if (!agents[tab]) tab = "Claude Code";
 
+// Color comments and a few command tokens without touching the copied text.
+function hl(line) {
+  if (/^\s*(#|\/\/)/.test(line)) return `<span class="cm">${esc(line)}</span>`;
+  const re = /("(?:[^"\\]|\\.)*")|\b(export|curl|claude)\b|\b([A-Z][A-Z0-9_]{2,})=/g;
+  let out = "", last = 0, m;
+  while ((m = re.exec(line))) {
+    out += esc(line.slice(last, m.index));
+    if (m[1]) out += `<span class="str">${esc(m[1])}</span>`;
+    else if (m[2]) out += `<span class="kw">${esc(m[2])}</span>`;
+    else out += `<span class="var">${esc(m[3])}</span>=`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(line.slice(last));
+}
+
 function renderSnip() {
   const m = model || "MODEL";
+  const code = agents[tab](m);
   $("tabs").innerHTML = Object.keys(agents).map(k =>
     `<button type="button" role="tab" aria-selected="${k === tab}" class="${k === tab ? "on" : ""}" data-k="${esc(k)}">${esc(k)}</button>`).join("");
-  $("snip").innerHTML = `<button type="button" class="copy" id="copy">Copy</button>` + esc(agents[tab](m));
-  $("copy").onclick = () => {
-    const done = () => { $("copy").textContent = "Copied"; setTimeout(() => { const c = $("copy"); if (c) c.textContent = "Copy"; }, 1200); };
-    navigator.clipboard ? navigator.clipboard.writeText(agents[tab](m)).then(done, () => {}) : null;
-  };
+  const lines = code.split("\n");
+  $("gutter").textContent = lines.map((_, i) => i + 1).join("\n");
+  $("snip").innerHTML = lines.map(hl).join("\n");
+  $("copy").textContent = "copy";
 }
+$("copy").onclick = () => {
+  const code = agents[tab](model || "MODEL");
+  const done = () => {
+    $("copy").textContent = "copied";
+    setTimeout(() => { if ($("copy")) $("copy").textContent = "copy"; }, 1200);
+  };
+  if (navigator.clipboard) navigator.clipboard.writeText(code).then(done, () => {});
+};
 $("tabs").onclick = e => {
   const k = e.target.dataset && e.target.dataset.k;
   if (!k) return;
@@ -323,7 +711,7 @@ $("models").onchange = e => {
 $("test").onclick = async () => {
   if (!model) { $("result").innerHTML = `<span class="bad">No models on the network yet.</span>`; return; }
   $("test").disabled = true;
-  $("result").textContent = "Waiting for an answer…";
+  $("result").textContent = "Waiting for an answer...";
   const t0 = performance.now();
   try {
     const r = await fetch("/v1/chat/completions", { method: "POST",
