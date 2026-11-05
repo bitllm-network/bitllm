@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $dir = Join-Path $env:LOCALAPPDATA "bitllm"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir "bitllm.exe"
-$base = "https://github.com/bitllm-network/bitllm/releases/latest/download"
+$base = "https://github.com/bitllm-org/bitllm/releases/latest/download"
 Write-Host "downloading bitllm-windows-amd64.exe"
 Invoke-WebRequest -UseBasicParsing -OutFile $exe "$base/bitllm-windows-amd64.exe"
 # Verify against SHA256SUMS when the release has one.

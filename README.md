@@ -1,7 +1,7 @@
 # BitLLM_
 
-[![test](https://github.com/bitllm-network/bitllm/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/bitllm-network/bitllm/actions/workflows/test.yml)
-[![release](https://img.shields.io/github/v/release/bitllm-network/bitllm)](https://github.com/bitllm-network/bitllm/releases)
+[![test](https://github.com/bitllm-org/bitllm/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/bitllm-org/bitllm/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/bitllm-org/bitllm)](https://github.com/bitllm-org/bitllm/releases)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > Using an AI agent? Point it at https://bitllm.org/llms.txt. Changing the code? See [AGENTS.md](AGENTS.md).
@@ -44,7 +44,7 @@ irm https://bitllm.org/install.ps1 | iex
 
 The examples below use `bitllm`; if `~/.local/bin` is not on your PATH, use the full path (the
 installer tells you which; on Windows, `%LOCALAPPDATA%\bitllm`). Prefer to download by hand? Take
-the file for your system from [Releases](https://github.com/bitllm-network/bitllm/releases); on
+the file for your system from [Releases](https://github.com/bitllm-org/bitllm/releases); on
 macOS use curl, not a browser, to avoid the quarantine flag.
 
 The node runs in the foreground. Then open http://127.0.0.1:7778, pick a model, copy the setup
@@ -322,7 +322,7 @@ It also relays for NATed peers until they hole-punch a direct connection.
 On a fresh Ubuntu VM there is a script for it, which also installs the systemd unit:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bitllm-network/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
 ```
 
 Rerunning the script installs the newest binary, keeps `/var/lib/bitllm`, and restarts the unit.

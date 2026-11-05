@@ -40,7 +40,7 @@ package per domain. Tests live with the package they test.
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
 | `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
-| `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1` |
+| `site/` | bitllm.org: `index.html`, `llms.txt`, `install.sh`, `install.ps1`. `scripts/site-sync.sh` publishes it within minutes of `test` passing on main |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
