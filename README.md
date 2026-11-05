@@ -22,14 +22,15 @@ Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitl
 Contents: [Install](#install-and-run) · [Share a model](#share-a-model) ·
 [Use the network](#use-the-network) · [Manage your node](#watch-and-manage-your-node) ·
 [Credits](#credits-for-serving) · [Access](#how-access-works) ·
-[Bootstrap](#run-a-bootstrap-node) · [Caveats](#what-you-should-know) ·
+[Bootstrap](#run-a-seed) · [Caveats](#what-you-should-know) ·
 [Build](#build-and-test) · [Contributing](#contributing)
 
 ## Install and run
 
 No port forwarding, no configuration. The script picks the build for your machine, verifies its
-checksum and installs to `~/.local/bin` (no sudo). The node joins through the public bootstrap
-seeds in [docs/bootstrap.md](docs/bootstrap.md).
+checksum and installs to `~/.local/bin` (no sudo). The node joins through the DNS seed list in
+[docs/bootstrap.md](docs/bootstrap.md). If that list does not resolve, it starts its own network and
+prints a join code: `bitllm --bootstrap /ip4/.../p2p/...`.
 
 ```bash
 # macOS (Apple silicon), Linux (x86-64, arm64)
@@ -79,9 +80,10 @@ bitllm --upstream http://localhost:8000/v1 \
   cap from the server's first refusal and from then on sends only the newest images, with a short note
   in place of each older one. Agents send every screenshot of a session again on each turn, so this
   keeps long sessions working. Nothing to set; restart the node after you change the cap.
-- `--location LAT,LON` (optional): show your node on the map at bitllm.org. Give any point in your
-  city, e.g. `--location 52.52,13.40`; the node announces only a cell of about 150 km, never the point.
-  Without it your node is counted as "no location". Details: [docs/network-map.md](docs/network-map.md).
+- `--location LAT,LON` (optional): declare a coarse location for the network map. Give any point in
+  your city, e.g. `--location 52.52,13.40`; the node announces only a cell of about 150 km, never the
+  point. The map is offline for now, so this only shows in `GET /network`. Without it your node is
+  counted as "no location". Details: [docs/network-map.md](docs/network-map.md).
 
 Every flag is listed by `bitllm --help`.
 
@@ -315,33 +317,40 @@ Smart-contract wallets are not supported yet (their signatures need a chain to v
 Separately, each node keeps a private ledger of work exchanged with each peer
 (`~/.bitllm/ledger.json`), kept as data.
 
-## Run a bootstrap node
+## Run a seed
 
-A bootstrap seed is the first peer a new node dials. It answers DHT queries and relays for NATed
-peers until they hole-punch a direct connection. It does not answer inference requests or decide
-membership. Any machine with a public IP can be one:
-`bitllm --dht-server --port 4001`, with TCP and UDP 4001 open.
+A seed is the first peer a new node dials. It answers DHT queries and relays for NATed peers until
+they hole-punch a direct connection. It does not answer inference requests or decide membership.
 
-On a fresh Ubuntu VM there is a script for it, which also installs the systemd unit and prints the
-DNS TXT records to publish:
+Keep the seed separate from the GPUs. A small always-on VPS, or any machine with a public address,
+is the usual choice, so a GPU that is training, rendering or switched off cannot take the network
+with it. One seed is enough for a new node to join; two on different providers are the minimum for
+reliability.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
+bitllm --dht-server --port 4001 \
+  --announce /ip4/203.0.113.10/tcp/4001 \
+  --announce /ip4/203.0.113.10/udp/4001/quic-v1
 ```
 
-Rerunning the script installs the newest binary, keeps `/var/lib/bitllm`, and restarts the unit.
-Installed this way the node also updates itself, because its binary lives in `/var/lib/bitllm/bin`
-where the unit may write.
+Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` installs the systemd unit
+and prints the DNS records to publish. A home host can be a seed too, with a port forward or UPnP,
+but most home hosts are ordinary serving nodes: they join through a seed and peers reach them by
+relay or hole punching.
 
-A `--dht-server` node does not join the default seeds by itself, so a new seed has to be pointed at
-a live one: `bitllm --dht-server --bootstrap /dnsaddr/bootstrap.bitllm.org`, or pass the seed as
-the script's third argument (`sudo bash bootstrap-vps.sh latest seed2.example.org
-/dnsaddr/bootstrap.bitllm.org`). Only the very first seed in a new network starts alone.
+`--dht-server` forces public reachability, so turn it on only when inbound actually works.
+Otherwise the node advertises addresses nobody can dial. A `--dht-server` node also does not
+fall back to the default seeds, so a second seed needs a live one:
+`--bootstrap /dnsaddr/bootstrap.bitllm.org`.
 
-The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Keep at least two seeds
-on different providers, publish them with `deploy/seed-dns.py`, and a new node joins through any
-of them. Adding or retiring a seed is a DNS change, not a release. The current list and the
-failure behavior are in [docs/bootstrap.md](docs/bootstrap.md).
+[docs/host-a-gpu.md](docs/host-a-gpu.md) is the step-by-step for a machine that serves a model,
+including the check that decides whether it can also be a seed. `deploy/gpu-host.sh` installs the
+service next to the model server.
+
+The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Publish it with
+`deploy/seed-dns.py`, and a new node joins through any of the records. Adding or retiring a seed is
+a DNS change, not a release. When no seed resolves a node starts its own network and prints a
+join code; nothing fails. The failure behavior is in [docs/bootstrap.md](docs/bootstrap.md).
 
 No public IP? Put it behind an HTTPS tunnel that passes WebSockets (Cloudflare Tunnel, free):
 `bitllm --dht-server --ws-port 4002 --announce /dns4/boot.example.org/tcp/443/wss` and point
@@ -349,7 +358,7 @@ the tunnel at `http://127.0.0.1:4002`. Others join with
 `--bootstrap /dns4/boot.example.org/tcp/443/wss/p2p/<peer id>`. This puts Cloudflare in the
 connection path, so use it as a fallback, not as the primary seed.
 
-Announce a restart before you do it. Nodes redial a lost bootstrap every 15 seconds, but a request
+Announce a restart before you do it. Nodes redial a lost seed every 15 seconds, but a request
 already streaming through your relay is cut when it goes down, and the user's agent may not retry it.
 
 ## What you should know
@@ -411,7 +420,7 @@ issues and pull requests are handled; read [AGENTS.md](AGENTS.md) before changin
 change to networking, access or the gateway, run the external test workflow
 (`.github/workflows/external-test.yml`), which joins the live network and sends real requests.
 
-Other docs: [audit](docs/audit.md), [network map](docs/network-map.md),
+Other docs: [audit](docs/audit.md), [host a GPU](docs/host-a-gpu.md), [network map](docs/network-map.md),
 [compatibility](docs/compat.md), [中文说明](docs/JOIN.zh.md), and
 [llms.txt](https://github.com/bitllm-org/landing-page/blob/main/public/llms.txt) (the same
 instructions for AI agents). Brand assets live in

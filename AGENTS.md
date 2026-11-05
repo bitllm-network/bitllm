@@ -37,15 +37,16 @@ package per domain. Tests live with the package they test.
 | `internal/receipts/` | signed job receipts, gossip limits, pending jobs, per-server pseudonyms |
 | `internal/quota/` | daily credit quotas, reservations and rollover |
 | `internal/ledger/` | per-peer exchange record (data only) |
-| `internal/netmap/` | `--location` geohash cells and the aggregate behind the bitllm.org node map ([docs/network-map.md](docs/network-map.md)) |
+| `internal/netmap/` | `--location` geohash cells and the aggregate behind `GET /network` ([docs/network-map.md](docs/network-map.md)) |
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
 | `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
-| `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node and prints the DNS TXT records |
+| `deploy/bootstrap-vps.sh` | turns a public VM into a dedicated seed and prints the DNS TXT records |
+| `deploy/gpu-host.sh` | installs a GPU host's node beside its model server, as a systemd unit |
 | `deploy/seed-dns.py` | replaces the `_dnsaddr.bootstrap.bitllm.org` seed list through the Cloudflare API |
+| `docs/host-a-gpu.md` | the handoff checklist for a machine that joins the network as a GPU host |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
-| `scripts/network-kv.sh` | publishes an always-on node's `/network` aggregate to Cloudflare KV for the bitllm.org map |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
 
 The public site at bitllm.org is a separate repository,

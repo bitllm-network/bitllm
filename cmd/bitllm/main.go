@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,14 +27,14 @@ import (
 	"github.com/bitllm-network/bitllm/internal/tui"
 	"github.com/bitllm-network/bitllm/internal/update"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // DefaultBootstrap is used when no --bootstrap is given. The /dnsaddr/ name
 // is the seed list: every TXT record at _dnsaddr.bootstrap.bitllm.org names
-// an independent bootstrap node, so seeds can be added or retired without a
-// release. The literal entry is the old Cloudflare Tunnel seed, kept as a
-// fallback while the direct seeds are being deployed; remove it once two
-// direct seeds answer. See docs/bootstrap.md.
+// an independent seed, so hosts can be added or retired without a release.
+// The literal is the old Cloudflare Tunnel seed. It stays as a fallback until
+// _dnsaddr resolves to a live seed, then it is removed. See docs/bootstrap.md.
 var DefaultBootstrap = []string{
 	"/dnsaddr/bootstrap.bitllm.org",
 	"/dns4/boot.bitllm.org/tcp/443/wss/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib",
@@ -47,6 +48,120 @@ type listFlag []string
 
 func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(s string) error { *l = append(*l, s); return nil }
+
+// joinAddrs picks the addresses another machine can try: public addresses
+// first, then the best LAN one, one per IP and at most two. A join code is
+// for a person to copy, not a dump of every interface the node listens on.
+func joinAddrs(addrs []string) []string {
+	var public4, public6 []string
+	bestLAN, bestRank := "", 4
+	seen := map[string]bool{}
+	for _, a := range addrs {
+		m, err := ma.NewMultiaddr(a)
+		if err != nil {
+			continue
+		}
+		s, ipErr := ipOf(m)
+		key := s
+		if ipErr != nil {
+			key = a // a hostname has no IP to dedupe on
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if ipErr != nil {
+			// A DNS address was announced on purpose (a hostname, or a tunnel
+			// in front of this node), so it is public by definition.
+			switch {
+			case hasProto(m, ma.P_DNS4):
+				if len(public4) < 2 {
+					public4 = append(public4, a)
+				}
+			case hasProto(m, ma.P_DNS6):
+				if len(public6) < 2 {
+					public6 = append(public6, a)
+				}
+			}
+			continue
+		}
+		ip := net.ParseIP(s)
+		if ip == nil {
+			continue
+		}
+		switch {
+		case dialable(ip) && ip.To4() != nil:
+			if len(public4) < 2 {
+				public4 = append(public4, a)
+			}
+		case dialable(ip):
+			if len(public6) < 2 {
+				public6 = append(public6, a)
+			}
+		case lanUsable(ip):
+			// Prefer a home LAN over a container bridge: 192.168, then 10,
+			// then the 172.16/12 range Docker picks from.
+			if r := lanRank(ip); r < bestRank {
+				bestRank, bestLAN = r, a
+			}
+		}
+	}
+	// IPv4 first: a public IPv6 is often blocked by the home router, while a
+	// public IPv4 almost always works.
+	if out := append(public4, public6...); len(out) > 0 {
+		if len(out) > 2 {
+			out = out[:2]
+		}
+		return out
+	}
+	if bestLAN != "" {
+		return []string{bestLAN}
+	}
+	return nil
+}
+
+// ipOf is the IP component of a /ip4/ or /ip6/ multiaddr.
+func ipOf(m ma.Multiaddr) (string, error) {
+	if v, err := m.ValueForProtocol(ma.P_IP4); err == nil {
+		return v, nil
+	}
+	return m.ValueForProtocol(ma.P_IP6)
+}
+
+func hasProto(m ma.Multiaddr, p int) bool {
+	_, err := m.ValueForProtocol(p)
+	return err == nil
+}
+
+// dialable: a stranger could try this address. CGNAT (100.64.0.0/10) looks
+// public but cannot be reached from outside.
+func dialable(ip net.IP) bool {
+	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast() &&
+		!ip.IsPrivate() && !cgnat(ip)
+}
+
+func lanUsable(ip net.IP) bool {
+	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast() && !cgnat(ip)
+}
+
+func cgnat(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
+}
+
+func lanRank(ip net.IP) int {
+	v4 := ip.To4()
+	switch {
+	case v4 == nil:
+		return 2 // IPv6 ULA: works on the LAN, but less often shared
+	case v4[0] == 192 && v4[1] == 168:
+		return 0
+	case v4[0] == 10:
+		return 1
+	default:
+		return 3
+	}
+}
 
 func main() {
 	home, _ := os.UserHomeDir()
@@ -209,6 +324,18 @@ func main() {
 	log.Printf("bitllm %s, peer id %s", node.Version, n.ID())
 	for _, a := range n.Addrs() {
 		log.Printf("listening %s", a)
+	}
+	if cfg.DHTServer {
+		log.Printf("--dht-server: advertising this node as public; inbound TCP and UDP %d must work", port)
+	}
+	if len(n.Seeds()) == 0 {
+		log.Printf("no seed peers: this node is alone on its own network")
+		if codes := joinAddrs(n.Addrs()); len(codes) > 0 {
+			log.Printf("another machine joins it with: bitllm --bootstrap %s", codes[0])
+			for _, a := range codes[1:] {
+				log.Printf("or with another address: bitllm --bootstrap %s", a)
+			}
+		}
 	}
 	if cfg.Upstream != "" {
 		log.Printf("sharing %v from %s", cfg.Models, cfg.Upstream)

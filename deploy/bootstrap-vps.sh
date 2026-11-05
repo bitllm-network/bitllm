@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Turn a fresh Ubuntu VM with a public IP into a BitLLM bootstrap + relay node.
+# Turn a fresh Ubuntu VM with a public IP into a BitLLM seed: DHT server and
+# relay, no inference. This is the usual seed: a small always-on host, kept
+# separate from the GPUs. For a GPU host that also serves a model, use
+# deploy/gpu-host.sh (PUBLIC=1 if it should seed as well).
 #
 #   curl -fsSL https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh | sudo bash
 #   (or: sudo bash bootstrap-vps.sh [version] [hostname] [seed])
