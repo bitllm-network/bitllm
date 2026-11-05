@@ -12,7 +12,7 @@ import (
 // GET /network aggregates what this node hears: per model and per cell, node
 // counts and free slots. It names no peer ids, so the public map cannot tie a
 // node's identity to its region. bitllm.org serves a copy of the bootstrap
-// node's answer (scripts/network-json.sh).
+// node's answer (scripts/network-kv.sh).
 
 // networkSnapshot aggregates the live announces (and our own, if we serve).
 func (n *Node) networkSnapshot() netmap.View {

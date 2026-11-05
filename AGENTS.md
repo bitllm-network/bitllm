@@ -44,6 +44,7 @@ package per domain. Tests live with the package they test.
 | `deploy/bootstrap-vps.sh` | turns a public VM into a bootstrap/relay node |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
+| `scripts/network-kv.sh` | publishes the bootstrap node's `/network` aggregate to Cloudflare KV for the bitllm.org map |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
 
 The public site at bitllm.org is a separate repository,

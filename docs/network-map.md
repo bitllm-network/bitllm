@@ -57,8 +57,8 @@ cut finer cells down to 3 characters, so the format can change later without bre
 
 ## How bitllm.org gets it
 
-The bootstrap machine runs `scripts/network-json.sh`, which copies that node's `/network` into
-`network.json` once a minute and serves it at https://data.bitllm.org/network.json. The Worker
-behind bitllm.org proxies that path to `/network.json`, so the landing page reads a plain file
-and no node API is exposed to the internet. The landing page source is
+The bootstrap machine runs `scripts/network-kv.sh`, which copies that node's `/network` into
+Cloudflare KV every two minutes. The Worker behind bitllm.org serves that value at
+`/network.json`, so the landing page reads a plain JSON file and the machine accepts no inbound
+requests. No node API is exposed to the internet. The landing page source is
 [bitllm-org/landing-page](https://github.com/bitllm-org/landing-page).
