@@ -57,14 +57,37 @@ chown bitllm "$BIN"
 rm -f /usr/local/bin/bitllm
 "$BIN" --version
 
-IP4=$(curl -fsS4 --max-time 5 https://api.ipify.org || true)
-IP6=$(curl -fsS6 --max-time 5 https://api6.ipify.org || true)
+# A cloud VM usually sees only a private address on its NIC and holds the
+# public one at the provider's edge, so read the provider's metadata first.
+# Announcing a 10.x address would give peers an address they cannot dial.
+private_ip4() {
+  case "$1" in
+    10.*|127.*|192.168.*|169.254.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
+  esac
+  return 1
+}
+public_ip4() {
+  for url in \
+    http://100.100.100.200/latest/meta-data/eipv4 \
+    https://api.ipify.org \
+    https://ifconfig.me/ip; do
+    ip=$(curl -fsS4 --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+    case "$ip" in ""|*[!0-9.]*) continue ;; esac
+    private_ip4 "$ip" || { echo "$ip"; return; }
+  done
+}
+IP4=$(public_ip4)
 if [ -z "$IP4" ]; then
   IP4=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") print $(i+1)}' || true)
-  if [ -n "$IP4" ]; then
-    echo "could not look up the public IPv4. $IP4 is the local address; on Oracle and most clouds it is private, so use the public IP from the cloud console instead."
+  if [ -n "$IP4" ] && private_ip4 "$IP4"; then
+    echo "could not look up the public IPv4; $IP4 is private. Add the public IP (or a hostname) from the cloud console."
+    IP4=""
   fi
 fi
+IP6=$(curl -fsS6 --max-time 5 https://api6.ipify.org 2>/dev/null | tr -d '[:space:]' || true)
+case "$IP6" in ""|fe80:*|fd*|fc*|::1*) IP6="" ;; esac
 ANNOUNCE=""
 add_announce() { ANNOUNCE="$ANNOUNCE --announce $1"; }
 if [ -n "$HOST" ]; then
