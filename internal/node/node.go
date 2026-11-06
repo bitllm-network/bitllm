@@ -61,6 +61,7 @@ const (
 type Config struct {
 	Upstream         string                // OpenAI-compatible base URL to share; empty = client only
 	UpstreamKey      string                //
+	GatewayKey       string                // when set, every gateway request but GET / must carry it
 	Models           map[string]string     // public name -> upstream name; empty = discover
 	ModelsFixed      bool                  // Models came from --model; do not replace them from upstream
 	Concurrency      int                   //

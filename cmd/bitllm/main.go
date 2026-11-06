@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -163,6 +164,20 @@ func lanRank(ip net.IP) int {
 	}
 }
 
+// gatewayExposed reports whether a --gateway address listens beyond this
+// machine. An empty host means every interface, and a name other than
+// localhost may resolve to anything.
+func gatewayExposed(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = strings.Trim(addr, "[]")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return !ip.IsLoopback()
+	}
+	return host != "localhost"
+}
+
 func main() {
 	home, _ := os.UserHomeDir()
 	if len(os.Args) > 1 && os.Args[1] == "account" {
@@ -204,6 +219,7 @@ func main() {
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
 	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3..., or a /dnsaddr/ seed name (repeatable; default: the DNS seed list plus boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
+	flag.StringVar(&cfg.GatewayKey, "gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "key every gateway request except the dashboard page must carry, as Authorization: Bearer or x-api-key; open the dashboard once with ?key=KEY (default $BITLLM_GATEWAY_KEY, which keeps it out of the process list)")
 	flag.IntVar(&port, "port", 4001, "p2p port, TCP and UDP (QUIC)")
 	flag.IntVar(&wsPort, "ws-port", 0, "also accept libp2p over WebSocket on 127.0.0.1:PORT, for an HTTPS tunnel (Cloudflare Tunnel etc.) in front of a bootstrap node")
 	flag.Var(&roots, "roots", "root account of the invite tree (repeatable; default: the BitLLM root). For private networks and tests")
@@ -239,6 +255,7 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
+	cfg.GatewayKey = strings.TrimSpace(cfg.GatewayKey)
 	cfg.Bootstrap = boot
 	cfg.Roots = DefaultRoots
 	if len(roots) > 0 {
@@ -356,6 +373,11 @@ func main() {
 		}
 	}
 	log.Printf("gateway http://%s/v1", gateway)
+	if cfg.GatewayKey != "" {
+		log.Printf("gateway key on: clients send it as their API key; open the dashboard once at http://%s/?key=YOUR_KEY", gateway)
+	} else if gatewayExposed(gateway) {
+		log.Printf("WARNING: GATEWAY %s IS OPEN TO OTHER MACHINES WITH NO KEY. Set --gateway-key or BITLLM_GATEWAY_KEY, or listen on 127.0.0.1.", gateway)
+	}
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}
 	go func() { <-ctx.Done(); srv.Close() }()
 	if upd != nil {

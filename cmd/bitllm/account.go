@@ -36,6 +36,7 @@ func accountCmd(args []string, home string) {
 	fs := flag.NewFlagSet("account", flag.ExitOnError)
 	data := fs.String("data", filepath.Join(home, ".bitllm"), "identity and ledger directory")
 	gateway := fs.String("gateway", "127.0.0.1:7778", "gateway of the running node, if any")
+	gatewayKey := fs.String("gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "the gateway's key, if it was started with one (default $BITLLM_GATEWAY_KEY)")
 	name := fs.String("name", "", "display name shown in the credits table (max 32 bytes)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, accountUsage) }
 	sub := "show"
@@ -86,7 +87,7 @@ func accountCmd(args []string, home string) {
 
 	// Prefer the running node, which also gossips the claim right away.
 	body, _ := json.Marshal(map[string]any{"owner": c.Owner, "name": c.Name, "time": c.Time, "owner_sig": c.OwnerSig})
-	if resp, err := http.Post("http://"+*gateway+"/account/link", "application/json", bytes.NewReader(body)); err == nil {
+	if resp, err := postGateway(*gateway, *gatewayKey, "/account/link", body); err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			var e struct{ Error struct{ Message string } }
@@ -103,6 +104,19 @@ func accountCmd(args []string, home string) {
 		fail(fmt.Errorf("claim rejected"))
 	}
 	fmt.Printf("Linked node %s to %s. It is announced when the node starts.\n", self, account.ChecksumAddress(c.Owner))
+}
+
+// postGateway sends JSON to the running node, with its key if it has one.
+func postGateway(gateway, key, path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest("POST", "http://"+gateway+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key = strings.TrimSpace(key); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 func fail(err error) {
@@ -122,6 +136,7 @@ up to 10. Needs this machine's node running, which gossips the signed invite.
 func inviteCmd(args []string) {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
 	gateway := fs.String("gateway", "127.0.0.1:7778", "gateway of the running node")
+	gatewayKey := fs.String("gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "the gateway's key, if it was started with one (default $BITLLM_GATEWAY_KEY)")
 	revoke := fs.Bool("revoke", false, "revoke the account instead (roots only)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, inviteUsage) }
 	var addr string
@@ -156,7 +171,7 @@ func inviteCmd(args []string) {
 		it.Invite = i
 	}
 	body, _ := json.Marshal(it)
-	resp, err := http.Post("http://"+*gateway+"/members", "application/json", bytes.NewReader(body))
+	resp, err := postGateway(*gateway, *gatewayKey, "/members", body)
 	if err != nil {
 		fail(fmt.Errorf("no node running at %s; start bitllm first", *gateway))
 	}

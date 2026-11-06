@@ -1,6 +1,8 @@
 package node
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -57,7 +59,7 @@ func (n *Node) Gateway() http.Handler {
 	mux.HandleFunc("GET /credits", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(n.creditsTable())
 	})
-	return sameOrigin(mux)
+	return sameOrigin(requireKey(n.cfg.GatewayKey, mux))
 }
 
 // sameOrigin refuses requests from other web pages. The gateway listens on
@@ -79,6 +81,36 @@ func sameOrigin(h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// requireKey asks every request for the gateway key, when there is one. Only
+// GET / goes without: that page holds no data, and it is how a browser gets the
+// key to attach to its own requests. The key is hashed first so the comparison
+// takes the same time whatever the length of what was sent.
+func requireKey(key string, h http.Handler) http.Handler {
+	if key == "" {
+		return h
+	}
+	want := sha256.Sum256([]byte(key))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method != "GET" || r.URL.Path != "/") && !carriesKey(r, want) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="bitllm"`)
+			jsonErr(w, 401, "this gateway has a key: send it as Authorization: Bearer or x-api-key")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// carriesKey checks the two headers clients send their API key in: OpenAI
+// clients use Authorization, Claude Code x-api-key. Both are always compared.
+func carriesKey(r *http.Request, want [sha256.Size]byte) bool {
+	bearer := ""
+	if scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
+		bearer = strings.TrimSpace(token)
+	}
+	a, b := sha256.Sum256([]byte(bearer)), sha256.Sum256([]byte(r.Header.Get("x-api-key")))
+	return subtle.ConstantTimeCompare(a[:], want[:])|subtle.ConstantTimeCompare(b[:], want[:]) == 1
 }
 
 func localHost(hostport string) bool {
