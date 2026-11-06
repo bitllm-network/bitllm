@@ -7,10 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -393,5 +396,61 @@ func TestRunnerRechecksStateWithoutSignature(t *testing.T) {
 	}
 	if r.sumsHits.Load() != 1 {
 		t.Errorf("read the checksum file %d times, want once", r.sumsHits.Load())
+	}
+}
+
+func TestTag(t *testing.T) {
+	const tag = "v9.9.9"
+	a := newSigner(t)
+	trust(t, a.pub)
+	r := serveRelease(t, tag, script(tag), signed(a, tag))
+	c := r.client()
+	c.Sums = r.server.URL + "/not-here" // the newest-release path plays no part
+
+	rel, err := c.Tag(context.Background(), tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Tag != tag || rel.Asset != AssetName() || len(rel.Sha256) != 64 || rel.Signature != SigOK {
+		t.Errorf("Tag = %+v", rel)
+	}
+	if r.assetHits.Load() != 0 {
+		t.Errorf("Tag downloaded the binary")
+	}
+}
+
+func TestTagSignatureIsForThatTag(t *testing.T) {
+	const tag = "v9.9.9"
+	a := newSigner(t)
+	trust(t, a.pub)
+	r := serveRelease(t, tag, script(tag), signed(a, "v9.9.8"))
+	rel, err := r.client().Tag(context.Background(), tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Signature != SigBad {
+		t.Errorf("Signature = %q, want bad", rel.Signature)
+	}
+}
+
+func TestTagNotFound(t *testing.T) {
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	if _, err := r.client().Tag(context.Background(), "v1.0.0"); err == nil || !strings.Contains(err.Error(), "v1.0.0") {
+		t.Errorf("Tag of a release that does not exist = %v", err)
+	}
+}
+
+func TestTagRefusesNonRelease(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	c := &Client{Sums: srv.URL, Asset: srv.URL + "/%s/%s", HTTP: srv.Client()}
+	for _, tag := range []string{"", "main", "latest", "v1.2", "v1.2.3-rc1", "1.2.3", "v1.2.3/../../x", "v1.2.3\n"} {
+		if _, err := c.Tag(context.Background(), tag); err == nil || !strings.Contains(err.Error(), "not a release tag") {
+			t.Errorf("Tag(%q) = %v, want a refusal", tag, err)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Errorf("made %d requests for a tag it should refuse", hits.Load())
 	}
 }

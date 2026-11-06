@@ -82,7 +82,7 @@ func New() *Client {
 	}
 }
 
-// Release is the newest release as it applies to this machine.
+// Release is one release as it applies to this machine.
 type Release struct {
 	Tag       string `json:"tag"`       // v0.3.1
 	Asset     string `json:"asset"`     // bitllm-linux-amd64
@@ -113,6 +113,20 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 	}
 	if tag == "" {
 		return Release{}, errors.New("latest release: no version in the download URL")
+	}
+	return c.release(ctx, tag, sums)
+}
+
+// Tag reads the checksum file of one named release. That reaches what Latest
+// does not, such as a prerelease or an older version; everything after this
+// point is the same for both.
+func (c *Client) Tag(ctx context.Context, tag string) (Release, error) {
+	if !IsRelease(tag) {
+		return Release{}, fmt.Errorf("%q is not a release tag, want vX.Y.Z", tag)
+	}
+	sums, _, err := getSums(ctx, c.HTTP, fmt.Sprintf(c.Asset, tag, "SHA256SUMS"))
+	if err != nil {
+		return Release{}, fmt.Errorf("release %s: %w", tag, err)
 	}
 	return c.release(ctx, tag, sums)
 }
