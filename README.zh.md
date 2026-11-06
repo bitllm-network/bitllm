@@ -30,7 +30,7 @@
         └──────── 直连，或中继加打洞 ─────────────────────┘
 ```
 
-- **你的节点**和其他人跑同一个二进制。网关监听 `127.0.0.1:7778`，同时支持 OpenAI 和 Anthropic 格式，agent 把它当成普通 API 用就行。互联网上的机器连不到这个网关。
+- **你的节点**和其他人跑同一个二进制。网关监听 `127.0.0.1:7778`，同时支持 OpenAI 和 Anthropic 格式，agent 把它当成普通 API 用就行。默认情况下，互联网上的机器连不到这个网关。
 - **服务节点**就是你的节点加 `--upstream`，指向你本机已经在跑的模型服务。它可以躲在 NAT 后面：其他节点通过中继加打洞找到它，不需要做端口转发。
 - **公网中继**是有入站 TCP/UDP 4001 的节点，用 `--public` 启动。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
 - **seed** 既是公网中继，又列在 `_dnsaddr.bootstrap.bitllm.org` 里，并且用 `--dht-server` 独立启动。它是新节点的首次接触点。一个 seed 就够加入；公网中继让中继容量随网络增长。
@@ -104,7 +104,23 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
 - 图片：如果你的服务限制了每个 prompt 的图片数（vLLM 的 `--limit-mm-per-prompt`），节点会从服务第一次拒绝里学到这个上限，之后只发最新的图片，旧的用一句短说明代替。Agent 每一轮都会把整个会话的截图再发一遍，这样长会话才不会撞上限。不用设置；改上限后重启节点。
 - `--location LAT,LON`（可选）：声明一个粗略位置，给 bitllm.org 的地图用。填城市里任意一点，比如 `--location 52.52,13.40`；节点只广播大约 150 公里的格子，永远不发这个点。不加就记为"没有位置"。细节见 [docs/network-map.md](docs/network-map.md)。
 
-所有参数都在 `bitllm --help` 里。
+### 更多参数
+
+`bitllm --help` 列出所有参数。下面这些不太常用：
+
+- `--upstream-key KEY`：模型服务的 API key。也可以用 `BITLLM_UPSTREAM_KEY`，这样不会出现在进程列表里。
+- `--upstream-timeout DURATION`：节点为一个请求等你的模型服务多久。默认 10 分钟。
+- `--peer-field NAME`：多转发一个来自其他节点的请求字段。可重复。
+- `--peer-fallback`：你自己的服务挂了时，用其他节点回答你分享的模型。那些节点能读到 prompt。
+- `--open-slots N`：配合 `--open`，没被邀请的节点最多同时占几个名额。默认是 `--concurrency` 的一半，至少 1 个。
+- `--open-daily N`：配合 `--open`，所有没被邀请的节点每个 UTC 日合计能用多少积分，用完后只能等空闲名额。默认 0，不限。
+- `--audit-every N`：配合 `--audit`，给一个节点发多少个真实请求后抽查一次。默认 50。
+- `--audit-serve`：如果你的服务返回 prompt logprobs（vLLM），就替其他节点的 `--audit` 打分。
+- `--gateway ADDR`：网关地址。默认 `127.0.0.1:7778`。
+- `--gateway-key KEY`：客户端要当作 API key 发送的密钥。也可以用 `BITLLM_GATEWAY_KEY`。网关在非 loopback 地址上时需要它；没设的话节点会警告，网关是开放的。
+- `--mdns`：在本地网络里找节点。默认开，`--mdns=false` 关闭。
+- `--roots ADDR`：邀请树的根账户。可重复。默认是 BitLLM 的根账户。用于私有网络和测试。
+- `bitllm invite --revoke 0xADDRESS`：撤销一个账户。只有根账户能用。
 
 ### 模型命名
 
@@ -351,7 +367,7 @@ bitllm --public --port 4001 \
   - `--weights NAME=HASH` 只是服务方说自己加载了什么。节点只是转发它的服务，证明不了。
   数字和细节：[docs/audit.md](docs/audit.md)。
 - `--upnp`（默认开）会让路由器转发 p2p 端口。
-- **IPv6 会把 p2p 端口暴露在公网上。** 机器有公网 IPv6、路由器又放行入站 IPv6 时，互联网上任何人都能连到 4001 端口（只是 p2p 端口；7778 的网关只监听 127.0.0.1）。这本来是为了让别人能直连你，但如果你不想在这台机器上开放端口，启动时加 `--ipv6=false`，只在 IPv4 上监听。代价：只有 IPv6 的节点没法直连你，更多流量要走中继，可能慢一些；IPv4 上一切照旧。
+- **IPv6 会把 p2p 端口暴露在公网上。** 机器有公网 IPv6、路由器又放行入站 IPv6 时，互联网上任何人都能连到 4001 端口（只是 p2p 端口；7778 的网关默认只监听 127.0.0.1）。这本来是为了让别人能直连你，但如果你不想在这台机器上开放端口，启动时加 `--ipv6=false`，只在 IPv4 上监听。代价：只有 IPv6 的节点没法直连你，更多流量要走中继，可能慢一些；IPv4 上一切照旧。
 
 ## 构建和测试
 

@@ -38,7 +38,7 @@ Four jobs, one binary:
 
 - **Your node** runs the same binary as everyone else. Its gateway listens on
   `127.0.0.1:7778` and speaks OpenAI and Anthropic, so an agent points at it
-  like any API. Nothing on the internet can call the gateway.
+  like any API. By default nothing on the internet can call the gateway.
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
@@ -167,7 +167,23 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
   point. The map at bitllm.org shows only nodes that opted in. Without it your node is counted as
   "no location". Details: [docs/network-map.md](docs/network-map.md).
 
-Every flag is listed by `bitllm --help`.
+### More flags
+
+`bitllm --help` lists every flag. These are less common:
+
+- `--upstream-key KEY`: API key for your model server. Also `BITLLM_UPSTREAM_KEY`, which keeps it out of the process list.
+- `--upstream-timeout DURATION`: how long the node waits on your model server for one request. Default 10 minutes.
+- `--peer-field NAME`: forward one more request field from peers. Repeatable.
+- `--peer-fallback`: when your own server is down, answer a model you share from peers. Those peers can read the prompts.
+- `--open-slots N`: with `--open`, the most slots uninvited nodes may hold at once. Default half of `--concurrency`, at least 1.
+- `--open-daily N`: with `--open`, the credits all uninvited nodes together may use per UTC day, then they wait for idle slots. Default 0, no limit.
+- `--audit-every N`: with `--audit`, real requests to a peer between its spot checks. Default 50.
+- `--audit-serve`: offer to score answers for other nodes' `--audit`, if your server returns prompt logprobs (vLLM).
+- `--gateway ADDR`: the gateway's address. Default `127.0.0.1:7778`.
+- `--gateway-key KEY`: key clients must send as their API key. Also `BITLLM_GATEWAY_KEY`. Needed when the gateway is on a non-loopback address; without it the node warns and the gateway is open.
+- `--mdns`: find peers on the local network. On by default; `--mdns=false` turns it off.
+- `--roots ADDR`: root account of the invite tree. Repeatable. Default the BitLLM root. For private networks and tests.
+- `bitllm invite --revoke 0xADDRESS`: revoke an account. Roots only.
 
 ### Model names
 
@@ -537,8 +553,8 @@ already streaming through your relay is cut when it goes down, and the user's ag
   Numbers and details: [docs/audit.md](docs/audit.md).
 - `--upnp` (on by default) asks your router to forward the p2p port.
 - **IPv6 exposes the p2p port.** With a public IPv6 address and a router that lets inbound IPv6
-  through, anyone on the internet can reach port 4001 (the p2p port, never the gateway on 7778,
-  which only listens on 127.0.0.1). That is how peers get direct connections, but if you do not
+  through, anyone on the internet can reach port 4001 (the p2p port, not the gateway on 7778,
+  which listens only on 127.0.0.1 by default). That is how peers get direct connections, but if you do not
   want an open port on that machine, start with `--ipv6=false` to listen on IPv4 only. The cost:
   IPv6-only peers can no longer dial you directly, so more of your traffic goes through relays and
   may be slower. On IPv4 nothing changes.
