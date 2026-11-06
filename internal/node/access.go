@@ -210,8 +210,9 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 	}
 	w := &waiter{peer: remote, model: model, class: class, at: now,
 		key: t.key, limit: t.limit, amount: amount, open: open, pool: t.poolLimit,
-		ready: make(chan struct{})}
+		acct: account, ready: make(chan struct{})}
 	w.t = t
+	victim := n.evictForLocked(w)
 	if !n.enqueueLocked(w) {
 		n.qmu.Unlock()
 		n.quota.Drop(t.key, t.reserved, now)
@@ -223,6 +224,10 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 	}
 	n.dispatchLocked()
 	n.qmu.Unlock()
+	if victim != nil {
+		n.dropReservation(victim, now)
+		n.refused.queue.Add(1)
+	}
 	return 202, "", admission{w: w}
 }
 

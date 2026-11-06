@@ -76,8 +76,14 @@ type waiter struct {
 	amount int64         // credits to reserve for the job while it runs
 	open   bool          // an uninvited node served on an open server
 	pool   int64         // daily limit of the shared open pool, 0 = none
+	acct   string        // the peer's linked account, "" when it has none
 	ready  chan struct{} // closed when granted a slot
 	t      ticket
+
+	// evicted is closed when a request of a better class took this place in a
+	// full queue. Eviction and a grant both happen under Node.qmu and only on a
+	// pending waiter, so exactly one of ready and evicted ever closes.
+	evicted chan struct{}
 
 	// state is guarded by Node.qmu: pending, granted or canceled.
 	state int
@@ -152,22 +158,85 @@ func (n *Node) releaseLocked(t ticket) {
 	}
 }
 
-// enqueue adds a waiter if there is room. The caller holds q.mu.
-func (n *Node) enqueueLocked(w *waiter) bool {
-	pending, mine := 0, 0
+// queueCountsLocked is how many requests wait, and how many of them belong to
+// w's peer or to the account that peer is linked to.
+func (n *Node) queueCountsLocked(w *waiter) (pending, mine int) {
 	for _, other := range n.waiters {
 		if other.state == waitPending {
 			pending++
-			if other.peer == w.peer {
+			if other.peer == w.peer || (w.acct != "" && other.acct == w.acct) {
 				mine++
 			}
 		}
 	}
+	return pending, mine
+}
+
+// enqueue adds a waiter if there is room. The caller holds q.mu.
+func (n *Node) enqueueLocked(w *waiter) bool {
+	pending, mine := n.queueCountsLocked(w)
 	if pending >= maxQueue || mine >= maxPerPeerQueue {
 		return false
 	}
+	if w.evicted == nil {
+		w.evicted = make(chan struct{})
+	}
 	n.waiters = append(n.waiters, w)
 	return true
+}
+
+// evictForLocked makes room for w in a full queue: the youngest waiter of the
+// worst class that is strictly worse than w loses its place. It compares the
+// classes the access rules gave, not the aged ones, or a queue that has waited
+// long enough could no longer make room for anyone. The caller must return the
+// waiter's reservations (dropReservation) after unlocking.
+func (n *Node) evictForLocked(w *waiter) *waiter {
+	pending, mine := n.queueCountsLocked(w)
+	if pending < maxQueue || mine >= maxPerPeerQueue {
+		return nil
+	}
+	var victim *waiter
+	for _, other := range n.waiters {
+		if other.state != waitPending || other.class <= w.class {
+			continue
+		}
+		if victim == nil || other.class > victim.class ||
+			(other.class == victim.class && !other.at.Before(victim.at)) {
+			victim = other
+		}
+	}
+	if victim != nil {
+		victim.state = waitCanceled
+		n.dropLocked(victim)
+		close(victim.evicted)
+	}
+	return victim
+}
+
+// dropReservation gives back the credits a waiter that lost its place held.
+func (n *Node) dropReservation(w *waiter, now time.Time) {
+	n.quota.Drop(w.t.key, w.t.reserved, now)
+	if w.open {
+		n.quota.Drop(openPool, w.t.poolReserved, now)
+	}
+}
+
+// localTake holds a slot for a request from this machine's own gateway. It is
+// never refused, even past --concurrency, and has no per-peer accounting. What
+// it changes is what peers see: the announced free count is honest, and they
+// wait for the slot.
+func (n *Node) localTake() {
+	n.qmu.Lock()
+	n.inflight.Add(1)
+	n.qmu.Unlock()
+}
+
+// localDone gives the slot back and grants it to whoever waits.
+func (n *Node) localDone() {
+	n.qmu.Lock()
+	n.inflight.Add(-1)
+	n.dispatchLocked()
+	n.qmu.Unlock()
 }
 
 // dispatch grants free slots to the waiters that fit, best class first and
@@ -259,11 +328,7 @@ func (n *Node) cancelWait(w *waiter) bool {
 	n.dispatchLocked()
 	n.qmu.Unlock()
 	// The place is gone, so the credits it held go back to the day's room.
-	now := time.Now()
-	n.quota.Drop(w.t.key, w.t.reserved, now)
-	if w.open {
-		n.quota.Drop(openPool, w.t.poolReserved, now)
-	}
+	n.dropReservation(w, time.Now())
 	return true
 }
 

@@ -480,6 +480,9 @@ func (n *Node) handleInfer(s network.Stream) {
 			select {
 			case <-a.w.ready:
 				waiting = false
+			case <-a.w.evicted:
+				reply(429, msgQueueFull)
+				return
 			case <-tick.C:
 				// A slot may have come free without a done() call here
 				// (an operator's own request, say), so check again.
