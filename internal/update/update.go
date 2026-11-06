@@ -1,6 +1,7 @@
 // Package update keeps a release build current: it asks GitHub which tag is
-// the latest release, downloads and verifies the binary for this machine, and
-// lets the node restart into it when nothing is being served.
+// the latest release, checks the signature on its checksum file, downloads and
+// verifies the binary for this machine, and lets the node restart into it when
+// nothing is being served.
 //
 // Only release builds take part. A build from source ("dev") or a CI build
 // ("ci-abc1234") never replaces itself, so go run, go build and the artifacts
@@ -43,6 +44,9 @@ const (
 	// or a truncated download before it is ever executed.
 	minSize = 1 << 20
 	maxSize = 200 << 20
+
+	// maxSumsSize bounds SHA256SUMS.
+	maxSumsSize = 1 << 16
 )
 
 // Client talks to the release page. The fields exist so tests can point at an
@@ -51,6 +55,11 @@ type Client struct {
 	Sums  string
 	Asset string // fmt with tag, asset name
 	HTTP  *http.Client
+
+	// RequireSignature makes Fetch refuse a release whose Signature is not
+	// SigOK. Off, the result is only reported. New sets it from
+	// requireSignature.
+	RequireSignature bool
 }
 
 // New is the client for the public release page. There is no overall
@@ -69,14 +78,16 @@ func New() *Client {
 			ResponseHeaderTimeout: 20 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 		}},
+		RequireSignature: requireSignature,
 	}
 }
 
 // Release is the newest release as it applies to this machine.
 type Release struct {
-	Tag    string `json:"tag"`    // v0.3.1
-	Asset  string `json:"asset"`  // bitllm-linux-amd64
-	Sha256 string `json:"sha256"` // hex, from the release's SHA256SUMS
+	Tag       string `json:"tag"`       // v0.3.1
+	Asset     string `json:"asset"`     // bitllm-linux-amd64
+	Sha256    string `json:"sha256"`    // hex, from the release's SHA256SUMS
+	Signature string `json:"signature"` // SigOK, SigMissing, SigBad or SigNoKeys
 }
 
 // Latest reads the newest release's checksum file. The tag comes from the
@@ -93,43 +104,96 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 		}
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.Sums, nil)
+	sums, final, err := getSums(ctx, &hc, c.Sums)
 	if err != nil {
-		return Release{}, err
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return Release{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("latest release: %s", resp.Status)
+		return Release{}, fmt.Errorf("latest release: %w", err)
 	}
 	if tag == "" {
-		tag = tagFromPath(resp.Request.URL.Path)
+		tag = tagFromPath(final)
 	}
 	if tag == "" {
 		return Release{}, errors.New("latest release: no version in the download URL")
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	return c.release(ctx, tag, sums)
+}
+
+// getSums reads a checksum file and returns its raw bytes and the path it was
+// finally served from.
+func getSums(ctx context.Context, hc *http.Client, url string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return Release{}, err
+		return nil, "", err
 	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", errors.New(resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSumsSize))
+	if err != nil {
+		return nil, "", err
+	}
+	return body, resp.Request.URL.Path, nil
+}
+
+// release finds this machine's checksum in sums and checks the signature on
+// those same bytes.
+func (c *Client) release(ctx context.Context, tag string, sums []byte) (Release, error) {
 	asset := AssetName()
 	if asset == "" {
 		return Release{}, fmt.Errorf("no release binary for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	sum, ok := parseSums(string(body))[asset]
+	sum, ok := parseSums(string(sums))[asset]
 	if !ok {
 		return Release{}, fmt.Errorf("release %s has no checksum for %s", tag, asset)
 	}
-	return Release{Tag: tag, Asset: asset, Sha256: sum}, nil
+	sig := sigResult(Verify(tag, sums, c.getSig(ctx, tag)))
+	return Release{Tag: tag, Asset: asset, Sha256: sum, Signature: sig}, nil
+}
+
+// getSig reads the release's SHA256SUMS.sig. Any failure to get it, a 404 or a
+// network error, counts as no signature, which is nil here: what that means is
+// up to RequireSignature, not to this read.
+func (c *Client) getSig(ctx context.Context, tag string) []byte {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(c.Asset, tag, "SHA256SUMS.sig"), nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSigSize))
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
+// refusal is why a release with this signature result may not be installed;
+// nil when it may.
+func (c *Client) refusal(tag, sig string) error {
+	if !c.RequireSignature || sig == SigOK {
+		return nil
+	}
+	return fmt.Errorf("not installing %s: %s", tag, sigProblem(sig))
 }
 
 // Fetch downloads the release binary into dir, verifies the checksum, and
 // runs it once to check the version it reports. The returned path is a temp
-// file in dir, ready for Swap.
+// file in dir, ready for Swap. With RequireSignature it refuses a release that
+// is not signed, before downloading anything.
 func (c *Client) Fetch(ctx context.Context, rel Release, dir string) (string, error) {
+	if err := c.refusal(rel.Tag, rel.Signature); err != nil {
+		return "", err
+	}
 	url := fmt.Sprintf(c.Asset, rel.Tag, rel.Asset)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -352,10 +416,13 @@ type Runner struct {
 	CacheFor time.Duration // skip the network if checked recently; 0 = 10m
 	Timeout  time.Duration // one check and download; 0 = 30m
 
-	mu      sync.Mutex
-	checked time.Time
-	latest  string
-	applied string
+	warned string // the tag whose signature result was last logged; only the Run goroutine uses it
+
+	mu        sync.Mutex
+	checked   time.Time
+	latest    string
+	applied   string
+	signature string
 }
 
 // Status is what GET /status shows about updates. Empty before the first
@@ -373,21 +440,17 @@ func (r *Runner) Status() map[string]any {
 	if r.applied != "" {
 		out["applied"] = r.applied
 	}
+	if r.signature != "" {
+		out["signature"] = r.signature
+	}
 	return out
 }
 
-func (r *Runner) setStatus(checked time.Time, latest, applied string) {
+// publish makes st what Status reports.
+func (r *Runner) publish(st state) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !checked.IsZero() {
-		r.checked = checked
-	}
-	if latest != "" {
-		r.latest = latest
-	}
-	if applied != "" {
-		r.applied = applied
-	}
+	r.checked, r.latest, r.applied, r.signature = st.Checked, st.Latest, st.Applied, st.Signature
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -480,30 +543,33 @@ func (r *Runner) once(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
 	st := r.loadState()
-	if st.Checked.IsZero() || time.Since(st.Checked) >= r.cacheFor() {
+	// A state file from a build older than signatures has a tag and no result
+	// for it, so it cannot stand in for a check.
+	if st.Checked.IsZero() || time.Since(st.Checked) >= r.cacheFor() || (st.Latest != "" && st.Signature == "") {
 		rel, err := r.Client.Latest(ctx)
 		st.Checked = time.Now()
 		if err != nil {
 			r.saveState(st)
-			r.setStatus(st.Checked, "", "")
+			r.publish(st)
 			r.logf("update: %v", err)
 			return
 		}
-		st.Latest, st.Asset, st.Sha256 = rel.Tag, rel.Asset, rel.Sha256
+		st.Latest, st.Asset, st.Sha256, st.Signature = rel.Tag, rel.Asset, rel.Sha256, rel.Signature
 		r.saveState(st)
-		r.setStatus(st.Checked, st.Latest, st.Applied)
 		if Newer(rel.Tag, r.Current) {
 			r.logf("update: %s is available (running %s)", rel.Tag, r.Current)
 		}
-	} else {
-		r.setStatus(st.Checked, st.Latest, st.Applied)
 	}
+	r.publish(st)
 	if st.Latest == "" || !Newer(st.Latest, r.Current) || st.Applied == st.Latest {
 		return
 	}
+	if !r.signatureAllows(st.Latest, st.Signature) {
+		return
+	}
 
-	dir := filepath.Dir(r.Executable)
-	path, err := r.Client.Fetch(ctx, Release{Tag: st.Latest, Asset: st.Asset, Sha256: st.Sha256}, dir)
+	rel := Release{Tag: st.Latest, Asset: st.Asset, Sha256: st.Sha256, Signature: st.Signature}
+	path, err := r.Client.Fetch(ctx, rel, filepath.Dir(r.Executable))
 	if err != nil {
 		r.logf("update: %v", err)
 		return
@@ -515,7 +581,7 @@ func (r *Runner) once(ctx context.Context) {
 	}
 	st.Applied = st.Latest
 	r.saveState(st)
-	r.setStatus(st.Checked, st.Latest, st.Applied)
+	r.publish(st)
 	if r.Restart == nil {
 		r.logf("update: %s installed, restart the node to use it", st.Latest)
 		return
@@ -528,6 +594,24 @@ func (r *Runner) once(ctx context.Context) {
 	if err := r.Restart(r.Executable); err != nil {
 		r.logf("update: restart: %v (the next start uses %s)", err, st.Latest)
 	}
+}
+
+// signatureAllows reports whether a release with this signature result may
+// go ahead. Anything but SigOK is logged once per tag.
+func (r *Runner) signatureAllows(tag, sig string) bool {
+	if sig == SigOK {
+		return true
+	}
+	err := r.Client.refusal(tag, sig)
+	if r.warned != tag {
+		r.warned = tag
+		if err != nil {
+			r.logf("update: %v", err)
+		} else {
+			r.logf("update: %s: %s; going ahead, since signatures are not required yet", tag, sigProblem(sig))
+		}
+	}
+	return err == nil
 }
 
 // idleWithin waits for the node to serve nothing, up to WaitIdle.
@@ -554,11 +638,12 @@ func (r *Runner) idleWithin(ctx context.Context) bool {
 // state is what survives a restart: when we last looked, what we saw, and
 // whether the file on disk is already that version.
 type state struct {
-	Checked time.Time `json:"checked,omitempty"`
-	Latest  string    `json:"latest,omitempty"`
-	Asset   string    `json:"asset,omitempty"`
-	Sha256  string    `json:"sha256,omitempty"`
-	Applied string    `json:"applied,omitempty"`
+	Checked   time.Time `json:"checked,omitempty"`
+	Latest    string    `json:"latest,omitempty"`
+	Asset     string    `json:"asset,omitempty"`
+	Sha256    string    `json:"sha256,omitempty"`
+	Signature string    `json:"signature,omitempty"`
+	Applied   string    `json:"applied,omitempty"`
 }
 
 func (r *Runner) statePath() string {

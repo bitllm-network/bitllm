@@ -47,6 +47,7 @@ func updateCmd(args []string) {
 		log.Fatalf("update: %v", err)
 	}
 	fmt.Printf("newest release: %s\n", rel.Tag)
+	fmt.Printf("signature: %s\n", rel.Signature)
 	if update.IsRelease(node.Version) && !update.Newer(rel.Tag, node.Version) {
 		fmt.Printf("bitllm %s is up to date\n", node.Version)
 		return

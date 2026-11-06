@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,29 +110,63 @@ func TestParseSums(t *testing.T) {
 }
 
 // release serves a fake release: a redirect for the checksum file, the file
-// itself, and one binary.
+// itself, its signature file if there is one, and one binary.
 type release struct {
-	tag    string
-	asset  string
-	bin    []byte
-	server *httptest.Server
+	tag       string
+	asset     string
+	bin       []byte
+	sums      []byte
+	server    *httptest.Server
+	sumsHits  atomic.Int32
+	assetHits atomic.Int32
+}
+
+// releaseOpts changes what the fake release serves.
+type releaseOpts struct {
+	// sig makes SHA256SUMS.sig from the checksum file. Nil, or nil returned,
+	// is a 404.
+	sig func(sums []byte) []byte
+	// dropSig cuts the connection on SHA256SUMS.sig.
+	dropSig bool
+	// extraSums is more text in the checksum file.
+	extraSums string
 }
 
 func newRelease(t *testing.T, tag string, bin []byte) *release {
+	t.Helper()
+	return serveRelease(t, tag, bin, releaseOpts{})
+}
+
+func serveRelease(t *testing.T, tag string, bin []byte, o releaseOpts) *release {
 	t.Helper()
 	r := &release{tag: tag, asset: AssetName(), bin: bin}
 	if r.asset == "" {
 		t.Skip("no release asset for this platform")
 	}
 	sum := sha256.Sum256(bin)
-	sums := hex.EncodeToString(sum[:]) + "  " + r.asset + "\n"
+	r.sums = []byte(hex.EncodeToString(sum[:]) + "  " + r.asset + "\n" + o.extraSums)
+	var sig []byte
+	if o.sig != nil {
+		sig = o.sig(r.sums)
+	}
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.URL.Path == "/latest/download/SHA256SUMS":
 			http.Redirect(w, req, "/releases/download/"+r.tag+"/SHA256SUMS", http.StatusFound)
 		case req.URL.Path == "/releases/download/"+r.tag+"/SHA256SUMS":
-			fmt.Fprint(w, sums)
+			r.sumsHits.Add(1)
+			w.Write(r.sums)
+		case req.URL.Path == "/releases/download/"+r.tag+"/SHA256SUMS.sig":
+			if o.dropSig {
+				panic(http.ErrAbortHandler)
+			}
+			if sig == nil {
+				http.NotFound(w, req)
+				return
+			}
+			w.Write(sig)
 		case req.URL.Path == "/releases/download/"+r.tag+"/"+r.asset:
+			r.assetHits.Add(1)
 			w.Write(r.bin)
 		default:
 			http.NotFound(w, req)
@@ -357,6 +392,18 @@ func TestRunnerUpdatesButKeepsServing(t *testing.T) {
 	}
 }
 
+// appliedState is the state left behind after v9.9.9 was installed.
+func appliedState(r *release) state {
+	return state{
+		Checked:   time.Now(),
+		Latest:    r.tag,
+		Asset:     r.asset,
+		Sha256:    fmt.Sprintf("%x", sha256.Sum256(r.bin)),
+		Signature: SigOK,
+		Applied:   r.tag,
+	}
+}
+
 func TestRunnerCachesTheCheck(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
@@ -373,12 +420,41 @@ func TestRunnerCachesTheCheck(t *testing.T) {
 	before := run.Status()["checked"]
 	r.server.Close() // any second request would now fail
 
-	run.mu.Lock()
-	run.applied = "" // pretend the restart failed, so a check is impossible to skip on that ground
-	run.mu.Unlock()
 	run.once(context.Background())
 
 	if after := run.Status()["checked"]; after != before {
 		t.Errorf("checked time changed from %v to %v despite the cache", before, after)
 	}
+}
+
+// logs collects a Runner's log lines.
+type logs struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func captureLogs(run *Runner) *logs {
+	l := &logs{}
+	run.Logf = func(format string, args ...any) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	}
+	return l
+}
+
+func (l *logs) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.lines...)
+}
+
+func (l *logs) count(sub string) int {
+	n := 0
+	for _, line := range l.all() {
+		if strings.Contains(line, sub) {
+			n++
+		}
+	}
+	return n
 }
