@@ -1062,6 +1062,9 @@ func TestSyncAtScale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("signs 50k invites")
 	}
+	if raceDetector {
+		t.Skip("its bounds are wall-clock times, and the race detector makes signature checks many times slower")
+	}
 	ctx := t.Context()
 	root := newEthKey(t)
 	const count = members.MaxInvites - 1

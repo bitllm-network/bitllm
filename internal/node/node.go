@@ -98,6 +98,7 @@ type Config struct {
 	SyncStall        time.Duration         // longest a seed may stay silent during a sync; 0 = 30s
 	SyncLimit        time.Duration         // longest one sync from a seed may run; 0 = 5m
 	ModelsTimeout    time.Duration         // longest one read of the upstream's model list may take; 0 = 10s
+	Manifest         map[string]models.Info // what each model name means; nil = models.Manifest
 	UpstreamTimeout  time.Duration         // longest our server may take to send response headers; 0 = 10m
 	PeerFields       []string              // request fields a peer may send beyond the standard ones (--peer-field)
 	Weights          map[string]string     // public name -> bitllm hash-model of the files our server loads (announced, not proven)
@@ -861,6 +862,14 @@ func (n *Node) modelNames() []string {
 	return mapKeys(n.modelMap())
 }
 
+// manifest is the model table this node reads.
+func (n *Node) manifest() map[string]models.Info {
+	if n.cfg.Manifest != nil {
+		return n.cfg.Manifest
+	}
+	return models.Manifest
+}
+
 // upstreamModel maps a public name to the name our local server knows.
 func (n *Node) upstreamModel(public string) (string, bool) {
 	n.modelMu.RLock()
@@ -1181,7 +1190,7 @@ func (n *Node) candidates(model string) []peer.ID {
 		recent  bool // answered recently
 	}
 	var cs []c
-	want := models.Manifest[model].Weights
+	want := n.manifest()[model].Weights
 	now := time.Now()
 	for p, a := range n.alive() {
 		// A peer that says it loads other weights than the name stands for

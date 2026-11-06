@@ -328,15 +328,13 @@ func TestWeightsClaim(t *testing.T) {
 	// A server that states other weights than the record is skipped.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	models.Manifest["m"] = models.Info{Weights: h}
-	defer delete(models.Manifest, "m")
 	up := mockUpstream(t, "local-m")
 	defer up.Close()
 	boot := testNode(t, ctx, Config{})
 	bs := boot.Addrs()[:1]
 	good := testNode(t, ctx, Config{Bootstrap: bs, Upstream: up.URL + "/v1", Models: map[string]string{"m": "local-m"}, Weights: map[string]string{"m": h}})
 	bad := testNode(t, ctx, Config{Bootstrap: bs, Upstream: up.URL + "/v1", Models: map[string]string{"m": "local-m"}, Weights: map[string]string{"m": strings.Repeat("cd", 32)}})
-	client := testNode(t, ctx, Config{Bootstrap: bs})
+	client := testNode(t, ctx, Config{Bootstrap: bs, Manifest: map[string]models.Info{"m": {Weights: h}}})
 	for deadline := time.Now().Add(20 * time.Second); ; {
 		al := client.alive()
 		if _, ok := al[bad.host.ID()]; ok {
