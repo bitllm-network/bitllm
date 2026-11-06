@@ -22,6 +22,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	p2pproto "github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/multiformats/go-multistream"
 )
 
 // InferProto: the client writes one JSON line {path, body}, then closes its
@@ -570,11 +571,12 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	if wait > 0 {
 		req.Wait = wait.Milliseconds()
 	}
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
-	if err != nil {
-		// An older node has no queue: ask it the old way.
+	s, err := n.openInfer(ctx, p, proto)
+	if errors.Is(err, multistream.ErrNotSupported[p2pproto.ID]{}) {
+		// An older node has no queue: ask it the old way. Any other error says
+		// nothing about its version, and it goes straight back.
 		proto, req.Wait = protocol.InferProto, 0
-		s, err = n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
+		s, err = n.openInfer(ctx, p, proto)
 	}
 	if err != nil {
 		return false, err
@@ -676,6 +678,14 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		}()
 	}
 	return started, err
+}
+
+// openInfer opens one inference stream to p. The time limit covers the opening
+// only: the stream outlives this context.
+func (n *Node) openInfer(ctx context.Context, p peer.ID, proto p2pproto.ID) (network.Stream, error) {
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	return n.host.NewStream(network.WithAllowLimitedConn(ctx, "infer"), p, proto)
 }
 
 // firstByte writes the response head on the first body byte. Until then

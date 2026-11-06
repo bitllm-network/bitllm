@@ -29,6 +29,9 @@ var (
 	maxGenerate       = 30 * time.Minute
 )
 
+// dialTimeout bounds opening one stream to a peer, dial and negotiation together.
+var dialTimeout = 10 * time.Second
+
 // Ways a peer's answer can end without being a whole answer.
 var (
 	errPeerTooLarge = errors.New("the answer is over the size limit")

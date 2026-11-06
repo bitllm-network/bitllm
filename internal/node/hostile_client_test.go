@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,10 +20,13 @@ import (
 
 	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	p2pproto "github.com/libp2p/go-libp2p/core/protocol"
+	ma "github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multistream"
 )
 
 // scriptedPeer is a real libp2p host that answers inference streams from a
@@ -654,5 +659,112 @@ func TestHeaderGraceForOldServers(t *testing.T) {
 	}
 	if started, _, err := inferOnce(t, true, late); started || err == nil {
 		t.Fatalf("streamed: started=%v err=%v, want the shorter grace to end it", started, err)
+	}
+}
+
+// A node that registers only the old protocol still answers, through the gateway.
+func TestOldProtocolPeer(t *testing.T) {
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	var wait atomic.Int64
+	sp := addScriptedPeer(t, client, "m", 1, func(s network.Stream, req inferReq) {
+		wait.Store(req.Wait)
+		honestAnswer(s, req)
+	}, protocol.InferProto)
+	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != sp.id.String() {
+		t.Fatalf("got %d %q, %v", got, body, err)
+	}
+	if wait.Load() != 0 {
+		t.Fatalf("the old protocol carried wait_ms=%d", wait.Load())
+	}
+}
+
+// countingHost counts stream attempts per protocol and fails them with err.
+type countingHost struct {
+	host.Host
+	err    error
+	tries  map[p2pproto.ID]int
+	bounds []bool // whether each attempt carried a deadline
+}
+
+func (h *countingHost) NewStream(ctx context.Context, _ peer.ID, pids ...p2pproto.ID) (network.Stream, error) {
+	h.tries[pids[0]]++
+	_, ok := ctx.Deadline()
+	h.bounds = append(h.bounds, ok)
+	return nil, h.err
+}
+
+// Only a refusal of the protocol is a reason to try the old one.
+func TestOldProtocolOnlyOnNegotiationFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"dial error", errors.New("dial failed"), 0},
+		{"deadline", context.DeadlineExceeded, 0},
+		{"not supported", fmt.Errorf("failed to negotiate protocol: %w",
+			multistream.ErrNotSupported[p2pproto.ID]{Protos: []p2pproto.ID{protocol.InferProto2}}), 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := libp2p.New(libp2p.NoListenAddrs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+			fake := &countingHost{Host: h, err: tc.err, tries: map[p2pproto.ID]int{}}
+			n := &Node{host: fake, peers: map[peer.ID]*peerInfo{}}
+			started, err := n.infer(t.Context(), randomPeer(t), "/chat/completions", []byte(chatBody), false, httptest.NewRecorder(), 0)
+			if started || !errors.Is(err, tc.err) {
+				t.Fatalf("started=%v err=%v", started, err)
+			}
+			if fake.tries[protocol.InferProto2] != 1 || fake.tries[protocol.InferProto] != tc.want {
+				t.Fatalf("attempts %v, want one on 1.1.0 and %d on 1.0.0", fake.tries, tc.want)
+			}
+			for i, bounded := range fake.bounds {
+				if !bounded {
+					t.Fatalf("attempt %d had no deadline", i)
+				}
+			}
+		})
+	}
+}
+
+// A peer that accepts the connection and then says nothing ends at dialTimeout.
+func TestDialBounded(t *testing.T) {
+	if dialTimeout != 10*time.Second {
+		t.Fatalf("dialTimeout = %v", dialTimeout)
+	}
+	setVar(t, &dialTimeout, 300*time.Millisecond)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	addr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", l.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := clientNode(t)
+	silent := randomPeer(t)
+	client.host.Peerstore().AddAddr(silent, addr, peerstore.PermanentAddrTTL)
+	start := time.Now()
+	started, err := client.infer(t.Context(), silent, "/chat/completions", []byte(chatBody), false, httptest.NewRecorder(), 0)
+	if started || err == nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("took %v with a %v limit", took, dialTimeout)
 	}
 }
