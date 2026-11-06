@@ -201,7 +201,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					// stopped the answer, or the agent closed the request)
 					// resets our stream; that is not the peer's failure.
 					if err != nil && r.Context().Err() == nil {
-						log.Printf("peer %s broke mid-response: %v", p, err)
+						log.Printf("peer %s broke mid-response: %s", p, cleanPeerText(err.Error(), maxPeerText))
 					}
 					return
 				}
@@ -213,7 +213,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 				}
 				tried++
 				if !errors.As(err, &pe) || !isBusy(pe.status, pe.msg) {
-					log.Printf("peer %s: %v", p, err)
+					log.Printf("peer %s: %s", p, cleanPeerText(err.Error(), maxPeerText))
 					busy = false
 				}
 				last = err
@@ -236,9 +236,9 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		}
 		var pe *peerError
 		if errors.As(last, &pe) {
-			jsonErr(w, pe.status, "all peers refused: "+pe.msg)
+			jsonErr(w, peerStatus(pe.status), "all peers refused: "+cleanPeerText(pe.msg, maxPeerText))
 		} else {
-			jsonErr(w, 502, "all peers failed: "+last.Error())
+			jsonErr(w, 502, "all peers failed: "+cleanPeerText(last.Error(), maxPeerText))
 		}
 	}
 }

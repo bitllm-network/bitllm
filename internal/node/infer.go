@@ -575,7 +575,7 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	}
 	s.SetReadDeadline(time.Time{})
 	if hdr.Status != 200 {
-		return false, &peerError{hdr.Status, hdr.Error}
+		return false, &peerError{hdr.Status, cleanPeerText(hdr.Error, maxPeerText)}
 	}
 	var m meter
 	err = pipe(w, writeHead(w, stream, p), r, stream, &m)
