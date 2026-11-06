@@ -1,13 +1,13 @@
 # Handoff: the first public seed
 
 This is the deployment record for the first seed that does not depend on the
-Mac mini. The seed and its DNS list are live. What remains is SSH to the seed,
-promoting `v0.5.0`, an always-on host for the map uploader, a second seed, the
-domain move after 2026-11-10, and the release that drops the old `boot` seed.
+Mac mini. The seed and its DNS list are live. What remains is access to the seed,
+promoting `v0.5.0`, a second seed, the domain move after 2026-11-10, and the
+release that drops the old `boot` seed.
 
 ## Status (2026-11-05, Pacific)
 
-Checked at 19:32 PST (03:32 UTC on 2026-11-06).
+Checked at 20:45 PST (04:45 UTC on 2026-11-06).
 
 Done:
 
@@ -22,59 +22,59 @@ Done:
 - `v0.4.6` is the latest release. It has four binaries and `SHA256SUMS`;
   `releases/latest` and the installer both point at it.
 - `bitllm.org` and `www.bitllm.org` are served by the `bitllm-landing` Worker
-  from the `Zjj1993` account. `/network.json` answers from KV, and the key was
-  fresh at 03:32 UTC.
-- The landing page and `/docs/` now use the `BitLLM_` wordmark (landing
-  commit `11247a5`, Worker version `59ad92c0-8851-4335-84f5-4375bf9ce1e2`).
-- The local node is on `v0.4.6` and has six connections, three of them
-  relayed through the old `boot` peer.
+  from the `Zjj1993` account. `/network.json` answers from KV and is
+  republished every ten minutes by the `network-map` workflow in
+  `bitllm-org/bitllm`.
+- The landing page and `/docs/` now use the `BitLLM_` wordmark. A push to
+  `landing-page` main deploys from CI: the `check` and `deploy` jobs pass, and
+  the latest deployment was `39e41744-30d0-4870-82eb-7291117335ad` on
+  2026-11-06. The `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets
+  are in that repository.
+- The map uploader no longer runs on this laptop. The scheduled
+  `.github/workflows/network-map.yml` starts a client node, waits for the live
+  announces, and publishes one snapshot to KV. The old
+  `bitllm-network-kv.service` user unit is disabled.
 - `data.bitllm.org` no longer resolves. `boot.bitllm.org/` returns 404, but
   the tunnel still carries libp2p and the seed uses it to join.
 
 What is left, in order:
 
-1. **Restore SSH to `seed1`.** `~/.ssh/bitllm-seed` is not accepted for `ubuntu`
-   or `opc` on `141.148.22.236`. Add the key through the Oracle console. Without
-   SSH the only DNS seed has no way back from a bad update.
+1. **Get access to `seed1`.** `~/.ssh/bitllm-seed` is not accepted for `ubuntu`
+   or `opc` on `141.148.22.236`. Use the access the seed was set up with, or add
+   the key through the Oracle console. Without it the only DNS seed has no way back
+   from a bad update.
 2. **Back up the seed's identity.** Copy the whole `/var/lib/bitllm` directory off
    the machine. `identity.key` in it is the peer id that the DNS records name, so
    losing it means new records and a new peer id. Do this for every seed.
-3. **Promote `v0.5.0` only after `seed1` runs with `--auto-update=false`.** This
-   needs SSH. `v0.5.0` requires signed releases and carries the new deploy scripts,
-   and it keeps `boot`. `seed1`'s current unit does not have that flag, so it would
+3. **Promote `v0.5.0` only after `seed1` runs with `--auto-update=false`.**
+   `v0.5.0` requires signed releases and carries the new deploy scripts, and it
+   keeps `boot`. `seed1`'s current unit does not have that flag, so it would
    replace itself as soon as the release is promoted to `latest`. See "Update
    `seed1` to the new script" below and [releasing.md](releasing.md).
-4. **Run the map uploader on an always-on host.** It currently runs on this
-   laptop as `bitllm-network-kv.service`, so the map freezes when the laptop
-   sleeps. The natural host is `seed1`, once SSH works; another always-on node
-   also works. The uploader needs a Cloudflare API token with **Workers KV
-   Storage:Edit** for the account that owns the namespace. See "The network map
-   uploader" below.
-5. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
+4. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
    failure for new joins. See "Second public relay, and a second seed" below. Back
    up its identity too.
-6. **Prepare and move the domain.** The current zone is active in `Zjj1993`
+5. **Prepare and move the domain.** The current zone is active in `Zjj1993`
    (`beau.ns.cloudflare.com`, `gloria.ns.cloudflare.com`). The BitLLM account
    (`ddf432595b4de0a26d81f3ca7fa43619`) does not have `bitllm.org` yet. The
    earliest transfer request is **2026-11-10**.
-7. **Drop `boot` in the first release after both the move and a live second
+6. **Drop `boot` in the first release after both the move and a live second
    seed.** Remove the `boot.bitllm.org` literal from `DefaultBootstrap`, update
    the `--bootstrap` help text, and remove the old tunnel section from
    `docs/bootstrap.md`. Do this only after `_dnsaddr` answers from the new zone.
    Stop the tunnel only after clients install that release.
-8. **Optional: enable the CI deploy.** The `landing-page` repository's
-   `check` job runs on every PR, but its `deploy` job skips because the
-   repository has no `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`
-   secrets. Until they are added, deploy by hand from `landing-page` with
-   `CLOUDFLARE_ACCOUNT_ID=5119540a40710369f72567699613f12c npx wrangler@4 deploy`.
-   Use the destination account id after the move.
 
 ## State when you start
 
-- `bitllm` main has the DNS seed list, the public-relay role and the model
-  refresh. The latest release is **v0.4.6**. There are no open PRs or issues.
-- `landing-page` main is `11247a5`; the current Worker version is
-  `59ad92c0-8851-4335-84f5-4375bf9ce1e2`.
+- `bitllm` main has the DNS seed list, the public-relay role, the model
+  refresh and the scheduled `network-map` workflow. The latest release is
+  **v0.4.6**. There are no open PRs or issues.
+- `landing-page` main is `0a76fb0`; its CI deploy last published
+  `39e41744-30d0-4870-82eb-7291117335ad` on 2026-11-06.
+- `bitllm-org/bitllm` has repository variables `CLOUDFLARE_ACCOUNT_ID` and
+  `NETWORK_KV_NAMESPACE`, and the secret `CLOUDFLARE_API_TOKEN` (currently
+  the shared deploy token; Workers KV Storage:Edit is enough). The
+  `network-map` workflow reads all three.
 - The `bitllm.org` zone is in `Zjj1993` (`5119540a40710369f72567699613f12c`).
   The Worker and KV namespace `7295150c7ffd436b8e5eb845089d89ce` are in that
   account.
@@ -86,7 +86,8 @@ What is left, in order:
 - `seed1.bitllm.org` is an **A record, DNS-only**, pointing at
   `141.148.22.236` (Oracle `VM.Standard.E2.1.Micro`, 1 GB RAM + 2 GB swap).
   Ingress for TCP 4001 and UDP 4001 is open in the VCN. SSH is open, but the
-  key is not installed for `ubuntu` or `opc`.
+  `bitllm-seed` key is not installed for `ubuntu` or `opc`; the map uploader
+  no longer depends on that access.
 - `_dnsaddr.bootstrap.bitllm.org` carries two TXT records (TCP and QUIC) for
   the seed's peer id `12D3KooWGU5ZQ8aBeqFsSFXJDPYjuDNdBnf9Cw92kuUwxkLG4RCM`.
   Only `seed1` is published.
@@ -232,49 +233,46 @@ Send back the peer id, the exact TXT lines, and the `/status` output.
 ## The network map uploader
 
 The Worker serves `/network.json` from the KV key `network`. The script
-`scripts/network-kv.sh` polls a node's `GET /network` and writes the result to
-KV every two minutes. That is 720 writes a day, under the free tier limit of
-1,000. The value holds counts per model and per cell, with no peer ids or
-addresses.
+`scripts/network-kv.sh` polls a node's `GET /network` and writes the result
+to KV. Without a third argument it loops every two minutes, for an always-on
+host; with `once` it publishes one snapshot and exits non-zero if the upload
+fails.
 
-Right now the uploader runs on this laptop:
+The uploader is now the scheduled workflow `.github/workflows/network-map.yml`
+in `bitllm-org/bitllm`, which runs every ten minutes:
 
-- unit: `bitllm-network-kv.service` (user unit)
-- wrapper: `~/.local/bin/bitllm-network-kv`
-- gateway: `http://127.0.0.1:7778`
-- account: `5119540a40710369f72567699613f12c`
-- namespace: `7295150c7ffd436b8e5eb845089d89ce`
+1. Download the latest release and verify its checksum.
+2. Start a client node with no upstream and no inbound ports
+   (`--gateway 127.0.0.1:7778 --port 4101 --mdns=false --upnp=false`).
+3. Wait until it has heard the live announces, then one more announce round.
+4. Run `scripts/network-kv.sh ... once`.
 
-It uses Wrangler's stored OAuth login, so no API token is on disk. The
-snapshot was fresh at 03:32 UTC, but it stops when the laptop sleeps.
+Ten minutes is 144 writes a day, under the free tier limit of 1,000. The
+value holds counts per model and per cell, with no peer ids or addresses.
 
-`scripts/network-kv.sh` writes the key with a ten minute expiry, so when it stops,
-the site shows an empty network instead of an old one. The laptop's wrapper does
-not do this until it is moved to that script.
+`scripts/network-kv.sh` writes the key with a one hour expiry, so when it stops,
+the site shows an empty network instead of an old one.
 
-To move it to `seed1` or another always-on node:
+Repository configuration in `bitllm-org/bitllm`:
 
-1. Create a Cloudflare API token with **Workers KV Storage:Edit** on the
-   account. A token limited to that account and that permission is enough.
-2. Put `scripts/network-kv.sh` on the host. The host needs `curl` and
-   `python3`.
-3. Run it against the local gateway:
+- variable `CLOUDFLARE_ACCOUNT_ID` = `5119540a40710369f72567699613f12c`
+- variable `NETWORK_KV_NAMESPACE` = `7295150c7ffd436b8e5eb845089d89ce`
+- secret `CLOUDFLARE_API_TOKEN`, currently the shared deploy token; a token
+  limited to **Workers KV Storage:Edit** on that account is enough
 
-```sh
-CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
-  scripts/network-kv.sh http://127.0.0.1:7778 7295150c7ffd436b8e5eb845089d89ce
-```
+The old laptop unit `bitllm-network-kv.service` is disabled. Its wrapper used
+Wrangler's OAuth login, which expired and made uploads fail; it is kept for
+reference only.
 
-4. Make it a service that restarts, and keep the token in a root-only
-   `EnvironmentFile` rather than in the unit.
+An always-on host can still take over, and `seed1` is the natural one once
+SSH works: it already listens on `127.0.0.1:7778`. Put
+`scripts/network-kv.sh` on the host, run it against the local gateway, and
+keep the token in a root-only `EnvironmentFile`. Run one uploader at a time:
+a second two-minute loop adds 720 writes a day.
 
-On `seed1`, the node already listens on `127.0.0.1:7778`. SSH is the current
-blocker: the `bitllm-seed` key is not in `authorized_keys` for `ubuntu` or
-`opc`. Use the Oracle console to add it, then install the unit.
-
-After the domain move, change both the account id and the namespace id to the
-new account's values. Update the KV binding in `landing-page/wrangler.jsonc` in
-the same change, so the Worker and the uploader point at the same namespace.
+After the domain move, change both repository variables to the new account's
+values. Update the KV binding in `landing-page/wrangler.jsonc` in the same
+change, so the Worker and the uploader point at the same namespace.
 
 ## Moving the domain (earliest 2026-11-10)
 
@@ -392,8 +390,9 @@ be live before `boot` goes away.
   network, and do not remove `boot` from `DefaultBootstrap` before `_dnsaddr`
   answers from the new zone and a second seed is live.
 - Do not promote a release while `seed1`'s unit has no `--auto-update=false`.
-- Do not run two map uploaders against the same KV key for long. Each cycle is
-  a write, and 1,440 writes a day is over the free tier limit of 1,000.
+- Do not run two map uploaders against the same KV key for long. The CI
+  workflow already writes 144 times a day; a second two-minute loop adds 720
+  and the free tier stops at 1,000.
 - Do not stop the old `boot` tunnel until the new tunnel has the same
   hostname, the new zone is authoritative, and the release that drops `boot` is
   the release clients install.

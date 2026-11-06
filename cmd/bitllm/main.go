@@ -238,6 +238,11 @@ func main() {
 	// can show what the node has been doing without reading a terminal.
 	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
+	// Only the node command gets here, past the subcommands above and --version.
+	// A self-updated release that keeps failing to start goes back from here,
+	// and this call does not return if it restarts into the previous binary.
+	rolledBackFrom := startCheck(cfg.DataDir, *autoUpdate)
+
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
 	cfg.Bootstrap = boot
 	cfg.Roots = DefaultRoots
@@ -316,7 +321,7 @@ func main() {
 	exe, _ := executable()
 	var upd *update.Runner
 	if *autoUpdate && update.IsRelease(node.Version) && exe != "" {
-		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New()}
+		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New(), RolledBackFrom: rolledBackFrom}
 		cfg.UpdateStatus = upd.Status
 	}
 	n, err := node.New(ctx, cfg)
@@ -358,6 +363,10 @@ func main() {
 	log.Printf("gateway http://%s/v1", gateway)
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}
 	go func() { <-ctx.Done(); srv.Close() }()
+	ln, err := net.Listen("tcp", gateway)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if upd != nil {
 		upd.Idle = n.Idle
 		if update.InPlace {
@@ -365,12 +374,16 @@ func main() {
 			// down first, and a failed exec leaves the node serving.
 			upd.Restart = func(path string) error {
 				log.Printf("update: restarting into %s", path)
-				return update.Restart(path, append([]string{path}, os.Args[1:]...), os.Environ())
+				return restartInto(path)
 			}
 		}
 		go upd.Run(ctx)
+		go upd.MarkHealthy(ctx) // the gateway is bound, so this start counts from here
 	}
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+	if upd != nil {
+		upd.Stopped()
 	}
 }

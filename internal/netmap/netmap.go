@@ -125,6 +125,8 @@ type View struct {
 	Updated   time.Time      `json:"updated"`
 	Nodes     int            `json:"nodes"`     // serving nodes heard from, including this one
 	Unlocated int            `json:"unlocated"` // of those, how many set no --location
+	Free      int            `json:"free"`      // slots free right now, each node counted once
+	Max       int            `json:"max"`       // total slots, each node counted once
 	CellKM    int            `json:"cell_km"`   // rough cell size
 	Models    []Model        `json:"models"`
 	Cells     []Cell         `json:"cells"`
@@ -140,6 +142,10 @@ func Aggregate(anns []protocol.Announce, now time.Time) View {
 			continue
 		}
 		v.Nodes++
+		// A node's slots are shared by all its models, so the rows in Models
+		// count it once per model. These totals count it once.
+		v.Free += a.Free
+		v.Max += a.Max
 		ver := a.Version
 		if ver == "" {
 			ver = "unknown"

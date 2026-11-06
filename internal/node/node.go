@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -615,6 +616,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 	probed := false
 	lastModels := time.Time{}
 	var reported announceLog
+	omitted := 0 // kept while the upstream is down, when there is no list to count
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
@@ -637,20 +639,20 @@ func (n *Node) announceLoop(ctx context.Context) {
 				lastModels = time.Now()
 			}
 		}
-		kept, omitted := announcedModels(n.modelNames())
 		free, slots, clamped := announcedSlots(n.cfg.Concurrency, int(n.inflight.Load()))
 		a := protocol.Announce{Version: Version, Models: []string{}, Free: free, Max: slots, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
 		if n.upOK.Load() {
-			a.Models = kept
+			a.Models = n.modelNames()
 			if n.cfg.AuditServe && !probed {
 				scorable, probed = n.probeScoring(ctx), true
 				if len(scorable) > 0 {
 					log.Printf("our server can score %v: announcing it, so peers may use this node as an auditor", scorable)
 				}
 			}
-			a.Audit = onlyAnnounced(scorable, kept)
-			a.Weights = announcedWeights(n.cfg.Weights, kept)
+			a.Audit = scorable
+			a.Weights = n.cfg.Weights
 			a.Loc = n.cfg.Location
+			omitted = capAnnounce(&a)
 		}
 		if len(a.Models) == 0 {
 			a.Free, a.Max = 0, 1
@@ -673,6 +675,47 @@ func (n *Node) announceLoop(ctx context.Context) {
 		case <-time.After(n.cfg.AnnounceEvery):
 		}
 	}
+}
+
+// capAnnounce fits a to what peers accept and returns how many models it left
+// out. Peers reject an announce whole if it lists too many models, an invalid
+// name, or a model in Audit or Weights that it does not list, which would hide
+// the node entirely. It keeps valid names, canonical ones first and then sorted,
+// so the choice is stable. Only the announce is capped: a local client can still
+// ask its own gateway for any model.
+func capAnnounce(a *protocol.Announce) (omitted int) {
+	var canonical, other []string
+	for _, m := range a.Models {
+		if !protocol.ValidModelName(m) {
+			omitted++
+		} else if _, ok := models.Manifest[m]; ok {
+			canonical = append(canonical, m)
+		} else {
+			other = append(other, m)
+		}
+	}
+	slices.Sort(canonical)
+	slices.Sort(other)
+	a.Models = append(append([]string{}, canonical...), other...)
+	if len(a.Models) > protocol.MaxAnnounceModels {
+		omitted += len(a.Models) - protocol.MaxAnnounceModels
+		a.Models = a.Models[:protocol.MaxAnnounceModels]
+	}
+	kept := make(map[string]bool, len(a.Models))
+	for _, m := range a.Models {
+		kept[m] = true
+	}
+	a.Audit = slices.DeleteFunc(slices.Clone(a.Audit), func(m string) bool { return !kept[m] })
+	if a.Weights != nil {
+		weights := make(map[string]string, len(a.Weights))
+		for m, h := range a.Weights {
+			if kept[m] && models.ValidHash(h) {
+				weights[m] = h
+			}
+		}
+		a.Weights = weights
+	}
+	return omitted
 }
 
 // checkUpstream reports whether the upstream answers GET /models.

@@ -151,18 +151,26 @@ func statusOf(t *testing.T, n *Node) map[string]any {
 	return out
 }
 
-// TestAnnouncedModels: valid names only, canonical first, then sorted, capped.
-func TestAnnouncedModels(t *testing.T) {
+// TestCapAnnounceOrder: valid names only, canonical first, then sorted, capped.
+func TestCapAnnounceOrder(t *testing.T) {
 	names := []string{"bad name", "deepseek-v4.1-flash-1017", "$m"}
 	for i := range protocol.MaxAnnounceModels + 2 {
 		names = append(names, fmt.Sprintf("m%02d", i))
 	}
-	kept, omitted := announcedModels(names)
-	if len(kept) != protocol.MaxAnnounceModels || omitted != 5 {
-		t.Fatalf("kept %d, omitted %d", len(kept), omitted)
+	a := protocol.Announce{Models: names, Max: 1}
+	omitted := capAnnounce(&a)
+	if len(a.Models) != protocol.MaxAnnounceModels || omitted != 5 {
+		t.Fatalf("kept %d, omitted %d", len(a.Models), omitted)
 	}
-	if kept[0] != "deepseek-v4.1-flash-1017" || kept[1] != "m00" || !slices.IsSorted(kept[1:]) {
-		t.Fatalf("order %v", kept)
+	if a.Models[0] != "deepseek-v4.1-flash-1017" || a.Models[1] != "m00" || !slices.IsSorted(a.Models[1:]) {
+		t.Fatalf("order %v", a.Models)
+	}
+	if !protocol.ValidAnnounce(&a) {
+		t.Fatalf("capped announce is invalid: %+v", a)
+	}
+	empty := protocol.Announce{Models: []string{"bad name"}, Max: 1, Relay: true}
+	if capAnnounce(&empty) != 1 || empty.Models == nil || !protocol.ValidAnnounce(&empty) {
+		t.Fatalf("nothing valid left: %+v", empty)
 	}
 }
 
