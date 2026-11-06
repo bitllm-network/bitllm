@@ -594,8 +594,7 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	stop := context.AfterFunc(ctx, func() { s.Reset() })
 	defer stop()
 
-	b, _ := json.Marshal(req)
-	if _, err := s.Write(append(b, '\n')); err != nil {
+	if _, err := s.Write(requestLine(req)); err != nil {
 		return false, err
 	}
 	s.CloseWrite()
@@ -678,6 +677,17 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		}()
 	}
 	return started, err
+}
+
+// requestLine is the line that starts an inference stream. HTML escaping stays
+// off so the body goes out no larger than it came: < would take six bytes, and
+// a body within maxGatewayBody could then pass the peer's limit.
+func requestLine(req inferReq) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	e.Encode(req) // ends the line
+	return b.Bytes()
 }
 
 // openInfer opens one inference stream to p. The time limit covers the opening

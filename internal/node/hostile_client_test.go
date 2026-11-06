@@ -3,11 +3,13 @@ package node
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1031,5 +1033,134 @@ func TestPeerFallback(t *testing.T) {
 	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
 	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != sp.id.String() {
 		t.Fatalf("got %d %q, %v", got, body, err)
+	}
+}
+
+// paddedBody is a chat request of exactly size bytes, padded with pad.
+func paddedBody(size int, pad string) string {
+	head, tail := `{"model":"m","messages":[],"pad":"`, `"}`
+	n := (size - len(head) - len(tail)) / len(pad)
+	body := head + strings.Repeat(pad, n)
+	return body + strings.Repeat(" ", size-len(body)-len(tail)) + tail
+}
+
+// postDirect sends a body straight to the handler: over HTTP the server may
+// close the connection before an oversized upload ends.
+func postDirect(n *Node, path, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	n.Gateway().ServeHTTP(w, gwReq("POST", path, strings.NewReader(body)))
+	return w
+}
+
+// A body over the limit gets a 413 that names the limit, in the client's shape.
+func TestBodyOverLimit(t *testing.T) {
+	n := clientNode(t)
+	over := paddedBody(maxGatewayBody+1, "x")
+	w := postDirect(n, chatPath, over)
+	if w.Code != 413 || !strings.Contains(errorMessage(t, w.Body.String()), fmt.Sprint(maxGatewayBody)) {
+		t.Fatalf("got %d %q", w.Code, w.Body)
+	}
+	w = postDirect(n, messagePath, over)
+	var doc struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil || w.Code != 413 || doc.Type != "error" || doc.Error.Type != "request_too_large" {
+		t.Fatalf("got %d %q, %v", w.Code, w.Body, err)
+	}
+	// Defusing special tokens makes a body longer, and the longer one is what
+	// goes to a peer.
+	w = postDirect(n, chatPath, paddedBody(maxGatewayBody-16, "<｜"))
+	if w.Code != 413 {
+		t.Fatalf("a body over the limit once defused: got %d %q", w.Code, w.Body)
+	}
+}
+
+// What the request line adds to a body stays inside the room kept for it.
+func TestRequestLineOverhead(t *testing.T) {
+	body := []byte(`{"model":"m"}`)
+	line := requestLine(inferReq{Job: rand.Text(), Path: "/chat/completions", Body: body, Wait: math.MaxInt64})
+	if extra := len(line) - len(body); extra > inferWrapper {
+		t.Fatalf("the line adds %d bytes, over the %d kept for it", extra, inferWrapper)
+	}
+	if line[len(line)-1] != '\n' {
+		t.Fatal("the line does not end in a newline")
+	}
+	var got inferReq
+	if err := json.Unmarshal(line, &got); err != nil || string(got.Body) != string(body) || got.Wait != math.MaxInt64 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
+// The largest body the gateway takes also passes a real peer's own limit, even
+// one full of characters JSON encoders like to escape.
+func TestBodyAtLimitReachesPeer(t *testing.T) {
+	up := mockUpstream(t, "local-m")
+	defer up.Close()
+	server := testNode(t, t.Context(), Config{Upstream: up.URL + "/v1", Models: map[string]string{"m": "local-m"}})
+	client := clientNode(t)
+	client.host.Peerstore().AddAddrs(server.host.ID(), server.host.Addrs(), peerstore.PermanentAddrTTL)
+	client.remember(server.host.ID(), protocol.Announce{Version: "test", Models: []string{"m"}, Free: 1, Max: 1})
+	w := postDirect(client, chatPath, paddedBody(maxGatewayBody, "<"))
+	if w.Code != 200 || w.Header().Get("X-Bitllm-Peer") != server.host.ID().String() {
+		t.Fatalf("got %d %.300q", w.Code, w.Body)
+	}
+}
+
+// The gateway's own errors on /v1/messages take Anthropic's shape; other paths
+// keep theirs. A 429 says when to come back, on either.
+func TestErrorShapes(t *testing.T) {
+	setVar(t, &busyWait, 100*time.Millisecond)
+	setVar(t, &busyBackoff, 10*time.Millisecond)
+	type doc struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	cases := []struct {
+		name     string
+		request  string
+		peer     script // none: no peer serves it
+		status   int
+		wantType string
+	}{
+		{"bad json", `{`, nil, 400, "invalid_request_error"},
+		{"no peer", chatBody, nil, 503, "api_error"},
+		{"busy", chatBody, refuseWith(429, msgBusy), 429, "rate_limit_error"},
+		{"refused", chatBody, refuseWith(404, "no such model"), 404, "not_found_error"},
+		{"not allowed", chatBody, refuseWith(403, msgNotAllowed), 403, "permission_error"},
+		{"failed", chatBody, refuseWith(1000, "odd"), 502, "api_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := clientNode(t)
+			gw := gatewayOf(t, client)
+			if tc.peer != nil {
+				addScriptedPeer(t, client, "m", 1, tc.peer)
+			}
+			got, hdr, body, _ := ask(t, gw, messagePath, tc.request)
+			var d doc
+			if err := json.Unmarshal([]byte(body), &d); err != nil || got != tc.status || d.Type != "error" ||
+				d.Error.Type != tc.wantType || d.Error.Message == "" {
+				t.Fatalf("messages: got %d %q, %v", got, body, err)
+			}
+			if (tc.status == 429) != (hdr.Get("Retry-After") != "") {
+				t.Fatalf("messages: status %d with Retry-After %q", got, hdr.Get("Retry-After"))
+			}
+
+			got, hdr, body, _ = ask(t, gw, chatPath, tc.request)
+			d = doc{}
+			if err := json.Unmarshal([]byte(body), &d); err != nil || got != tc.status || d.Type != "" ||
+				d.Error.Type != "" || d.Error.Message == "" {
+				t.Fatalf("chat: got %d %q, %v", got, body, err)
+			}
+			if (tc.status == 429) != (hdr.Get("Retry-After") != "") {
+				t.Fatalf("chat: status %d with Retry-After %q", got, hdr.Get("Retry-After"))
+			}
+		})
 	}
 }

@@ -111,6 +111,60 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": msg}})
 }
 
+// A request line to a peer must fit maxRequest, the limit the peer reads it
+// under, so the gateway keeps room for what goes around the body: the job id,
+// the path, wait_ms, the field names and the newline.
+const (
+	inferWrapper   = 256
+	maxGatewayBody = maxRequest - inferWrapper
+)
+
+var msgTooLarge = fmt.Sprintf("request body is over this gateway's limit of %d bytes (about %d MiB)", maxGatewayBody, maxRequest>>20)
+
+// retryAfter is the Retry-After of a 429, in seconds. By then the gateway has
+// already waited out busyWait, so the client need not hold back for long.
+const retryAfter = "10"
+
+// gatewayErr answers an error from a completions route in the shape of the API
+// the client is speaking.
+func gatewayErr(w http.ResponseWriter, path string, status int, msg string) {
+	if status == 429 {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	if path != "/messages" {
+		jsonErr(w, status, msg)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{
+		"type":  "error",
+		"error": map[string]string{"type": anthropicErrType(status), "message": msg},
+	})
+}
+
+// anthropicErrType is the error type Anthropic's API uses for a status.
+func anthropicErrType(status int) string {
+	switch status {
+	case 401:
+		return "authentication_error"
+	case 403:
+		return "permission_error"
+	case 404:
+		return "not_found_error"
+	case 413:
+		return "request_too_large"
+	case 429:
+		return "rate_limit_error"
+	case 504:
+		return "timeout_error"
+	}
+	if status >= 400 && status < 500 {
+		return "invalid_request_error"
+	}
+	return "api_error"
+}
+
 func (n *Node) listModels(w http.ResponseWriter, r *http.Request) {
 	nodes := map[string]int{}
 	for _, m := range n.modelNames() {
@@ -139,9 +193,13 @@ func (n *Node) complete(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		n.gatewayLive.Add(1)
 		defer n.gatewayLive.Add(-1)
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequest))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxGatewayBody+1))
 		if err != nil {
-			jsonErr(w, 400, err.Error())
+			gatewayErr(w, path, 400, err.Error())
+			return
+		}
+		if len(body) > maxGatewayBody {
+			gatewayErr(w, path, 413, msgTooLarge)
 			return
 		}
 		var req struct {
@@ -149,25 +207,29 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			Stream bool   `json:"stream"`
 		}
 		if json.Unmarshal(body, &req) != nil {
-			jsonErr(w, 400, "bad json")
+			gatewayErr(w, path, 400, "bad json")
 			return
 		}
 		if defuses(path) {
 			body = defuseBody(body) // also here, for peers running an older version
+			if len(body) > maxGatewayBody {
+				gatewayErr(w, path, 413, msgTooLarge)
+				return
+			}
 		}
 
 		// Our own model: private and free, no network hop. While our server
 		// is down the request stays here too, unless the operator chose to
 		// let peers, who can read it, answer instead.
 		if _, ours := n.upstreamModel(req.Model); ours && !n.upOK.Load() && !n.cfg.PeerFallback {
-			jsonErr(w, 503, fmt.Sprintf("your own model server is down, so this request for %q went nowhere; start it, or run bitllm with --peer-fallback to send such requests to peers (they can read them)", req.Model))
+			gatewayErr(w, path, 503, fmt.Sprintf("your own model server is down, so this request for %q went nowhere; start it, or run bitllm with --peer-fallback to send such requests to peers (they can read them)", req.Model))
 			return
 		}
 		if n.ownModel(req.Model) {
 			resp, stream, err := n.callUpstream(r.Context(), path, body)
 			if err != nil {
 				pe := err.(*peerError)
-				jsonErr(w, pe.status, pe.msg)
+				gatewayErr(w, path, pe.status, pe.msg)
 				return
 			}
 			defer resp.Body.Close()
@@ -186,7 +248,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			cands = n.candidates(req.Model)
 		}
 		if len(cands) == 0 {
-			jsonErr(w, 503, "no peer serves model "+req.Model+"; see GET /v1/models")
+			gatewayErr(w, path, 503, "no peer serves model "+req.Model+"; see GET /v1/models")
 			return
 		}
 		// Try the best few peers. A peer that has no free slot keeps the
@@ -271,9 +333,9 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		}
 		var pe *peerError
 		if errors.As(last, &pe) {
-			jsonErr(w, peerStatus(pe.status), "all peers refused: "+cleanPeerText(pe.msg, maxPeerText))
+			gatewayErr(w, path, peerStatus(pe.status), "all peers refused: "+cleanPeerText(pe.msg, maxPeerText))
 		} else {
-			jsonErr(w, 502, "all peers failed: "+cleanPeerText(last.Error(), maxPeerText))
+			gatewayErr(w, path, 502, "all peers failed: "+cleanPeerText(last.Error(), maxPeerText))
 		}
 	}
 }
