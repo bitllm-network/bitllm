@@ -164,15 +164,16 @@ jobs:
 
   # Protocol compatibility: a node built from this commit must work with nodes
   # still running older releases, in both directions (see scripts/compat.sh
-  # and docs/compat.md). "latest" is the newest release; the pinned version is
-  # the oldest one we know is still running on the public network.
+  # and docs/compat.md). "latest" is the newest release, v0.2.0 serves on the
+  # public network today, and v0.1.11 is the oldest release we know is still
+  # running there.
   compat:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        old: [latest, v0.1.11]
+        old: [latest, v0.2.0, v0.1.11]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
