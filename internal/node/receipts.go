@@ -118,19 +118,37 @@ func (n *Node) handleSync(s network.Stream) {
 	}
 }
 
-func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (int, error) {
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "sync"), p, protocol.SyncProto)
+// syncReceipts reads one seed's sync stream. A seed may answer slowly but may
+// not go silent or run on forever: the read deadline restarts with each item,
+// SyncLimit bounds the whole sync, and a sync that fails resets the stream.
+func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (added int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, n.cfg.SyncLimit)
+	defer cancel()
+	open, cancelOpen := context.WithTimeout(ctx, n.cfg.SyncStall)
+	defer cancelOpen()
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(open, "sync"), p, protocol.SyncProto)
 	if err != nil {
 		return 0, err
 	}
-	defer s.Close()
+	defer func() {
+		if err != nil {
+			s.Reset()
+		} else {
+			s.Close()
+		}
+	}()
+	// The context does not reach a read that is already blocked; this does.
+	stop := context.AfterFunc(ctx, func() { s.Reset() })
+	defer stop()
+	s.SetDeadline(time.Now().Add(n.cfg.SyncStall))
 	s.CloseWrite()
-	dec, added := json.NewDecoder(s), 0
+	dec := json.NewDecoder(s)
 	for {
+		s.SetReadDeadline(time.Now().Add(n.cfg.SyncStall))
 		var it syncItem
 		if err := dec.Decode(&it); err != nil {
 			if err == io.EOF {
-				err = nil
+				return added, nil
 			}
 			return added, err
 		}

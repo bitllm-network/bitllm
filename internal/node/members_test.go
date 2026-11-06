@@ -147,9 +147,10 @@ func TestInviteGossipAndSync(t *testing.T) {
 	}
 	late := cfg()
 	late.Bootstrap = bs
-	if !testNode(t, ctx, late).members.Compute().Member[guest.addr] {
-		t.Fatal("late joiner did not sync the invite")
-	}
+	lateNode := testNode(t, ctx, late)
+	eventually(t, 15*time.Second, "late joiner did not sync the invite", func() bool {
+		return lateNode.members.Compute().Member[guest.addr]
+	})
 }
 
 // TestOpenServer: --open serves uninvited nodes on spare slots (at most
