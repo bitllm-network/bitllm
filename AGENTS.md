@@ -19,8 +19,10 @@ go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...   # same pinned version
 ```
 
 Go version: see `go.mod` (`mise.toml` pins the toolchain). Tests take 30 to 60 s with -race. Release binaries come
-from `scripts/release.sh vX.Y.Z`, which builds all four targets with `-trimpath` and writes
-`dist/SHA256SUMS`; never upload binaries built another way.
+from `.github/workflows/release.yml`, which a `vX.Y.Z` tag starts. It runs `scripts/release.sh`, which builds
+all four targets with `-trimpath` and the Go version in `go.mod`, and writes `dist/SHA256SUMS`. Never upload
+binaries built any other way, and never publish a release that has not been signed. The steps are in
+[docs/releasing.md](docs/releasing.md).
 
 ## Layout
 
@@ -40,15 +42,20 @@ package per domain. Tests live with the package they test.
 | `internal/netmap/` | `--location` geohash cells and the aggregate behind `GET /network` ([docs/network-map.md](docs/network-map.md)) |
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
-| `internal/update/` | self-update: find the newest release, verify its checksum and `--version`, swap the binary, restart when the node is idle |
+| `internal/update/` | self-update: find the newest release, check its signature, verify its checksum and `--version`, swap the binary, restart when the node is idle. The public release keys are in `keys.go` |
 | `deploy/bootstrap-vps.sh` | turns a public VM into a dedicated seed and prints the DNS TXT records |
 | `deploy/gpu-host.sh` | installs a GPU host's node beside its model server, as a systemd unit |
-| `deploy/seed-dns.py` | replaces the `_dnsaddr.bootstrap.bitllm.org` seed list through the Cloudflare API |
+| `deploy/seed-dns.py` | publishes the `_dnsaddr.bootstrap.bitllm.org` seed list through the Cloudflare API, creating new records before deleting old ones |
+| `deploy/test_*.py` | tests for the three above and `scripts/network-kv.sh`, with no root, no network and no real API. The deploy scripts run as root on live machines, so test their logic this way and never by running them: `python3 -m unittest discover -s deploy -p 'test_*.py'` |
 | `docs/host-a-gpu.md` | the handoff checklist for a machine that joins the network as a GPU host |
 | `docs/seed-handoff.md` | the deployment handoff for the first public seed and the Cloudflare domain move |
+| `docs/releasing.md` | how to cut, sign, publish, promote and back out a release, and how signing keys are made |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
-| `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
+| `.github/workflows/release.yml` | on a `vX.Y.Z` tag: `go test -race`, `scripts/release.sh`, the contract check, then a draft prerelease. It holds no signing key and never publishes |
+| `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, the deploy script tests, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
+| `scripts/release.sh` | builds the release assets; for `vX.Y.Z` it refuses a dirty tree, a `HEAD` that is not that tag, or missing signing keys |
+| `scripts/sign/` | makes and checks release signatures with an admin's offline key |
 
 The public site at bitllm.org is a separate repository,
 [bitllm-org/landing-page](https://github.com/bitllm-org/landing-page). The dashboard the binary
@@ -74,6 +81,11 @@ serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
   release build finds, downloads and verifies its next binary from exactly those names, so renaming
   an asset or changing the sums format breaks self-update silently. The downloaded file must also
   print `bitllm <tag>` for `--version`; `internal/update` refuses it otherwise.
+- **`SHA256SUMS.sig` is part of that contract.** Each line is a base64 ed25519 signature over
+  `bitllm release v1\n<tag>\n` followed by the exact bytes of `SHA256SUMS`, made by a key listed in
+  `internal/update/keys.go`. An admin adds this asset by hand, offline. CI never holds a signing key.
+  `go run ./scripts/sign verify` makes the same check a node makes. Changing the message or the
+  format is a change to a signed format, and old nodes would stop trusting new releases.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
 - **User-facing copy** (README, README.zh.md, docs/JOIN.zh.md, and `public/` in bitllm-org/landing-page):
