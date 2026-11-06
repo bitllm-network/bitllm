@@ -29,7 +29,7 @@ const location = { origin: scenario.origin || "http://127.0.0.1:7778", host: "12
 const requests = [], replaced = [], copied = [];
 let state = { status: scenario.status, models: scenario.models };
 const routes = () => ({ "/status": state.status, "/v1/models": { data: state.models }, "/credits": [],
-  "/account": { node: "me" }, "/members/me": { enabled: false } });
+  "/account": { node: "me" }, "/members/me": scenario.members || { enabled: false } });
 const ctx = {
   document: { getElementById: el }, location, console, URLSearchParams, TextEncoder, Promise, JSON, String, Math, Object, Array,
   localStorage: store(scenario.local), sessionStorage: store(scenario.session),
@@ -61,6 +61,7 @@ type uiScenario struct {
 	Local   map[string]string `json:"local,omitempty"`
 	Session map[string]string `json:"session,omitempty"`
 	NeedKey string            `json:"needKey,omitempty"`
+	Members map[string]any    `json:"members,omitempty"`
 	Status  map[string]any    `json:"status"`
 	Models  []map[string]any  `json:"models"`
 	JS      string            `json:"js"`
@@ -419,5 +420,22 @@ func TestNoGatewayKeyInThePage(t *testing.T) {
 	}
 	if strings.Contains(got.Curl, "Authorization") || !strings.Contains(got.OpenAI, "bitllm  (any value)") {
 		t.Errorf("snippets: %q %q", got.Curl, got.OpenAI)
+	}
+}
+
+// A contributor line promises what access rule 3 says and no more.
+func TestContributorCopy(t *testing.T) {
+	var got string
+	runUI(t, uiScenario{
+		Members: map[string]any{"enabled": true, "account": "0xabc", "member": true, "contributor": true, "invites_limit": 10, "invites_used": 1, "members": 5},
+		JS:      `return el("access-text").innerHTML;`,
+	}, &got)
+	for _, want := range []string{"10 invites instead of 3", "no quota on a server that asked your node for a job in the last 7 days"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "never limited") {
+		t.Errorf("promises too much: %q", got)
 	}
 }
