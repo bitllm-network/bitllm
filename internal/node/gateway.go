@@ -193,17 +193,23 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					wait = min(remaining, peerWait)
 				}
 				started, err := n.infer(r.Context(), p, path, body, req.Stream, w, wait)
-				if started && err == nil && n.audits != nil {
-					n.audits.observe(p, req.Model, body)
-				}
-				if started {
-					// A local client that hangs up mid-response (the user
-					// stopped the answer, or the agent closed the request)
-					// resets our stream; that is not the peer's failure.
-					if err != nil && r.Context().Err() == nil {
-						log.Printf("peer %s broke mid-response: %s", p, cleanPeerText(err.Error(), maxPeerText))
+				if err == nil {
+					if n.audits != nil {
+						n.audits.observe(p, req.Model, body)
 					}
 					return
+				}
+				// A local client that hangs up (the user stopped the answer, or
+				// the agent closed the request) resets our stream; that is not
+				// the peer's failure.
+				if r.Context().Err() != nil || errors.Is(err, errLocalGone) {
+					return
+				}
+				if started {
+					// Part of an answer went out as a 200. Only dropping the
+					// connection tells the client that it did not end.
+					log.Printf("peer %s broke mid-response: %s", p, cleanPeerText(err.Error(), maxPeerText))
+					panic(http.ErrAbortHandler)
 				}
 				var pe *peerError
 				if errors.As(err, &pe) && notAllowed(pe.status, pe.msg) {
@@ -215,6 +221,11 @@ func (n *Node) complete(path string) http.HandlerFunc {
 				if !errors.As(err, &pe) || !isBusy(pe.status, pe.msg) {
 					log.Printf("peer %s: %s", p, cleanPeerText(err.Error(), maxPeerText))
 					busy = false
+					// The time spent on a failure is no reason to skip the next
+					// peer: this round is bounded by its three tries.
+					if next := time.Now().Add(peerWait); next.After(deadline) {
+						deadline = next
+					}
 				}
 				last = err
 			}

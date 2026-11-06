@@ -288,3 +288,232 @@ func TestPeerErrorCleaned(t *testing.T) {
 		t.Fatalf("log line not cleaned: %q", out)
 	}
 }
+
+// withBackup makes a first candidate that runs the script, and a backup that
+// answers if the gateway moves on from it.
+func withBackup(t *testing.T, run script) (gw *httptest.Server, first, backup *scriptedPeer) {
+	t.Helper()
+	client := clientNode(t)
+	gw = gatewayOf(t, client)
+	first = addScriptedPeer(t, client, "m", 4, run)
+	backup = addScriptedPeer(t, client, "m", 0, honestAnswer)
+	return gw, first, backup
+}
+
+// Each of these leaves nothing written yet, so the next peer answers and the
+// client never hears of the failure.
+func TestFailoverBeforeFirstByte(t *testing.T) {
+	endless := func(s network.Stream) {
+		chunk := []byte(strings.Repeat("a", 4096))
+		for {
+			if _, err := s.Write(chunk); err != nil {
+				return
+			}
+		}
+	}
+	cases := []struct {
+		name string
+		body string
+		run  script
+	}{
+		{"200 then nothing", chatBody, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}) }},
+		{"200 then nothing, streamed", chatStream, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}) }},
+		{"200 then silence", chatBody, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}); holdOpen(s) }},
+		{"200 then silence, streamed", chatStream, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}); holdOpen(s) }},
+		{"200 then a reset", chatBody, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}); s.Reset() }},
+		{"a body that stops halfway", chatBody, func(s network.Stream, _ inferReq) {
+			sayHdr(s, inferHdr{Status: 200})
+			io.WriteString(s, answerJSON[:10])
+		}},
+		{"an oversized body", chatBody, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}); endless(s) }},
+		{"an endless line", chatStream, func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: 200}); endless(s) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setVar(t, &peerStall, 300*time.Millisecond)
+			setVar(t, &maxPeerBody, int64(64<<10))
+			setVar(t, &maxPeerLine, 64<<10)
+			gw, first, backup := withBackup(t, tc.run)
+			got, hdr, body, err := ask(t, gw, chatPath, tc.body)
+			if err != nil || got != 200 {
+				t.Fatalf("got %d %q, %v", got, body, err)
+			}
+			if first.streams.Load() != 1 || hdr.Get("X-Bitllm-Peer") != backup.id.String() {
+				t.Fatalf("answered by %s, first peer saw %d streams", hdr.Get("X-Bitllm-Peer"), first.streams.Load())
+			}
+			eventually(t, 5*time.Second, "the peer that answered got no receipt", func() bool { return backup.receipts.Load() == 1 })
+			if first.receipts.Load() != 0 {
+				t.Fatal("a peer that sent no whole answer got a receipt")
+			}
+		})
+	}
+}
+
+// A size limit also resets the stream, which stops the peer sending.
+func TestOverLimitResetsStream(t *testing.T) {
+	for name, body := range map[string]string{"body": chatBody, "line": chatStream} {
+		t.Run(name, func(t *testing.T) {
+			setVar(t, &maxPeerBody, int64(64<<10))
+			setVar(t, &maxPeerLine, 64<<10)
+			stopped := make(chan error, 1)
+			client := clientNode(t)
+			gw := gatewayOf(t, client)
+			addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
+				sayHdr(s, inferHdr{Status: 200})
+				chunk := []byte(strings.Repeat("a", 4096))
+				for {
+					if _, err := s.Write(chunk); err != nil {
+						stopped <- err
+						return
+					}
+				}
+			})
+			got, _, out, err := ask(t, gw, chatPath, body)
+			if err != nil || got != 502 {
+				t.Fatalf("got %d %q, %v", got, out, err)
+			}
+			select {
+			case <-stopped:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the peer could keep writing past the limit")
+			}
+		})
+	}
+}
+
+// A slow answer that keeps moving is not a stall: the deadline restarts with
+// each read.
+func TestSlowAnswerSurvivesStall(t *testing.T) {
+	setVar(t, &peerStall, 500*time.Millisecond)
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 200})
+		for range 6 {
+			io.WriteString(s, eventDelta)
+			time.Sleep(200 * time.Millisecond)
+		}
+		io.WriteString(s, eventDone)
+	})
+	got, _, body, err := ask(t, gw, chatPath, chatStream)
+	if err != nil || got != 200 || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("got %d %q, %v", got, body, err)
+	}
+}
+
+// Once part of an answer went out, an answer that does not end reaches the
+// local client as a broken connection, not as a clean end, and earns no receipt.
+func TestCutStreamAborts(t *testing.T) {
+	cases := []struct {
+		name string
+		run  script
+	}{
+		{"clean close", func(s network.Stream, _ inferReq) {
+			sayHdr(s, inferHdr{Status: 200})
+			io.WriteString(s, eventDelta)
+		}},
+		{"reset", func(s network.Stream, _ inferReq) {
+			sayHdr(s, inferHdr{Status: 200})
+			io.WriteString(s, eventDelta)
+			time.Sleep(100 * time.Millisecond)
+			s.Reset()
+		}},
+		{"silence", func(s network.Stream, _ inferReq) {
+			sayHdr(s, inferHdr{Status: 200})
+			io.WriteString(s, eventDelta)
+			holdOpen(s)
+		}},
+		{"endless line", func(s network.Stream, _ inferReq) {
+			sayHdr(s, inferHdr{Status: 200})
+			io.WriteString(s, eventDelta)
+			chunk := []byte(strings.Repeat("a", 4096))
+			for {
+				if _, err := s.Write(chunk); err != nil {
+					return
+				}
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setVar(t, &peerStall, 300*time.Millisecond)
+			setVar(t, &maxPeerLine, 64<<10)
+			logs := captureLogs(t)
+			gw, first, backup := withBackup(t, tc.run)
+			got, _, body, err := ask(t, gw, chatPath, chatStream)
+			if got != 200 || !strings.Contains(body, `"hi"`) {
+				t.Fatalf("got %d %q", got, body)
+			}
+			if err == nil {
+				t.Fatalf("the client saw a clean end of a cut answer: %q", body)
+			}
+			if !strings.Contains(logs.String(), "broke mid-response") {
+				t.Fatalf("not logged: %q", logs.String())
+			}
+			if backup.streams.Load() != 0 {
+				t.Fatal("a second peer was asked after bytes had gone out")
+			}
+			time.Sleep(200 * time.Millisecond)
+			if first.receipts.Load() != 0 {
+				t.Fatal("a cut answer got a receipt")
+			}
+		})
+	}
+}
+
+// A local client that hangs up mid-answer is not the peer's failure.
+func TestClientHangUpIsNotPeerFailure(t *testing.T) {
+	logs := captureLogs(t)
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 200})
+		io.WriteString(s, eventDelta)
+		holdOpen(s)
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", gw.URL+chatPath, strings.NewReader(chatStream))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	eventually(t, 5*time.Second, "the request did not end", func() bool { return client.gatewayLive.Load() == 0 })
+	if out := logs.String(); strings.Contains(out, "broke mid-response") {
+		t.Fatalf("logged as a peer failure: %q", out)
+	}
+}
+
+// Audit canaries call infer with a recorder, so a cut answer must come back as
+// an error rather than a panic.
+func TestInferCutStreamReturnsError(t *testing.T) {
+	client := clientNode(t)
+	sp := addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 200})
+		io.WriteString(s, eventDelta)
+	})
+	started, err := client.infer(t.Context(), sp.id, "/chat/completions", []byte(chatStream), true, httptest.NewRecorder(), 0)
+	if !started || err == nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+}
+
+// A slow failure on the first peer leaves the second its turn, though the time
+// allowed for waiting on busy peers has run out.
+func TestFailoverAfterBusyWait(t *testing.T) {
+	setVar(t, &peerStall, 400*time.Millisecond)
+	setVar(t, &busyWait, 100*time.Millisecond)
+	gw, _, backup := withBackup(t, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 200})
+		holdOpen(s)
+	})
+	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != backup.id.String() {
+		t.Fatalf("got %d %q %s, %v", got, body, hdr.Get("X-Bitllm-Peer"), err)
+	}
+}
