@@ -5,16 +5,20 @@ package node
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"maps"
 	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -61,6 +65,7 @@ const (
 type Config struct {
 	Upstream         string                // OpenAI-compatible base URL to share; empty = client only
 	UpstreamKey      string                //
+	GatewayKey       string                // when set, every gateway request but GET / must carry it
 	Models           map[string]string     // public name -> upstream name; empty = discover
 	ModelsFixed      bool                  // Models came from --model; do not replace them from upstream
 	Concurrency      int                   //
@@ -93,6 +98,7 @@ type Config struct {
 	AuditServe       bool                  // announce the models our server can score, so others may use us as an auditor
 	Location         string                // coarse geohash cell for the node map (network.go); empty = not shown
 	UpdateStatus     func() map[string]any // what the updater reports, for GET /status; nil = no updater
+	PeerFallback     bool                  // while our own server is down, send requests for its models to peers
 }
 
 // peerInfo is one peer's latest announce and when we heard it. The announce
@@ -146,6 +152,7 @@ type Node struct {
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 	audits       *audits        // nil without --audit
+	peerMem      peerMemory     // how peers have done per model, for candidates
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
@@ -159,19 +166,67 @@ type Node struct {
 	refused   refusals     // why this server refused requests, for /status
 
 	started time.Time // when this node came up, shown by GET /status
+
+	// Stopping (shutdown.go).
+	closing   atomic.Bool        // set first on shutdown: no new peer jobs
+	closers   []func()           // run by Close once the host is down
+	stopLoops context.CancelFunc // ends the loops that announce, dial and sync
+	stopAll   context.CancelFunc // ends the rest: gossip, its readers, the DHT's context
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// LoadKey reads the node key, creating it on first run.
+// LoadKey reads the node key, creating it only when the file does not exist.
+// The key is the node's identity, so a file that cannot be read or parsed is an
+// error for a person to look at, and is never replaced.
 func LoadKey(path string) (crypto.PrivKey, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		return crypto.UnmarshalPrivateKey(b)
+	b, err := os.ReadFile(path)
+	if err == nil {
+		k, err := crypto.UnmarshalPrivateKey(b)
+		if err != nil {
+			return nil, fmt.Errorf("identity file %s is damaged (%w): restore it from a backup, or move it away to start with a new peer id", path, err)
+		}
+		return k, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cannot read identity file %s (%w): fix the file or its permissions; it has not been replaced", path, err)
 	}
 	k, _, err := crypto.GenerateEd25519Key(nil)
 	if err != nil {
 		return nil, err
 	}
-	b, _ := crypto.MarshalPrivateKey(k)
-	return k, os.WriteFile(path, b, 0o600)
+	b, err = crypto.MarshalPrivateKey(k)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(path, b); err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+// writeFileAtomic writes a new private file in one step: a crash leaves either
+// no file or the whole file, never part of one.
+func writeFileAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	err = f.Chmod(0o600)
+	if err == nil {
+		_, err = f.Write(b)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // New starts a node: key, host, DHT, gossip, storage, then the loops. It does
@@ -218,7 +273,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// the first contact: --dht-server is a seed and may start alone, while
 	// --public keeps the default seed list.
 	public := cfg.DHTServer || cfg.Public
+	// Gossip outlives loops: a job that finishes during a drain still publishes
+	// its receipt, while nothing announces this node any more.
+	ctx, stopAll := context.WithCancel(ctx)
+	loops, stopLoops := context.WithCancel(ctx)
 	n := &Node{
+		stopAll:   stopAll,
+		stopLoops: stopLoops,
 		cfg:       cfg,
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      &http.Client{},
@@ -314,7 +375,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	n.nodeKey = key
 	if n.receiptSeed, err = receipts.LoadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
-		return nil, err
+		// Losing the seed only breaks the link to past pseudonyms, which is no
+		// reason to stay down. Use one for this run and leave the file alone.
+		log.Printf("WARNING: %v; using a temporary one until the next start", err)
+		n.receiptSeed = make([]byte, 32)
+		if _, err := crand.Read(n.receiptSeed); err != nil {
+			return nil, err
+		}
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
@@ -388,7 +455,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	go n.readClaims(ctx, csub)
-	go n.claimLoop(ctx)
+	go n.claimLoop(loops)
 	if n.topic, err = ps.Join(protocol.AnnounceTopic); err != nil {
 		return nil, err
 	}
@@ -406,12 +473,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
+		go n.audits.recheckLoop(loops)
 	}
-	go n.joinSeeds(ctx)
-	go n.redialLoop(ctx)
+	go n.joinSeeds(loops)
+	go n.redialLoop(loops)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
-		go n.announceLoop(ctx)
+		go n.announceLoop(loops)
 	}
 	return n, nil
 }
@@ -583,11 +651,15 @@ func (n *Node) announceLoop(ctx context.Context) {
 	var scorable []string
 	probed := false
 	lastModels := time.Time{}
+	capLogged := 0
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
 		if n.inflight.Load() == 0 {
 			ok := n.checkUpstream(ctx)
+			if ctx.Err() != nil {
+				return // stopping: a check cut short says nothing about the server
+			}
 			if ok != n.upOK.Swap(ok) {
 				log.Printf("upstream %s: up=%v", n.cfg.Upstream, ok)
 			}
@@ -620,6 +692,13 @@ func (n *Node) announceLoop(ctx context.Context) {
 			a.Weights = n.cfg.Weights
 			a.Loc = n.cfg.Location
 		}
+		if total := len(a.Models); total > protocol.MaxAnnounceModels {
+			capAnnounce(&a)
+			if total != capLogged {
+				log.Printf("sharing the first %d of %d models: peers reject a longer announce; pick which with --model", len(a.Models), total)
+				capLogged = total
+			}
+		}
 		n.lastAnn.Store(&a)
 		b, _ := json.Marshal(a)
 		n.topic.Publish(ctx, b)
@@ -628,6 +707,28 @@ func (n *Node) announceLoop(ctx context.Context) {
 			return
 		case <-time.After(n.cfg.AnnounceEvery):
 		}
+	}
+}
+
+// capAnnounce trims a to the most models peers accept, in name order so the
+// choice is stable. Peers reject an announce whole if it lists too many, which
+// would hide the node entirely, or if it mentions a model it does not list.
+func capAnnounce(a *protocol.Announce) {
+	sorted := slices.Sorted(slices.Values(a.Models))
+	a.Models = sorted[:protocol.MaxAnnounceModels]
+	kept := make(map[string]bool, len(a.Models))
+	for _, m := range a.Models {
+		kept[m] = true
+	}
+	a.Audit = slices.DeleteFunc(slices.Clone(a.Audit), func(m string) bool { return !kept[m] })
+	if a.Weights != nil {
+		weights := make(map[string]string, len(a.Weights))
+		for m, h := range a.Weights {
+			if kept[m] {
+				weights[m] = h
+			}
+		}
+		a.Weights = weights
 	}
 }
 
@@ -870,7 +971,12 @@ func (n *Node) alive() map[peer.ID]protocol.Announce {
 	return out
 }
 
-// candidates lists remote peers serving model, best first.
+// rttNear is how close two latencies must be to count as equal when ranking.
+const rttNear = 50 * time.Millisecond
+
+// candidates lists remote peers serving model, best first: a peer in cooldown
+// goes behind all others but is still listed, so a sole server gets retried.
+// Peers that rank the same come in random order, so load spreads over them.
 func (n *Node) candidates(model string) []peer.ID {
 	type c struct {
 		id      peer.ID
@@ -878,9 +984,12 @@ func (n *Node) candidates(model string) []peer.ID {
 		q       int
 		rtt     time.Duration
 		demoted bool // an audit suspect: used only when nobody else can answer
+		cooling bool // failed recently
+		recent  bool // answered recently
 	}
 	var cs []c
 	want := models.Manifest[model].Weights
+	now := time.Now()
 	for p, a := range n.alive() {
 		// A peer that says it loads other weights than the name stands for
 		// is serving another model under this name, by its own account.
@@ -903,24 +1012,32 @@ func (n *Node) candidates(model string) []peer.ID {
 				if rtt <= 0 {
 					rtt = time.Duration(1<<62 - 1)
 				}
-				cs = append(cs, c{p, a.Free, a.Q, rtt, demoted})
+				cooling, recent := n.peerMem.rank(p, model, now)
+				cs = append(cs, c{p, a.Free, a.Q, rtt, demoted, cooling, recent})
 				break
 			}
 		}
 	}
-	sort.Slice(cs, func(i, j int) bool {
+	rand.Shuffle(len(cs), func(i, j int) { cs[i], cs[j] = cs[j], cs[i] })
+	sort.SliceStable(cs, func(i, j int) bool {
+		if cs[i].cooling != cs[j].cooling {
+			return !cs[i].cooling
+		}
 		if cs[i].demoted != cs[j].demoted {
 			return !cs[i].demoted
 		}
 		if (cs[i].free > 0) != (cs[j].free > 0) {
 			return cs[i].free > 0
 		}
+		if cs[i].recent != cs[j].recent {
+			return cs[i].recent
+		}
 		// A peer with a shorter queue sends the answer sooner than one with
 		// a long one, whatever the ping says. q is the depth it announced.
 		if cs[i].q != cs[j].q {
 			return cs[i].q < cs[j].q
 		}
-		return cs[i].rtt < cs[j].rtt
+		return cs[i].rtt/rttNear < cs[j].rtt/rttNear
 	})
 	out := make([]peer.ID, len(cs))
 	for i := range cs {
@@ -1093,6 +1210,16 @@ func (n *Node) Addrs() []string {
 		out = append(out, a.Encapsulate(ma.StringCast("/p2p/"+n.host.ID().String())).String())
 	}
 	return out
+}
+
+// SeedConnected reports whether this node is connected to any of its seeds.
+func (n *Node) SeedConnected() bool {
+	for _, ai := range n.relays {
+		if n.host.Network().Connectedness(ai.ID) == network.Connected {
+			return true
+		}
+	}
+	return false
 }
 
 // Seeds is the resolved bootstrap list: the peers this node dials first. It is

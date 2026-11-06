@@ -19,4 +19,20 @@ func TestUIInlinesFonts(t *testing.T) {
 			t.Errorf("no %s rule in the page", family)
 		}
 	}
+	if bytes.Contains(UI, []byte(`base64,"`)) {
+		t.Error("a font rule has no data")
+	}
+}
+
+// The OFL requires every copy of the fonts to carry their notices and license.
+func TestUICarriesFontLicenses(t *testing.T) {
+	for _, want := range []string{
+		"The JetBrains Mono Project Authors",
+		"The Arimo Project Authors",
+		"SIL OPEN FONT LICENSE Version 1.1",
+	} {
+		if !bytes.Contains(UI, []byte(want)) {
+			t.Errorf("the page does not contain %q", want)
+		}
+	}
 }

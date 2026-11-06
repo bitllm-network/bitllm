@@ -76,9 +76,10 @@ func fakeReleasesOf(t *testing.T, tag string, bin []byte, signed bool) (c *updat
 	}))
 	t.Cleanup(srv.Close)
 	return &update.Client{
-		Sums:  srv.URL + "/latest/download/SHA256SUMS",
-		Asset: srv.URL + "/releases/download/%s/%s",
-		HTTP:  srv.Client(),
+		Sums:             srv.URL + "/latest/download/SHA256SUMS",
+		Asset:            srv.URL + "/releases/download/%s/%s",
+		HTTP:             srv.Client(),
+		RequireSignature: update.New().RequireSignature,
 	}, hits
 }
 
@@ -160,7 +161,7 @@ func TestUpdateTagRefusesNonRelease(t *testing.T) {
 }
 
 func TestUpdateTagCheckInstallsNothing(t *testing.T) {
-	c, _ := fakeReleases(t, "v0.3.0", false)
+	c, _ := fakeReleases(t, "v0.3.0", true)
 	exe := oldBinary(t)
 	var out bytes.Buffer
 	err := runUpdate(context.Background(), c, updateOptions{check: true, tag: "v0.3.0", exe: exe, current: "v0.4.0"}, &out)
@@ -168,9 +169,95 @@ func TestUpdateTagCheckInstallsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantBinary(t, exe, []byte("old"))
-	wantOutput(t, out.String(), "release: v0.3.0\n", "signature: missing\n", "this binary: v0.4.0")
+	wantOutput(t, out.String(), "release: v0.3.0\n", "signature: ok\n", "this binary: v0.4.0")
 	if strings.Contains(out.String(), "installed") {
 		t.Errorf("--check claims an install:\n%s", out.String())
+	}
+}
+
+// A release checklist relies on the exit status of --check, so any result but
+// ok fails it, printed first, whatever else there is or is not to do. That
+// includes the checklist's own shape: the new binary asked about its own tag.
+func TestUpdateCheckFailsUnlessSigned(t *testing.T) {
+	const tag = "v0.5.0"
+	for _, o := range []struct {
+		name         string
+		tag, current string
+	}{
+		{"named release, this very binary", tag, tag},
+		{"named release, an older binary", tag, "v0.4.6"},
+		{"named release, a dev build", tag, "dev"},
+		{"newest release, up to date", "", tag},
+		{"newest release, an older binary", "", "v0.4.6"},
+		{"newest release, a dev build", "", "dev"},
+	} {
+		for _, sig := range []struct {
+			name, want string
+			signed     bool
+			otherKey   bool
+		}{
+			{name: "good", want: "ok", signed: true},
+			{name: "missing", want: "missing"},
+			{name: "wrong key", want: "bad", signed: true, otherKey: true},
+		} {
+			t.Run(o.name+"/"+sig.name, func(t *testing.T) {
+				c, _ := fakeReleases(t, tag, sig.signed)
+				if sig.otherKey {
+					pub, _, err := ed25519.GenerateKey(rand.Reader)
+					if err != nil {
+						t.Fatal(err)
+					}
+					update.TrustedKeys = []string{base64.StdEncoding.EncodeToString(pub)}
+				}
+				exe := oldBinary(t)
+				var out bytes.Buffer
+				err := runUpdate(context.Background(), c, updateOptions{check: true, tag: o.tag, exe: exe, current: o.current}, &out)
+				wantOutput(t, out.String(), "signature: "+sig.want+"\n")
+				if sig.want == "ok" {
+					if err != nil {
+						t.Errorf("runUpdate = %v, want success", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "not installing") {
+					t.Errorf("runUpdate = %v, want a failure", err)
+				}
+				wantBinary(t, exe, []byte("old"))
+			})
+		}
+	}
+}
+
+// --tag proves a signature without --check too: naming the release this binary
+// already is must not pass just because there is nothing to install.
+func TestUpdateTagThisReleaseFailsUnlessSigned(t *testing.T) {
+	c, _ := fakeReleases(t, "v0.5.0", false)
+	exe := oldBinary(t)
+	var out bytes.Buffer
+	err := runUpdate(context.Background(), c, updateOptions{tag: "v0.5.0", exe: exe, current: "v0.5.0"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "not installing") {
+		t.Errorf("runUpdate = %v, want a failure", err)
+	}
+	wantOutput(t, out.String(), "signature: missing\n", "already this release")
+	wantBinary(t, exe, []byte("old"))
+}
+
+// A build from source never updates itself, but the command still works on it,
+// so it must enforce signatures like any other.
+func TestUpdateDevBuildEnforcesSignatures(t *testing.T) {
+	for _, tag := range []string{"", "v0.5.0"} {
+		c, _ := fakeReleases(t, "v0.5.0", false)
+		exe := oldBinary(t)
+		var out bytes.Buffer
+		err := runUpdate(context.Background(), c, updateOptions{tag: tag, exe: exe, current: "dev"}, &out)
+		if err == nil || !strings.Contains(err.Error(), "not installing") {
+			t.Errorf("tag %q: runUpdate = %v, want a refusal", tag, err)
+		}
+		wantBinary(t, exe, []byte("old"))
+
+		c, _ = fakeReleases(t, "v0.5.0", true)
+		if err := runUpdate(context.Background(), c, updateOptions{tag: tag, exe: exe, current: "dev"}, &out); err != nil {
+			t.Errorf("tag %q: signed release: %v", tag, err)
+		}
+		wantBinary(t, exe, fakeBinary("v0.5.0"))
 	}
 }
 
@@ -187,7 +274,6 @@ func TestUpdateTagAlreadyThatRelease(t *testing.T) {
 
 func TestUpdateTagEnforcedRefuses(t *testing.T) {
 	c, _ := fakeReleases(t, "v0.3.0", false)
-	c.RequireSignature = true
 	exe := oldBinary(t)
 	var out bytes.Buffer
 	err := runUpdate(context.Background(), c, updateOptions{tag: "v0.3.0", exe: exe, current: "v0.4.0"}, &out)
@@ -214,6 +300,8 @@ func TestUpdateNewestPrintsSignature(t *testing.T) {
 	}
 }
 
+// Nothing was asked of the release here and nothing is at stake, so a plain
+// `bitllm update` stays quiet about an older unsigned latest.
 func TestUpdateNewestUpToDate(t *testing.T) {
 	c, _ := fakeReleases(t, "v0.5.0", false)
 	exe := oldBinary(t)

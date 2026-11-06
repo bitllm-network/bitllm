@@ -15,10 +15,10 @@ var TrustedKeys = []string{
 	"YKS4w2KYPryPWZ33AmwYQx88FGXEcb8L0git04mjQqQ=",
 }
 
-// requireSignature is whether a release has to be signed to be installed. This
-// release checks and reports only; the next one turns it on. See
-// Client.RequireSignature.
-const requireSignature = false
+// requireSignature is whether a release has to be signed to be installed. Every
+// build gets its client from New, so this holds for a dev build running `bitllm
+// update` as much as for a release. See Client.RequireSignature.
+const requireSignature = true
 
 // What a signature check can come to, as Release.Signature and GET /status
 // report it.

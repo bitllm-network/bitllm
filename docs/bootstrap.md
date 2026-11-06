@@ -142,6 +142,7 @@ A public host that should help without being a first contact uses `--public`:
 
 ```sh
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```

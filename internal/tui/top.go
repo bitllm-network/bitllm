@@ -6,6 +6,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/term"
 )
@@ -53,6 +55,7 @@ type nodeAccount struct {
 // view is what top redraws: the last status, the last logs, and the work rate.
 type view struct {
 	base     string
+	key      string // the gateway's --gateway-key, if it has one
 	client   *http.Client
 	every    time.Duration
 	started  time.Time
@@ -69,6 +72,7 @@ func Run(args []string) {
 	fs := flag.NewFlagSet("top", flag.ExitOnError)
 	gateway := fs.String("gateway", "127.0.0.1:7778", "local gateway to watch")
 	every := fs.Duration("interval", time.Second, "refresh interval")
+	key := fs.String("gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "the gateway's key, if it was started with one (default $BITLLM_GATEWAY_KEY)")
 	fs.Parse(args)
 
 	base := *gateway
@@ -77,6 +81,7 @@ func Run(args []string) {
 	}
 	v := &view{
 		base:    strings.TrimRight(base, "/"),
+		key:     strings.TrimSpace(*key),
 		client:  &http.Client{Timeout: 2 * time.Second},
 		every:   *every,
 		started: time.Now(),
@@ -95,20 +100,37 @@ func Run(args []string) {
 	runTop(v)
 }
 
-// refresh reads the gateway once.
+// get asks the gateway for one path, with its key if it has one.
+func (v *view) get(path string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", v.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if v.key != "" {
+		req.Header.Set("Authorization", "Bearer "+v.key)
+	}
+	return v.client.Do(req)
+}
+
+// refresh reads the gateway once. What it answers is text from a program, and
+// some of it started out on other machines, so it is cleaned on the way in.
 func (v *view) refresh() {
-	resp, err := v.client.Get(v.base + "/status")
+	resp, err := v.get("/status")
 	if err == nil {
 		var st nodeStatus
-		if resp.StatusCode == 200 {
+		switch resp.StatusCode {
+		case 200:
 			err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&st)
-		} else {
+		case 401:
+			err = errors.New("this gateway has a key; pass --gateway-key or set BITLLM_GATEWAY_KEY")
+		default:
 			err = fmt.Errorf("gateway answered %s", resp.Status)
 		}
 		resp.Body.Close()
 		if err != nil {
 			v.status, v.err = nil, err
 		} else {
+			st.clean()
 			v.status, v.err = &st, nil
 			v.sample(&st)
 		}
@@ -116,13 +138,32 @@ func (v *view) refresh() {
 		v.status, v.err = nil, err
 	}
 
-	if resp, err := v.client.Get(v.base + "/logs?n=120"); err == nil {
+	if resp, err := v.get("/logs?n=120"); err == nil {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 		resp.Body.Close()
 		if resp.StatusCode == 200 {
 			v.logs = strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+			for i, l := range v.logs {
+				v.logs[i] = clean(l)
+			}
 		}
 	}
+}
+
+// clean strips control characters from the text fields of a status.
+func (st *nodeStatus) clean() {
+	st.Version, st.ID = clean(st.Version), clean(st.ID)
+	for i, m := range st.Serving {
+		st.Serving[i] = clean(m)
+	}
+	for i, c := range st.Conns {
+		st.Conns[i] = nodeConn{Peer: clean(c.Peer), Addr: clean(c.Addr), Dir: clean(c.Dir), Relayed: c.Relayed}
+	}
+	ledger := make(map[string]nodeAccount, len(st.Ledger))
+	for p, a := range st.Ledger {
+		ledger[clean(p)] = a
+	}
+	st.Ledger = ledger
 }
 
 // sample records how many credits were exchanged since the last refresh, for
@@ -509,15 +550,32 @@ func abs64(n int64) int64 {
 	return n
 }
 
+// clean removes what a terminal would act on instead of print: control
+// characters (ESC among them, so a whole sequence is defused), bidi overrides
+// and line separators. A tab becomes a space, which keeps columns countable.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r), r == '\u2028', r == '\u2029':
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // fit truncates s to w columns, counting runes so a multi-byte id or a box
-// character does not shift the rest of the line.
+// character does not shift the rest of the line. Everything drawn from outside
+// this file passes through here, and paint wraps the result, so the view's own
+// escape codes are never in s.
 func fit(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	r := []rune(s)
+	r := []rune(clean(s))
 	if len(r) <= w {
-		return s
+		return string(r)
 	}
 	if w == 1 {
 		return string(r[:1])
