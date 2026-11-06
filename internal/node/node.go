@@ -124,6 +124,7 @@ type Node struct {
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
 	inflight     atomic.Int32
+	gatewayLive  atomic.Int32                      // completions the local gateway is answering, own model or proxied
 	upOK         atomic.Bool                       // upstream answered its last health check
 	lastAnn      atomic.Pointer[protocol.Announce] // what announceLoop last gossiped (GET /network counts us too)
 	openInflight atomic.Int32                      // slots held by uninvited nodes on an open server
@@ -1014,11 +1015,12 @@ func mapKeys(m map[string]string) []string {
 // ID is this node's peer id.
 func (n *Node) ID() string { return n.host.ID().String() }
 
-// Idle reports whether the node is serving nothing right now: no running job
-// and nobody in the queue. cmd/bitllm restarts for an update only when this
-// is true, so a release is never installed in the middle of an answer.
+// Idle reports whether the node is serving nothing right now: no running job,
+// nobody in the queue, and no local client waiting on the gateway. cmd/bitllm
+// restarts for an update only when this is true, so a release is never
+// installed in the middle of an answer.
 func (n *Node) Idle() bool {
-	return n.inflight.Load() == 0 && n.queueDepth() == 0
+	return n.inflight.Load() == 0 && n.queueDepth() == 0 && n.gatewayLive.Load() == 0
 }
 
 // Addrs is where peers can reach this node, with its peer id appended.

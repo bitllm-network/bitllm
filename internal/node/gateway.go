@@ -125,6 +125,8 @@ func (n *Node) listModels(w http.ResponseWriter, r *http.Request) {
 
 func (n *Node) complete(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		n.gatewayLive.Add(1)
+		defer n.gatewayLive.Add(-1)
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequest))
 		if err != nil {
 			jsonErr(w, 400, err.Error())
