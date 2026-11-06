@@ -32,7 +32,7 @@
 
 - **你的节点**和其他人跑同一个二进制。网关监听 `127.0.0.1:7778`，同时支持 OpenAI 和 Anthropic 格式，agent 把它当成普通 API 用就行。互联网上的机器连不到这个网关。
 - **服务节点**就是你的节点加 `--upstream`，指向你本机已经在跑的模型服务。它可以躲在 NAT 后面：其他节点通过中继加打洞找到它，不需要做端口转发。
-- **公网中继**是有入站 TCP/UDP 4001 的节点，用 `--public` 启动。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
+- **公网中继**是有入站 TCP/UDP 4001 的服务节点，加上 `--public`。它必须服务一个模型，因为只有服务节点才会 announce。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
 - **seed** 既是公网中继，又列在 `_dnsaddr.bootstrap.bitllm.org` 里，并且用 `--dht-server` 独立启动。它是新节点的首次接触点。一个 seed 就够加入；公网中继让中继容量随网络增长。
 
 发现分两步。二进制先解析 `_dnsaddr.bootstrap.bitllm.org` 拿到 seed 地址，之后模型在哪个节点上、怎么连过去、哪些公网节点能做中继，都由 DHT、gossip 和 relay announce 负责。域名解析不到时，它会再试 `boot.bitllm.org` 后备；两个都不通，节点会自己起一个网络，并打印 join code，另一台机器用 `--bootstrap` 接上就行。
@@ -229,7 +229,7 @@ HTTPS 和校验和能挡住损坏或截断的下载。两者都来自 release �
 
 ## 服务积分
 
-你每服务一个任务就得到积分（prompt token / 4 + completion token），由一张收据证明：客户端签收它收到的东西（模型、token 数、响应字节的 SHA-256），你的节点核对后副签，收据通过 gossip 广播到全网。客户端每个任务用一个一次性密钥签名，所以收据只显示哪个服务端干了活，不显示谁问的。积分必须等于 token 公式，每个节点每分钟最多接受每个服务端 120 张收据（总共 600 张）。任何节点都能验证两个签名并重新算出每个人的积分：
+你每服务一个任务就得到积分（prompt token / 4 + completion token），由一张收据证明：客户端签收它收到的东西（模型、token 数、响应字节的 SHA-256），你的节点核对后副签，收据通过 gossip 广播到全网。客户端用假名签名：每个服务器一个密钥，每 30 天轮换一次，所以收据显示是哪个服务器做的，但不显示是谁请求的；该服务器能把同一客户端的任务关联起来。积分必须等于 token 公式，每个节点每分钟最多接受每个服务端 120 张收据（总共 600 张）。任何节点都能验证两个签名并重新算出每个人的积分：
 
 ```bash
 curl localhost:7778/credits      # 每个服务节点的积分，来自这个节点见过的所有收据
@@ -300,11 +300,12 @@ bitllm --dht-server --port 4001 \
 
 ```bash
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-它从默认 seed 加入，回答 DHT 查询、给 NAT 节点做中继，但不需要 `_dnsaddr` 记录。它的 announce 带 `relay=true`，NAT 节点会把它当中继候选；中继容量就这样随公网节点增长。`deploy/gpu-host.sh` 加 `PUBLIC=1` 就是这种装法。
+它从默认 seed 加入，回答 DHT 查询、给 NAT 节点做中继，但不需要 `_dnsaddr` 记录。它必须服务一个模型，因为只有服务节点才会 announce。它的 announce 带 `relay=true`，NAT 节点会把它当中继候选；中继容量就这样随公网节点增长。`deploy/gpu-host.sh` 加 `PUBLIC=1` 就是这种装法。
 
 开放 TCP 和 UDP 4001。在一台全新的 Ubuntu VM 上，`deploy/bootstrap-vps.sh` 会装好 systemd 单元并打印要发布的 DNS 记录。家里的机器也能做公网中继，用端口转发或者 UPnP；但大多数家用机器只是普通的服务节点：通过 seed 加入，别人通过中继或者打洞找到它。
 

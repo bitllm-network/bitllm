@@ -137,13 +137,14 @@ A public host that should help without being a first contact uses `--public`:
 
 ```sh
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
 It does the same DHT and relay work as a seed, but it joins the default seeds
-instead of starting alone, and it needs no DNS record. Its announce carries
-`relay=true`; a NATed node uses it as an autorelay candidate alongside the
+instead of starting alone, and it needs no DNS record. It must serve a model,
+because only a serving node announces. Its announce carries `relay=true`; a NATed node uses it as an autorelay candidate alongside the
 seeds. The startup line is `--public: advertising this node as a public relay`.
 
 A serving node can do this too: `deploy/gpu-host.sh` with `PUBLIC=1` adds
