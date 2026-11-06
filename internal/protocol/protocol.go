@@ -7,6 +7,8 @@
 package protocol
 
 import (
+	"strings"
+
 	"github.com/bitllm-org/bitllm/internal/models"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -58,7 +60,31 @@ type Announce struct {
 	Relay bool `json:"relay,omitempty"` // publicly reachable and running the relay service
 }
 
+// modelNameMarks are the characters a model name may use besides letters and
+// digits. They cover Hugging Face ids (org/Name-1.5), Ollama tags (name:8b) and
+// the canonical names in models.json.
+const modelNameMarks = "._:/@+=-"
+
+// ValidModelName reports whether s may name a model on the network: 1 to
+// MaxModelName characters from the allow-list, not starting with a dash.
+func ValidModelName(s string) bool {
+	if s == "" || len(s) > MaxModelName || s[0] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') ||
+			strings.IndexByte(modelNameMarks, c) >= 0 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // ValidAnnounce reports whether a is a well formed announce we would store.
+// Audit entries and weights keys must be announced models, so they pass the
+// same name check.
 func ValidAnnounce(a *Announce) bool {
 	if len(a.Models) == 0 || len(a.Models) > MaxAnnounceModels ||
 		a.Free < 0 || a.Max < 1 || a.Free > a.Max || a.Max > MaxAnnounceSlots || len(a.Version) > 64 ||
@@ -67,7 +93,7 @@ func ValidAnnounce(a *Announce) bool {
 	}
 	served := map[string]bool{}
 	for _, m := range a.Models {
-		if m == "" || len(m) > MaxModelName {
+		if !ValidModelName(m) {
 			return false
 		}
 		served[m] = true

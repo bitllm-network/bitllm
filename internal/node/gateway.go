@@ -14,6 +14,8 @@ import (
 
 	"github.com/bitllm-org/bitllm/internal/account"
 	"github.com/bitllm-org/bitllm/internal/assets"
+	"github.com/bitllm-org/bitllm/internal/models"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -113,12 +115,17 @@ func (n *Node) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	names := make([]string, 0, len(nodes))
 	for m := range nodes {
-		names = append(names, m)
+		// Announces are checked when they arrive; this keeps the list clean
+		// whatever reached the table.
+		if protocol.ValidModelName(m) {
+			names = append(names, m)
+		}
 	}
 	sort.Strings(names)
 	data := []map[string]any{}
 	for _, m := range names {
-		data = append(data, map[string]any{"id": m, "object": "model", "owned_by": "bitllm", "nodes": nodes[m]})
+		_, canonical := models.Manifest[m]
+		data = append(data, map[string]any{"id": m, "object": "model", "owned_by": "bitllm", "nodes": nodes[m], "canonical": canonical})
 	}
 	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }
