@@ -46,8 +46,9 @@ What is left, in order:
    (`ddf432595b4de0a26d81f3ca7fa43619`) does not have `bitllm.org` yet. The
    earliest transfer request is **2026-11-10**.
 3. **Cut `v0.4.7` after the move.** Remove the `boot.bitllm.org` literal from
-   `DefaultBootstrap` only after `_dnsaddr` answers from the new zone. No
-   `v0.4.7` branch exists yet.
+   `DefaultBootstrap`, update the `--bootstrap` help text, and remove the old
+   tunnel section from `docs/bootstrap.md`. Do this only after `_dnsaddr`
+   answers from the new zone. No `v0.4.7` branch exists yet.
 4. **Optional: enable the CI deploy.** The `check` job runs on every PR, but
    the `deploy` job skips because the repository has no
    `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` secrets. Until they are
