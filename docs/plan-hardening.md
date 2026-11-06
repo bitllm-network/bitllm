@@ -1,8 +1,10 @@
-# Plan: hardening before a wider launch
+# Plan: hardening for v0.5.0
 
 BitLLM works well between people who know each other. This plan gets it ready
 for strangers and for more nodes. It changes how the node behaves under load
 and at its edges. It does not change what BitLLM is.
+
+All of it ships as one release, v0.5.0.
 
 ## Goals
 
@@ -36,43 +38,43 @@ These change what live nodes do, so the owner decided them
   `/completions` request. An operator can add a field with `--peer-field`.
 - **Release signing keys:** one per admin, kept offline. Either can sign.
 
-## Release train
+## What v0.5.0 contains
 
-Each release goes out as a prerelease, is tested, and is then promoted, because
-`latest` is the only rollout control. Seeds stay pinned and update by hand after
-48 hours on `latest`.
+- **Updates:** signatures required, `bitllm update --tag`, atomic swap, rollback
+  after failed starts, no restart during a live local answer.
+- **Requests:** the peer boundary on both sides, failover before the first byte,
+  long answers that keep their stream alive, the own-model rule, the request
+  allow-list, graceful shutdown.
+- **Network:** a startup that does not wait on seeds, relay-only announces,
+  explicit connection limits on public nodes, seed list refresh.
+- **State:** cursor sync, receipt retention, faster membership, bounded claims.
+- **Tooling:** a release workflow, installers that fail closed, safer seed and
+  DNS scripts, wider CI.
 
-| Release | Scope |
-|---|---|
-| R1, v0.4.7 | The update path: current release source, signature checks that warn, `bitllm update --tag`, no restart during a live local answer, a startup that does not wait on seeds. A release workflow, installers that fail closed, safer seed and DNS scripts |
-| R2, v0.5.0 | Signatures enforced, atomic swap and rollback. The peer boundary, on both sides. Own-model rule, quota rule, request allow-list, graceful shutdown |
-| R3 | Long answers keep their stream alive, relay-only announces, cursor sync, receipt retention, explicit connection limits, seed list refresh |
-| R4 | Tighter gossip validation, once adoption allows it |
-
-The earlier plan to drop the `boot` seed in v0.4.7 moves: it goes in the first
-release after both the domain move and a live second seed.
+The `boot` seed stays for now. It goes in the first release after both the domain
+move and a live second seed.
 
 ## Rules for this work
 
-- **Wire compatibility.** Only R3 adds a protocol id. Nodes on old releases,
-  including v0.1.11 and v0.2.0, keep working, and `scripts/compat.sh` checks
-  them.
+- **Wire compatibility.** Only the cursor sync adds a protocol id. Nodes on old
+  releases, including v0.1.11 and v0.2.0, keep working, and `scripts/compat.sh`
+  checks them.
 - **No new fatal startup condition** on existing flags or data. A self-updated
   node that exits at startup becomes a crash loop, so warn and carry on.
 - **Every fix comes with a test** that fails without it.
 - **Keep the copy in step:** README.md, README.zh.md, docs/JOIN.zh.md and, in
   the landing page repository, `public/llms.txt` and the docs page.
 
-## Before R1 is promoted
+## Before v0.5.0 is promoted
 
-- SSH to `seed1` works again, because a seed on the current unit self-updates
-  when a release is promoted.
-- Each admin has generated a signing key and shared the public half.
+- `seed1` runs with `--auto-update=false`, because a seed on the current unit
+  self-updates when a release is promoted.
+- The release is published as a prerelease, signed, and the v0.5.0 binary reports
+  `signature: ok` for it with `bitllm update --check --tag v0.5.0`.
 - `main` and `v*` tags have rulesets.
 
 ## Testing
 
-Each release branch gets one full pass before a tag: the normal test suite, a
-scripted misbehaving peer on real libp2p, updates against a local release
-server, `scripts/compat.sh` in both directions, and `external-test.yml` on the
-live network.
+One full pass before the tag: the normal test suite, a scripted misbehaving peer
+on real libp2p, updates against a local release server, `scripts/compat.sh` in
+both directions, and `external-test.yml` on the live network.
