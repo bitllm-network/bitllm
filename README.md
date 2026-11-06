@@ -348,13 +348,21 @@ directory to start over with a new identity.
 
 ## Credits for serving
 
-Every job you serve earns credits (prompt tokens / 4 + completion tokens), proven by a receipt:
+Every job you serve earns credits (prompt tokens / 4 + completion tokens), recorded in a receipt:
 the client signs what it received (model, token counts, SHA-256 of the exact response bytes),
 your node checks it against what it sent and countersigns, and the receipt is gossiped to the
-whole network. The client signs with a one-off key per job, so a receipt shows which server did
-the work but not who asked for it. Credits must equal the token formula, and each node accepts at
-most 120 receipts a minute per server (600 overall) from gossip. Any node can verify both
-signatures and recompute everyone's credits:
+whole network.
+
+Receipts are self-reported. Both sides sign, but two keys can belong to one person, so a receipt
+does not prove the work happened.
+
+The client signs with one key per server, rotated every 30 days. That server can link your jobs to
+each other, but other nodes cannot link you across servers. A receipt shows which server did the
+work, not who asked for it.
+
+Credits must equal the token formula, and each node accepts at most 120 receipts a minute per
+server (600 overall) from gossip. Any node can verify both signatures and add up the credits from
+the receipts it has heard, so totals can differ between nodes:
 
 ```bash
 curl localhost:7778/credits      # credits per serving peer, from every receipt this node has seen
