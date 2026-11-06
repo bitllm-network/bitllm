@@ -139,6 +139,7 @@ type Node struct {
 	gatewayLive  atomic.Int32                      // completions the local gateway is answering, own model or proxied
 	upOK         atomic.Bool                       // upstream answered its last health check
 	lastAnn      atomic.Pointer[protocol.Announce] // what announceLoop last gossiped (GET /network counts us too)
+	announceErr  atomic.Pointer[string]            // why our announce is short or not going out, for GET /status
 	openInflight atomic.Int32                      // slots held by uninvited nodes on an open server
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
@@ -578,6 +579,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 	var scorable []string
 	probed := false
 	lastModels := time.Time{}
+	var reported announceLog
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
@@ -600,24 +602,33 @@ func (n *Node) announceLoop(ctx context.Context) {
 				lastModels = time.Now()
 			}
 		}
-		models := n.modelNames()
-		free := n.cfg.Concurrency - int(n.inflight.Load())
-		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
+		kept, omitted := announcedModels(n.modelNames())
+		free, slots, clamped := announcedSlots(n.cfg.Concurrency, int(n.inflight.Load()))
+		a := protocol.Announce{Version: Version, Models: []string{}, Free: free, Max: slots, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
 		if n.upOK.Load() {
-			a.Models = models
+			a.Models = kept
 			if n.cfg.AuditServe && !probed {
 				scorable, probed = n.probeScoring(ctx), true
 				if len(scorable) > 0 {
 					log.Printf("our server can score %v: announcing it, so peers may use this node as an auditor", scorable)
 				}
 			}
-			a.Audit = scorable
-			a.Weights = n.cfg.Weights
+			a.Audit = onlyAnnounced(scorable, kept)
+			a.Weights = announcedWeights(n.cfg.Weights, kept)
 			a.Loc = n.cfg.Location
 		}
 		n.lastAnn.Store(&a)
-		b, _ := json.Marshal(a)
-		n.topic.Publish(ctx, b)
+		problems := announceProblems{omitted: omitted, clamped: clamped}
+		// With nothing to state there is no valid announce to send, and a
+		// stopped model server is not an announce problem.
+		if len(a.Models) > 0 {
+			b, _ := json.Marshal(a)
+			if err := n.topic.Publish(ctx, b); err != nil && ctx.Err() == nil {
+				problems.publish = err.Error()
+			}
+		}
+		reported.report(problems, slots)
+		n.announceErr.Store(new(problems.String()))
 		select {
 		case <-ctx.Done():
 			return
@@ -748,7 +759,7 @@ func (n *Node) provideLoop(ctx context.Context) {
 	every := 2 * time.Minute
 	for {
 		ok := true
-		for _, m := range n.modelNames() {
+		for _, m := range n.announced() {
 			pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			if err := n.dht.Provide(pctx, modelKey(m), true); err != nil {
 				log.Printf("dht provide %s: %v", m, err)

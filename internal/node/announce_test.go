@@ -3,7 +3,10 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,5 +136,124 @@ func TestListModelsCanonical(t *testing.T) {
 	m := got["my-lab/private"]
 	if m["object"] != "model" || m["owned_by"] != "bitllm" || m["nodes"] != float64(1) {
 		t.Fatalf("existing fields changed: %v", m)
+	}
+}
+
+func statusOf(t *testing.T, n *Node) map[string]any {
+	t.Helper()
+	w := httptest.NewRecorder()
+	n.Gateway().ServeHTTP(w, gwReq("GET", "/status", nil))
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestAnnouncedModels: valid names only, canonical first, then sorted, capped.
+func TestAnnouncedModels(t *testing.T) {
+	names := []string{"bad name", "deepseek-v4.1-flash-1017", "$m"}
+	for i := range protocol.MaxAnnounceModels + 2 {
+		names = append(names, fmt.Sprintf("m%02d", i))
+	}
+	kept, omitted := announcedModels(names)
+	if len(kept) != protocol.MaxAnnounceModels || omitted != 5 {
+		t.Fatalf("kept %d, omitted %d", len(kept), omitted)
+	}
+	if kept[0] != "deepseek-v4.1-flash-1017" || kept[1] != "m00" || !slices.IsSorted(kept[1:]) {
+		t.Fatalf("order %v", kept)
+	}
+}
+
+// TestLongModelListStaysVisible: a server with more models than an announce
+// holds, a name that fails the check, a slot count out of range and weights for
+// a model left out still reaches other nodes. It announces and provides only
+// what fits, it still serves the rest to a local client, and /status says what
+// happened.
+func TestLongModelListStaysVisible(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	up := mockUpstream(t, "local")
+	defer up.Close()
+	served := map[string]string{"bad name": "local", "deepseek-v4.1-flash-1017": "local"}
+	weights := map[string]string{"deepseek-v4.1-flash-1017": strings.Repeat("a", 64)}
+	for i := range protocol.MaxAnnounceModels + 4 {
+		m := fmt.Sprintf("m%02d", i)
+		served[m] = "local"
+		weights[m] = strings.Repeat("b", 64)
+	}
+	boot := testNode(t, ctx, Config{})
+	server := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1], Upstream: up.URL + "/v1", Models: served,
+		Weights: weights, Concurrency: protocol.MaxAnnounceSlots + 10})
+	client := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1]})
+
+	var a protocol.Announce
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var ok bool
+		if a, ok = client.alive()[server.host.ID()]; ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server never reached the client")
+		}
+	}
+	if len(a.Models) != protocol.MaxAnnounceModels || a.Models[0] != "deepseek-v4.1-flash-1017" {
+		t.Fatalf("announced %v", a.Models)
+	}
+	if a.Max != protocol.MaxAnnounceSlots || a.Free != protocol.MaxAnnounceSlots {
+		t.Fatalf("announced slots free=%d max=%d", a.Free, a.Max)
+	}
+	if len(a.Weights) != len(a.Models) {
+		t.Fatalf("weights %d, models %d", len(a.Weights), len(a.Models))
+	}
+	e, _ := statusOf(t, server)["announce_error"].(string)
+	if !strings.Contains(e, "6 models not announced") || !strings.Contains(e, "--concurrency") {
+		t.Fatalf("announce_error = %q", e)
+	}
+	if _, ok := statusOf(t, client)["announce_error"]; ok {
+		t.Fatal("an empty announce_error must be left out")
+	}
+
+	// Only announced models get provider records.
+	providers := func(model string) (found bool) {
+		fctx, fcancel := context.WithTimeout(ctx, 2*time.Second)
+		defer fcancel()
+		for ai := range client.dht.FindProvidersAsync(fctx, modelKey(model), 5) {
+			found = found || ai.ID == server.host.ID()
+		}
+		return found
+	}
+	for deadline := time.Now().Add(20 * time.Second); !providers(a.Models[0]); time.Sleep(200 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no provider record for an announced model")
+		}
+	}
+	omitted := fmt.Sprintf("m%02d", protocol.MaxAnnounceModels+3)
+	if providers(omitted) {
+		t.Fatal("provider record for a model left out of the announce")
+	}
+
+	// A local client can still use a model that did not fit.
+	w := post(server, fmt.Sprintf(`{"model":%q,"messages":[]}`, omitted))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "hello world") {
+		t.Fatalf("local request: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestPublishFailureIsReported: an announce that cannot go out shows in /status.
+func TestPublishFailureIsReported(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	up := mockUpstream(t, "local")
+	defer up.Close()
+	n := testNode(t, ctx, Config{Upstream: up.URL + "/v1", Models: map[string]string{"m": "local"},
+		Location: strings.Repeat("u", protocol.MaxLocJSON+1)}) // fails the topic's own validator
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if e, _ := statusOf(t, n)["announce_error"].(string); strings.Contains(e, "publish failed") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no publish failure in /status")
+		}
 	}
 }
