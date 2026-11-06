@@ -1,7 +1,10 @@
 # Joins the public network from a GitHub-hosted runner (an outside machine,
 # behind its own NAT) using only the default bootstrap, and asks for a model.
+# Runs daily and on demand.
 name: external-test
 on:
+  schedule:
+    - cron: "23 6 * * *"
   workflow_dispatch:
     inputs:
       model:
@@ -21,7 +24,8 @@ jobs:
       - run: go build -o bitllm ./cmd/bitllm
       - name: join and request
         env:
-          MODEL: ${{ inputs.model }}
+          # A scheduled run has no inputs, so it needs the default here as well.
+          MODEL: ${{ inputs.model || 'deepseek-v4.1-flash-1017-heretic' }}
         run: |
           ./bitllm --mdns=false --upnp=false > node.log 2>&1 &
           for _ in $(seq 1 90); do
