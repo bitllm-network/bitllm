@@ -1,7 +1,8 @@
 // Package update keeps a release build current: it asks GitHub which tag is
 // the latest release, checks the signature on its checksum file, downloads and
 // verifies the binary for this machine, and lets the node restart into it when
-// nothing is being served.
+// nothing is being served. A release that then fails to start is swapped back
+// by the next start; see StartCheck.
 //
 // Only release builds take part. A build from source ("dev") or a CI build
 // ("ci-abc1234") never replaces itself, so go run, go build and the artifacts
@@ -9,6 +10,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math/rand/v2"
 	"net"
@@ -26,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,8 +61,8 @@ type Client struct {
 	HTTP  *http.Client
 
 	// RequireSignature makes Fetch refuse a release whose Signature is not
-	// SigOK. Off, the result is only reported. New sets it from
-	// requireSignature.
+	// SigOK. New sets it from requireSignature, so every build enforces it. Off,
+	// as only a Client built by hand can be, the result is just reported.
 	RequireSignature bool
 }
 
@@ -191,9 +195,9 @@ func (c *Client) getSig(ctx context.Context, tag string) []byte {
 	return body
 }
 
-// refusal is why a release with this signature result may not be installed;
+// Refusal is why a release with this signature result may not be installed;
 // nil when it may.
-func (c *Client) refusal(tag, sig string) error {
+func (c *Client) Refusal(tag, sig string) error {
 	if !c.RequireSignature || sig == SigOK {
 		return nil
 	}
@@ -205,7 +209,7 @@ func (c *Client) refusal(tag, sig string) error {
 // file in dir, ready for Swap. With RequireSignature it refuses a release that
 // is not signed, before downloading anything.
 func (c *Client) Fetch(ctx context.Context, rel Release, dir string) (string, error) {
-	if err := c.refusal(rel.Tag, rel.Signature); err != nil {
+	if err := c.Refusal(rel.Tag, rel.Signature); err != nil {
 		return "", err
 	}
 	url := fmt.Sprintf(c.Asset, rel.Tag, rel.Asset)
@@ -275,36 +279,6 @@ func runsAs(ctx context.Context, path, tag string) error {
 		return fmt.Errorf("%s reports %q, want %q", filepath.Base(path), got, "bitllm "+tag)
 	}
 	return nil
-}
-
-// Swap puts src in place of dst. The binary it replaces is kept next to it
-// (see PrevPath), so one rename goes back a version. On Windows the running
-// .exe can be renamed but not overwritten, so callers there expect the new
-// file to be used at the next start.
-func Swap(src, dst string) error {
-	prev := PrevPath(dst)
-	if err := os.Remove(prev); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if _, err := os.Stat(dst); err == nil {
-		if err := os.Rename(dst, prev); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(src, dst); err != nil {
-		if _, e := os.Stat(prev); e == nil {
-			os.Rename(prev, dst)
-		}
-		return err
-	}
-	return nil
-}
-
-// PrevPath is where Swap keeps the binary it replaced: bitllm.prev, or
-// bitllm.prev.exe on Windows.
-func PrevPath(dst string) string {
-	ext := filepath.Ext(dst) // ".exe" on Windows, "" elsewhere
-	return strings.TrimSuffix(dst, ext) + ".prev" + ext
 }
 
 // AssetName is the release asset for this machine, named as
@@ -423,13 +397,22 @@ type Runner struct {
 	Restart func(path string) error
 	Logf    func(format string, args ...any)
 
-	After    time.Duration // first check after start; 0 = 30s
-	Every    time.Duration // between checks; 0 = 6h
-	Poll     time.Duration // idle poll interval; 0 = 5s
-	CacheFor time.Duration // skip the network if checked recently; 0 = 10m
-	Timeout  time.Duration // one check and download, not the wait after it; 0 = 30m
+	// RolledBackFrom is the release the last start went back from, as StartCheck
+	// returned it. Status shows it.
+	RolledBackFrom string
 
-	warned string // the tag whose signature result was last logged; only the Run goroutine uses it
+	After        time.Duration // first check after start; 0 = 30s
+	Every        time.Duration // between checks; 0 = 6h
+	Poll         time.Duration // idle poll interval; 0 = 5s
+	MaxIdleWait  time.Duration // longest wait for idle before restarting anyway; 0 = 24h
+	CacheFor     time.Duration // skip the network if checked recently; 0 = 10m
+	Timeout      time.Duration // one check and download, not the wait after it; 0 = 30m
+	HealthyAfter time.Duration // how long a start must last to count as healthy; 0 = 60s
+
+	warned     string // the tag whose signature result was last logged; only the Run goroutine uses it
+	skipLogged string // the tag whose skip was last logged; only the Run goroutine uses it
+
+	stateMu sync.Mutex // held for each read, change and write of the state file
 
 	mu        sync.Mutex
 	checked   time.Time
@@ -440,7 +423,7 @@ type Runner struct {
 }
 
 // Status is what GET /status shows about updates. Empty before the first
-// check, and on builds that never check.
+// check, unless the last start rolled back, and on builds that never check.
 func (r *Runner) Status() map[string]any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -460,14 +443,23 @@ func (r *Runner) Status() map[string]any {
 	if r.pending {
 		out["pending_restart"] = true
 	}
+	if r.RolledBackFrom != "" {
+		out["rolled_back_from"] = r.RolledBackFrom
+	}
 	return out
 }
 
 // publish makes st what Status reports.
 func (r *Runner) publish(st state) {
+	// After a rollback Applied still names the release that failed, which is not
+	// the file on disk. See starter.rollBack.
+	applied := st.Applied
+	if slices.Contains(st.Skip, applied) {
+		applied = ""
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.checked, r.latest, r.applied, r.signature = st.Checked, st.Latest, st.Applied, st.Signature
+	r.checked, r.latest, r.applied, r.signature = st.Checked, st.Latest, applied, st.Signature
 }
 
 func (r *Runner) setPending(pending bool) {
@@ -503,6 +495,20 @@ func (r *Runner) poll() time.Duration {
 		return r.Poll
 	}
 	return 5 * time.Second
+}
+
+func (r *Runner) maxIdleWait() time.Duration {
+	if r.MaxIdleWait > 0 {
+		return r.MaxIdleWait
+	}
+	return 24 * time.Hour
+}
+
+func (r *Runner) healthyAfter() time.Duration {
+	if r.HealthyAfter > 0 {
+		return r.HealthyAfter
+	}
+	return 60 * time.Second
 }
 
 func (r *Runner) cacheFor() time.Duration {
@@ -578,14 +584,22 @@ func (r *Runner) install(ctx context.Context) string {
 			r.logf("update: %v", err)
 		} else {
 			st.Latest, st.Asset, st.Sha256, st.Signature = rel.Tag, rel.Asset, rel.Sha256, rel.Signature
-			if Newer(rel.Tag, r.Current) {
+			if Newer(rel.Tag, r.Current) && !slices.Contains(st.Skip, rel.Tag) {
 				r.logf("update: %s is available (running %s)", rel.Tag, r.Current)
 			}
 		}
-		r.saveState(st)
+		r.saveCheck(st)
 	}
 	r.publish(st)
 	if st.Latest == "" || !Newer(st.Latest, r.Current) {
+		return ""
+	}
+	// This release failed to start here before. A newer one installs as usual.
+	if slices.Contains(st.Skip, st.Latest) {
+		if r.skipLogged != st.Latest {
+			r.skipLogged = st.Latest
+			r.logf("update: not installing %s: it failed to start on this node and was rolled back", st.Latest)
+		}
 		return ""
 	}
 	// Without a fresh answer nothing new is downloaded, but a release already
@@ -611,7 +625,7 @@ func (r *Runner) install(ctx context.Context) string {
 		}
 		r.logf("update: the installed binary is not %s (%v), installing it again", st.Latest, err)
 		st.Applied = ""
-		r.saveState(st)
+		r.saveCheck(st)
 		r.publish(st)
 		r.setPending(false)
 		if checkFailed {
@@ -631,7 +645,8 @@ func (r *Runner) install(ctx context.Context) string {
 		return ""
 	}
 	st.Applied = st.Latest
-	r.saveState(st)
+	r.saveCheck(st)
+	r.markPending(st.Latest)
 	r.publish(st)
 	if r.Restart == nil {
 		r.logf("update: %s installed, restart the node to use it", st.Latest)
@@ -647,35 +662,43 @@ func (r *Runner) signatureAllows(tag, sig string) bool {
 	if sig == SigOK {
 		return true
 	}
-	err := r.Client.refusal(tag, sig)
+	err := r.Client.Refusal(tag, sig)
 	if r.warned != tag {
 		r.warned = tag
 		if err != nil {
 			r.logf("update: %v", err)
 		} else {
-			r.logf("update: %s: %s; going ahead, since signatures are not required yet", tag, sigProblem(sig))
+			r.logf("update: %s: %s; going ahead, since this client does not require signatures", tag, sigProblem(sig))
 		}
 	}
 	return err == nil
 }
 
-// restartWhenIdle waits as long as it takes for the node to serve nothing,
-// until ctx ends, then restarts into the installed binary. A failed restart
-// is logged and left for the next regular check to try again.
+// restartWhenIdle waits for the node to serve nothing, until MaxIdleWait or ctx
+// ends, then restarts into the installed binary. A failed restart is logged and
+// left for the next regular check to try again.
 func (r *Runner) restartWhenIdle(ctx context.Context, tag string) {
 	r.setPending(true)
 	if r.Restart == nil || !r.waitForIdle(ctx) {
 		return
 	}
+	r.markPending(tag)
 	if err := r.Restart(r.Executable); err != nil {
 		r.logf("update: restart: %v (trying again at the next check, the next start uses %s)", err, tag)
 	}
 }
 
-// waitForIdle polls until the node serves nothing. False means ctx ended.
+// waitForIdle polls until the node serves nothing, or has been busy without a
+// break for MaxIdleWait: one stuck client must not hold an update back forever.
+// False means ctx ended.
 func (r *Runner) waitForIdle(ctx context.Context) bool {
+	deadline := time.Now().Add(r.maxIdleWait())
 	for ctx.Err() == nil {
 		if r.Idle == nil || r.Idle() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			r.logf("update: the node has been busy for %s, restarting anyway; requests still running are cut", r.maxIdleWait())
 			return true
 		}
 		select {
@@ -686,8 +709,58 @@ func (r *Runner) waitForIdle(ctx context.Context) bool {
 	return false
 }
 
-// state is what survives a restart: when we last looked, what we saw, and
-// whether the file on disk is already that version.
+// MarkHealthy waits until this start has lasted HealthyAfter, then records that
+// this version works here, so later restarts are not counted as failed starts.
+// main runs it in a goroutine once the gateway is bound.
+func (r *Runner) MarkHealthy(ctx context.Context) {
+	t := time.NewTimer(r.healthyAfter())
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+		r.markHealthy()
+	}
+}
+
+func (r *Runner) markHealthy() {
+	if !IsRelease(r.Current) {
+		return
+	}
+	r.updateState(func(st *state) {
+		st.Healthy = r.Current
+		// A pending tag for another version is a release installed and waiting
+		// for its restart. Its start has not been counted, and it still must be.
+		if st.PendingTag == "" || st.PendingTag == r.Current {
+			st.PendingTag, st.From, st.Attempts = "", "", 0
+		}
+		st.Skip = slices.DeleteFunc(st.Skip, func(tag string) bool { return tag == r.Current })
+	})
+}
+
+// Stopped is called when a signal has stopped the node. Before it was marked
+// healthy that is no failed start, so it stops counting as one: stopping a
+// freshly updated node by hand a few times must not look like a bad release.
+func (r *Runner) Stopped() {
+	r.updateState(func(st *state) {
+		if st.PendingTag == r.Current && st.Attempts > 0 {
+			st.Attempts--
+		}
+	})
+}
+
+// markPending records that the next start is tag, not yet proven here.
+func (r *Runner) markPending(tag string) {
+	r.updateState(func(st *state) {
+		st.PendingTag, st.From, st.Attempts = tag, r.Current, 0
+		if st.Healthy == tag {
+			st.Healthy = ""
+		}
+	})
+}
+
+// state is what survives a restart: when we last looked, what we saw, whether
+// the file on disk is already that version, and how starts of a new version
+// have gone.
 type state struct {
 	Checked   time.Time `json:"checked,omitempty"`
 	Latest    string    `json:"latest,omitempty"`
@@ -695,39 +768,116 @@ type state struct {
 	Sha256    string    `json:"sha256,omitempty"`
 	Signature string    `json:"signature,omitempty"`
 	Applied   string    `json:"applied,omitempty"`
+
+	PendingTag     string   `json:"pending_tag,omitempty"`      // a self-update that has not been healthy yet
+	From           string   `json:"from,omitempty"`             // the version that installed PendingTag
+	Attempts       int      `json:"attempts,omitempty"`         // starts of PendingTag so far
+	Healthy        string   `json:"healthy,omitempty"`          // the last version that lasted HealthyAfter
+	Skip           []string `json:"skip,omitempty"`             // releases that failed here and are not installed again
+	RolledBackFrom string   `json:"rolled_back_from,omitempty"` // read and cleared by the start after a rollback
 }
 
-func (r *Runner) statePath() string {
-	if r.DataDir == "" {
-		return ""
+// statePath is the state file. skipPath holds a copy of the skip list, since a
+// release older than the list rewrites the state file with only the fields it
+// knows. It may run for a long time after a rollback, and a later release still
+// has to know what failed.
+func statePath(dataDir string) string { return filepath.Join(dataDir, "update.json") }
+func skipPath(dataDir string) string  { return filepath.Join(dataDir, "update-skip.json") }
+
+// readState reads the state. A missing file is an empty state. A corrupt one is
+// an error, with the state as empty apart from the skip list.
+func readState(dataDir string) (state, error) {
+	var skip []string
+	if b, err := os.ReadFile(skipPath(dataDir)); err == nil && json.Unmarshal(b, &skip) != nil {
+		skip = nil
 	}
-	return filepath.Join(r.DataDir, "update.json")
+	empty := state{Skip: skip}
+	b, err := os.ReadFile(statePath(dataDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil {
+		return empty, err
+	}
+	var st state
+	if err := json.Unmarshal(b, &st); err != nil {
+		return empty, fmt.Errorf("%s: %w", statePath(dataDir), err)
+	}
+	for _, tag := range skip {
+		st.Skip = addSkip(st.Skip, tag)
+	}
+	return st, nil
+}
+
+// writeState saves the state and keeps the copy of the skip list in step.
+func writeState(dataDir string, st state) error {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(statePath(dataDir), b); err != nil {
+		return err
+	}
+	if len(st.Skip) == 0 {
+		if err := os.Remove(skipPath(dataDir)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	skip, err := json.Marshal(st.Skip)
+	if err != nil {
+		return err
+	}
+	if old, err := os.ReadFile(skipPath(dataDir)); err == nil && bytes.Equal(old, skip) {
+		return nil
+	}
+	return writeAtomic(skipPath(dataDir), skip)
+}
+
+func writeAtomic(path string, b []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) loadState() state {
-	var st state
-	if p := r.statePath(); p != "" {
-		if b, err := os.ReadFile(p); err == nil {
-			json.Unmarshal(b, &st)
-		}
+	if r.DataDir == "" {
+		return state{}
 	}
+	st, _ := readState(r.DataDir) // a corrupt file is replaced by the next save
 	return st
 }
 
 func (r *Runner) saveState(st state) {
-	p := r.statePath()
-	if p == "" {
+	if r.DataDir == "" {
 		return
 	}
-	b, err := json.Marshal(st)
-	if err != nil {
-		return
+	if err := writeState(r.DataDir, st); err != nil {
+		r.logf("update: cannot save the update state: %v", err)
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
-	}
+}
+
+// updateState changes the state on disk. install holds its copy across a
+// download that can take minutes, so it must not write that whole copy back
+// over what changed meanwhile, such as the healthy mark.
+func (r *Runner) updateState(change func(*state)) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	st := r.loadState()
+	change(&st)
+	r.saveState(st)
+}
+
+// saveCheck saves the fields install owns.
+func (r *Runner) saveCheck(check state) {
+	r.updateState(func(st *state) {
+		st.Checked, st.Latest, st.Asset, st.Sha256, st.Signature, st.Applied =
+			check.Checked, check.Latest, check.Asset, check.Sha256, check.Signature, check.Applied
+	})
 }
