@@ -562,6 +562,21 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":
 const base = location.origin;
 $("base-url").textContent = base + "/v1";
 $("host").textContent = location.host;
+// With --gateway-key, open the page once with ?key=KEY: the key moves to this
+// tab's sessionStorage, leaves the URL, and goes on every request.
+let gwKey = "";
+try { gwKey = sessionStorage.getItem("bitllm-key") || ""; } catch {}
+const params = new URLSearchParams(location.search);
+if (params.has("key")) {
+  gwKey = params.get("key");
+  try { sessionStorage.setItem("bitllm-key", gwKey); } catch {}
+  params.delete("key");
+  const rest = params.toString();
+  history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+}
+const api = (u, o = {}) => fetch(u, gwKey ? { ...o, headers: { ...o.headers, Authorization: "Bearer " + gwKey } } : o);
+const NEEDS_KEY = "needs key";
+const get = u => api(u).then(r => { if (r.status === 401) throw new Error(NEEDS_KEY); return r.json(); });
 // Text from elsewhere goes into a snippet through one of these, whatever it is:
 // shq for a shell, jq for JSON. In a snippet that is both, jq comes first.
 const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
@@ -577,11 +592,11 @@ try { saved = localStorage.getItem("bitllm-model") || ""; } catch {}
 async function refresh() {
   try {
     const [st, models, credits, acct, mem] = await Promise.all([
-      fetch("/status").then(r => r.json()),
-      fetch("/v1/models").then(r => r.json()),
-      fetch("/credits").then(r => r.json()),
-      fetch("/account").then(r => r.json()),
-      fetch("/members/me").then(r => r.json()),
+      get("/status"),
+      get("/v1/models"),
+      get("/credits"),
+      get("/account"),
+      get("/members/me"),
     ]);
     me = st.id;
     $("peerid").textContent = short(me);
@@ -658,13 +673,13 @@ async function refresh() {
     }).join("") : `<tr><td colspan="3" class="dim">No receipts yet.</td></tr>`;
   } catch (e) {
     $("net").classList.remove("on");
-    $("net-text").textContent = "BitLLM is not running";
+    $("net-text").textContent = e.message === NEEDS_KEY ? "Open this page with ?key=YOUR_KEY" : "BitLLM is not running";
   }
 }
 
 const agents = {
   "Claude Code": m => `export ANTHROPIC_BASE_URL=${shq(base)}
-export ANTHROPIC_API_KEY=bitllm
+export ANTHROPIC_API_KEY=${shq(gwKey || "bitllm")}
 export ANTHROPIC_MODEL=${shq(m)}
 export ANTHROPIC_DEFAULT_OPUS_MODEL=${shq(m)}
 export ANTHROPIC_DEFAULT_SONNET_MODEL=${shq(m)}
@@ -673,16 +688,17 @@ export CLAUDE_CODE_SUBAGENT_MODEL=${shq(m)}
 claude`,
   "OpenAI-compatible": m => `# Cline, Continue, OpenCode, Aider, Cursor, any OpenAI client
 Base URL:  ${base}/v1
-API key:   bitllm  (any value)
+API key:   ${gwKey || "bitllm  (any value)"}
 Model:     ${m}`,
   "pi": m => `// ~/.pi/agent/models.json, under "providers"
 "bitllm": {
   "baseUrl": ${jq(base + "/v1")},
   "api": "openai-completions",
-  "apiKey": "bitllm",
+  "apiKey": ${jq(gwKey || "bitllm")},
   "models": [{ "id": ${jq(m)} }]
 }`,
-  "curl": m => `curl ${shq(base + "/v1/chat/completions")} \\
+  "curl": m => `curl ${shq(base + "/v1/chat/completions")} \\${gwKey ? `
+  -H ${shq("Authorization: Bearer " + gwKey)} \\` : ""}
   -d ${shq(`{"model":${jq(m)},"messages":[{"role":"user","content":"hi"}]}`)}`,
 };
 let tab = "Claude Code";
@@ -742,7 +758,7 @@ $("test").onclick = async () => {
   $("result").textContent = "Waiting for an answer...";
   const t0 = performance.now();
   try {
-    const r = await fetch("/v1/chat/completions", { method: "POST",
+    const r = await api("/v1/chat/completions", { method: "POST",
       body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: "user", content: "Reply with: ok" }] }) });
     const j = await r.json();
     if (!r.ok) throw new Error((j.error && j.error.message) || r.statusText);
@@ -761,7 +777,7 @@ $("acct-link").onclick = async () => {
     $("acct-link").disabled = true;
     const [owner] = await window.ethereum.request({ method: "eth_requestAccounts" });
     const name = $("acct-input").value.trim();
-    const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) })
+    const post = (u, b) => api(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) })
       .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error.message); return j; });
     const m = await post("/account/message", { owner, name });
     const hex = "0x" + Array.from(new TextEncoder().encode(m.message), b => b.toString(16).padStart(2, "0")).join("");
@@ -785,7 +801,7 @@ $("invite-go").onclick = async () => {
     const msg = `BitLLM invite\ninviter: ${inviter}\ninvitee: ${invitee}\ntime: ${time}`;
     const hex = "0x" + Array.from(new TextEncoder().encode(msg), b => b.toString(16).padStart(2, "0")).join("");
     const sig = await window.ethereum.request({ method: "personal_sign", params: [hex, inviter] });
-    const r = await fetch("/members", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await api("/members", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ invite: { inviter, invitee, time, sig } }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error.message);

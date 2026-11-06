@@ -352,3 +352,72 @@ func TestCreditsCopy(t *testing.T) {
 		t.Error("an em dash in the page")
 	}
 }
+
+// With ?key= the page keeps the key for this tab, cleans the URL, sends the key
+// on every request, and puts it in the snippets, where a client needs it.
+func TestGatewayKeyInThePage(t *testing.T) {
+	var got struct {
+		Saved, Curl, Claude, Pi string
+		Replaced                []string
+		Sent, All               int
+	}
+	const key = "k'ey$1"
+	runUI(t, uiScenario{
+		Search: "?a=1&key=k%27ey%241", NeedKey: key,
+		Status: map[string]any{"version": "v0.5.0"},
+		JS: `return { Saved: ctx.sessionStorage.getItem("bitllm-key"), Replaced: replaced, All: requests.length,
+			Sent: requests.filter(r => r.o.headers && r.o.headers.Authorization === "Bearer k'ey$1").length,
+			Curl: ui.agents["curl"]("m"), Claude: ui.agents["Claude Code"]("m"), Pi: ui.agents["pi"]("m") };`,
+	}, &got)
+	if got.Saved != key {
+		t.Errorf("sessionStorage holds %q", got.Saved)
+	}
+	if len(got.Replaced) != 1 || got.Replaced[0] != "/?a=1" {
+		t.Errorf("URL became %v", got.Replaced)
+	}
+	if got.All == 0 || got.Sent != got.All {
+		t.Errorf("%d of %d requests carried the key", got.Sent, got.All)
+	}
+	if !strings.Contains(got.Claude, `ANTHROPIC_API_KEY='k'\''ey$1'`) {
+		t.Errorf("Claude Code snippet: %s", got.Claude)
+	}
+	if !strings.Contains(got.Curl, `-H 'Authorization: Bearer k'\''ey$1'`) {
+		t.Errorf("curl snippet: %s", got.Curl)
+	}
+	if !strings.Contains(got.Pi, `"apiKey": "k'ey$1"`) {
+		t.Errorf("pi snippet: %s", got.Pi)
+	}
+}
+
+// A reload finds the key in sessionStorage, and a page without one says so.
+func TestGatewayKeyAcrossLoads(t *testing.T) {
+	var got struct {
+		Sent bool
+		Net  string
+	}
+	runUI(t, uiScenario{Session: map[string]string{"bitllm-key": "k"}, NeedKey: "k",
+		JS: `return { Sent: requests.every(r => r.o.headers.Authorization === "Bearer k"), Net: el("net-text").textContent };`}, &got)
+	if !got.Sent || got.Net != "No peers yet" {
+		t.Errorf("with a saved key: %+v", got)
+	}
+	runUI(t, uiScenario{NeedKey: "k", JS: `return { Sent: false, Net: el("net-text").textContent };`}, &got)
+	if !strings.Contains(got.Net, "?key=") {
+		t.Errorf("without a key, the page says %q", got.Net)
+	}
+}
+
+// Without a key the page sends no header and its snippets stay as they were.
+func TestNoGatewayKeyInThePage(t *testing.T) {
+	var got struct {
+		Headers bool
+		Curl    string
+		OpenAI  string
+	}
+	runUI(t, uiScenario{JS: `return { Headers: requests.some(r => r.o.headers), Curl: ui.agents["curl"]("m"), OpenAI: ui.agents["OpenAI-compatible"]("m") };`}, &got)
+	if got.Headers {
+		t.Error("a request carried headers")
+	}
+	if strings.Contains(got.Curl, "Authorization") || !strings.Contains(got.OpenAI, "bitllm  (any value)") {
+		t.Errorf("snippets: %q %q", got.Curl, got.OpenAI)
+	}
+}
