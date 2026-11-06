@@ -141,7 +141,10 @@ type Node struct {
 	servedMu     sync.Mutex         // own lock: memberSet holds accessMu while Compute calls servedSets
 	servedAt     time.Time
 	servedEver   map[string]bool // cached, see servedSets
-	servedRecent map[string]bool
+	servedRecent map[string]bool // cached, see contributors
+	recentAt     time.Time
+	syncGate     syncGate
+	syncCursors  *syncCursors
 	annRate      originRate // announce gossip, per origin
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
@@ -422,11 +425,12 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
-	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
+	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID(), n.receiptSeed); err != nil {
 		return nil, err
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
 	n.members = members.Open(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
+	n.wireState()
 
 	ps, err := pubsub.NewGossipSub(ctx, n.host)
 	if err != nil {
@@ -501,6 +505,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// they use exists.
 	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
 	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
+	n.host.SetStreamHandler(protocol.SyncProto2, n.handleSync2)
 	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
 	if cfg.Upstream != "" {
 		n.host.SetStreamHandler(protocol.InferProto, n.handleInfer)
@@ -517,6 +522,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
 		go n.audits.recheckLoop(loops)
 	}
+	n.closers = append(n.closers, n.flushState)
 	go n.joinSeeds(loops)
 	go n.redialLoop(loops)
 	if len(cfg.Bootstrap) > 0 {

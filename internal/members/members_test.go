@@ -36,8 +36,8 @@ func (e ethKey) revoke(acct string, at int64) members.Item {
 
 func TestMemberSet(t *testing.T) {
 	root, a, b, c := newEthKey(t), newEthKey(t), newEthKey(t), newEthKey(t)
-	ever, recent := map[string]bool{}, map[string]bool{}
-	served := func() (map[string]bool, map[string]bool) { return ever, recent }
+	ever := map[string]bool{}
+	served := func() map[string]bool { return ever }
 	path := t.TempDir() + "/m.json"
 	m := members.Open(path, []string{root.addr}, served)
 	add := func(it members.Item) {
@@ -84,7 +84,7 @@ func TestMemberSet(t *testing.T) {
 		}
 		return
 	}
-	// Not serving lately (recent is empty) does not take invites back.
+	// The limit never drops, so all of them still count.
 	if got := membersOf(); got != members.ContributorInvites {
 		t.Fatalf("%d of b's invitees are members, want %d", got, members.ContributorInvites)
 	}
@@ -124,6 +124,9 @@ func TestMemberSet(t *testing.T) {
 	}
 	// A reload replays to the same state.
 	before := m.Compute()
+	if err := m.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	again := members.Open(path, []string{root.addr}, served).Compute()
 	if len(again.Member) != len(before.Member) || again.Member[a.addr] || !again.Member[d.addr] {
 		t.Fatalf("reload: %d vs %d members", len(again.Member), len(before.Member))

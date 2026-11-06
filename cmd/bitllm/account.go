@@ -55,6 +55,7 @@ func accountCmd(args []string, home string) {
 	}
 	self, _ := peer.IDFromPrivateKey(nodeKey)
 	claims := account.OpenClaims(filepath.Join(*data, "claims.json"))
+	claims.SetSelf(self.String()) // this process exits right after linking, so the claim is written at once
 
 	var key *secp256k1.PrivateKey
 	switch sub {

@@ -64,8 +64,12 @@ func TestAccessRules(t *testing.T) {
 	stranger := randomPeer(t)
 	now := time.Now()
 
-	// Rule 3: a contributor served a job recently (a receipt names its node as server).
-	ck, _, _ := crypto.GenerateEd25519Key(nil)
+	// Rule 3: a contributor served a job we asked for recently: the receipt names
+	// its node as server and is signed by our pseudonym for that node.
+	ck, err := receipts.Key(n.receiptSeed, contribNode, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cid, _ := peer.IDFromPrivateKey(ck)
 	r := receipts.Receipt{Job: "j1", Model: "m", Client: cid.String(), Server: contribNode.String(),
 		Prompt: 4, Completion: 1, Credits: receipts.Price(4, 1), Output: "x", TS: now.Unix()}

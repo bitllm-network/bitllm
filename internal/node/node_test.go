@@ -90,7 +90,7 @@ func testNode(t *testing.T, ctx context.Context, cfg Config) *Node {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { n.host.Close() })
+	t.Cleanup(func() { n.host.Close(); n.closeState() })
 	return n
 }
 
