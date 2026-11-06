@@ -217,11 +217,11 @@ journalctl --user -u bitllm -f      # 日志
 
 ### 更新
 
-发布版启动 30 秒后检查一次新版本，之后每 6 小时一次。有新版就下载对应机器的二进制，核对 release 的 `SHA256SUMS`，跑一次确认它报告的版本，然后替换。如果节点正在服务，会等到没有任务在跑、队列也空了，再原地重启：同一个终端、同一个 systemd 单元、同一个节点 ID。Windows 上运行中的 `.exe` 换不掉，所以新二进制装好，下次启动时生效。
+发布版启动 30 秒后检查一次新版本，之后每 6 小时一次。有新版就下载对应机器的二进制，核对 release 的 `SHA256SUMS`，跑一次确认它报告的版本，然后替换。如果节点正在服务，会等到没有任务在跑、队列也空了，再原地重启：同一个终端、同一个 systemd 单元、同一个节点 ID。需要等多久就等多久，等待期间 `GET /status` 显示 `pending_restart: true`。Windows 上运行中的 `.exe` 换不掉，所以新二进制装好，下次启动时生效。
 
-HTTPS 和校验和能挡住损坏或截断的下载。两者都来自 release 页面，所以挡不住仓库本身被攻破；签名清单是下一步。
+HTTPS 和校验和能挡住损坏或截断的下载。每个 release 还会发布 `SHA256SUMS.sig`，这是对 tag 和校验和文件的签名，用管理员离线保管的密钥生成，并用内置在二进制里的公钥核对。目前结果只做报告：签名缺失或不对的 release 会记一条日志，然后照常安装。后续版本会拒绝安装。`bitllm update` 会打印结果，`GET /status` 里的 `signature` 显示 `ok`、`missing`、`bad` 或 `no-keys`。
 
-`--auto-update=false` 留在当前版本。`bitllm update` 立刻做同样的检查（`--check` 只报告），也是 supervisor 下更新节点的方式。被替换的二进制留在旁边叫 `bitllm.prev`，`mv bitllm.prev bitllm` 就回退一个版本。源码构建（`dev`）和 CI 构建不会自更新。`bitllm --version` 打印当前版本，`GET /status` 显示上次检查。更新器要写二进制所在的目录，所以包管理器安装或者只读挂载需要 `--auto-update=false`；否则节点会记一条错误然后继续跑。
+`--auto-update=false` 留在当前版本。`bitllm update` 立刻做同样的检查（`--check` 只报告），也是 supervisor 下更新节点的方式。`bitllm update --tag vX.Y.Z` 用同样的检查安装指定的那个 release，可以用来试 prerelease，因为常规检查会跳过它们。它也能退回旧版本，但开着自动更新运行的节点会再次往前更新，除非用 `--auto-update=false` 启动。被替换的二进制留在旁边叫 `bitllm.prev`，`mv bitllm.prev bitllm` 就回退一个版本。源码构建（`dev`）和 CI 构建不会自更新。`bitllm --version` 打印当前版本，`GET /status` 显示上次检查。更新器要写二进制所在的目录，所以包管理器安装或者只读挂载需要 `--auto-update=false`；否则节点会记一条错误然后继续跑。
 
 ### 文件都在哪
 

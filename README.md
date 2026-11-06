@@ -308,15 +308,24 @@ A release build checks for a newer release 30 seconds after it starts, and every
 that. When there is one, it downloads the binary for this machine, checks it against the release's
 `SHA256SUMS`, runs it once to confirm the version it reports, and swaps it in. If the node is
 serving, it waits until no job is running and the queue is empty, then restarts itself in place:
-same terminal, same systemd unit, same peer id. On Windows a running `.exe` cannot be replaced, so
+same terminal, same systemd unit, same peer id. It waits as long as that takes, and `GET /status`
+shows `pending_restart: true` in the meantime. On Windows a running `.exe` cannot be replaced, so
 the new binary is installed and used at the next start.
 
-HTTPS and the checksum catch a corrupted or truncated download. Both come from the release page, so
-they do not protect against a compromised repository; a signed manifest is the next step.
+HTTPS and the checksum catch a corrupted or truncated download. Each release also publishes
+`SHA256SUMS.sig`, a signature over the tag and the checksum file, made with an admin's offline key
+and checked against the public keys built into the binary. For now the result is only reported: a
+release with a missing or wrong signature is logged and still installed. A later release will refuse
+it. `bitllm update` prints the result, and `GET /status` shows it as `signature`: `ok`, `missing`,
+`bad` or `no-keys`.
 
 `--auto-update=false` stays on the version you have. `bitllm update` runs the same check now
-(`--check` only reports), which is also the way to update a node under a supervisor. The replaced
-binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one version.
+(`--check` only reports), which is also the way to update a node under a supervisor.
+`bitllm update --tag vX.Y.Z` installs that one release through the same checks, which is how to try
+a prerelease, since the regular check skips those. It can also go back to an older release, but a
+running node with auto-update moves forward again unless it is started with `--auto-update=false`.
+The replaced binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one
+version.
 Builds from source (`dev`) and CI builds never update themselves. `bitllm --version` prints what
 is running, and `GET /status` shows the last check. The updater writes in the directory that holds
 the binary, so a package-manager install or a read-only mount needs `--auto-update=false`;
