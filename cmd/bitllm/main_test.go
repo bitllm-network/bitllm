@@ -7,6 +7,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -152,5 +154,54 @@ func TestPostGatewayTimesOut(t *testing.T) {
 	if resp, err := postGateway(strings.TrimPrefix(srv.URL, "http://"), "", "/members", []byte("{}")); err == nil {
 		resp.Body.Close()
 		t.Fatal("no timeout")
+	}
+}
+
+// The first signal starts the stop, and a second one exits while it runs.
+func TestSecondSignalExits(t *testing.T) {
+	c := make(chan os.Signal, 2)
+	exited := make(chan int, 1)
+	var stopping atomic.Bool
+	hold := make(chan struct{})
+	defer close(hold)
+	s := &signals{cancel: func() { t.Error("canceled instead of stopping") }, exit: func(code int) { exited <- code }}
+	if !s.serving(func() { stopping.Store(true); <-hold }) {
+		t.Fatal("no signal yet, but serving says otherwise")
+	}
+	go s.watch(c)
+	c <- syscall.SIGTERM
+	for deadline := time.Now().Add(5 * time.Second); !stopping.Load(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the first signal did not start the stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case code := <-exited:
+		t.Fatalf("exited with %d on the first signal", code)
+	default:
+	}
+	c <- syscall.SIGTERM
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second signal did not exit")
+	}
+}
+
+// A signal during startup cancels it, and the start then does not serve.
+func TestSignalDuringStartup(t *testing.T) {
+	c := make(chan os.Signal, 2)
+	canceled := make(chan struct{})
+	s := &signals{cancel: func() { close(canceled) }, exit: func(int) {}}
+	go s.watch(c)
+	c <- syscall.SIGINT
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not canceled")
+	}
+	if s.serving(func() { t.Error("stop ran") }) {
+		t.Fatal("serving after a signal")
 	}
 }

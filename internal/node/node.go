@@ -160,6 +160,14 @@ type Node struct {
 	refused   refusals     // why this server refused requests, for /status
 
 	started time.Time // when this node came up, shown by GET /status
+
+	// Stopping (shutdown.go).
+	closing   atomic.Bool        // set first on shutdown: no new peer jobs
+	closers   []func()           // run by Close once the host is down
+	stopLoops context.CancelFunc // ends the loops that announce, dial and sync
+	stopAll   context.CancelFunc // ends the rest: gossip, its readers, the DHT's context
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // LoadKey reads the node key, creating it only when the file does not exist.
@@ -259,7 +267,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// the first contact: --dht-server is a seed and may start alone, while
 	// --public keeps the default seed list.
 	public := cfg.DHTServer || cfg.Public
+	// Gossip outlives loops: a job that finishes during a drain still publishes
+	// its receipt, while nothing announces this node any more.
+	ctx, stopAll := context.WithCancel(ctx)
+	loops, stopLoops := context.WithCancel(ctx)
 	n := &Node{
+		stopAll:   stopAll,
+		stopLoops: stopLoops,
 		cfg:       cfg,
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      &http.Client{},
@@ -433,7 +447,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	go n.readClaims(ctx, csub)
-	go n.claimLoop(ctx)
+	go n.claimLoop(loops)
 	if n.topic, err = ps.Join(protocol.AnnounceTopic); err != nil {
 		return nil, err
 	}
@@ -452,11 +466,11 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
 	}
-	go n.joinSeeds(ctx)
-	go n.redialLoop(ctx)
+	go n.joinSeeds(loops)
+	go n.redialLoop(loops)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
-		go n.announceLoop(ctx)
+		go n.announceLoop(loops)
 	}
 	return n, nil
 }
@@ -633,6 +647,9 @@ func (n *Node) announceLoop(ctx context.Context) {
 		// handles one request at a time may not answer the probe meanwhile.
 		if n.inflight.Load() == 0 {
 			ok := n.checkUpstream(ctx)
+			if ctx.Err() != nil {
+				return // stopping: a check cut short says nothing about the server
+			}
 			if ok != n.upOK.Swap(ok) {
 				log.Printf("upstream %s: up=%v", n.cfg.Upstream, ok)
 			}

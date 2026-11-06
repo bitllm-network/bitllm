@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -178,6 +179,45 @@ func gatewayExposed(addr string) bool {
 	return host != "localhost"
 }
 
+// signals turns the process's signals into a shutdown. Before the node serves,
+// the first signal cancels the start. After that it runs stop, and a second
+// signal exits at once, whatever stop is waiting for.
+type signals struct {
+	cancel context.CancelFunc
+	exit   func(int)
+
+	mu    sync.Mutex
+	stop  func()
+	fired bool
+}
+
+func (s *signals) watch(c <-chan os.Signal) {
+	<-c
+	go func() {
+		<-c
+		log.Printf("second signal: exiting now")
+		s.exit(130)
+	}()
+	s.mu.Lock()
+	s.fired = true
+	stop := s.stop
+	s.mu.Unlock()
+	if stop == nil {
+		s.cancel()
+		return
+	}
+	stop()
+}
+
+// serving hands over the shutdown to run from now on. It returns false if a
+// signal came first, and then the caller should just return.
+func (s *signals) serving(stop func()) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stop = stop
+	return !s.fired
+}
+
 func main() {
 	home, _ := os.UserHomeDir()
 	if len(os.Args) > 1 && os.Args[1] == "account" {
@@ -325,8 +365,16 @@ func main() {
 		cfg.ModelsFixed = true
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// The node's context ends last, once it has drained. The updater's ends at
+	// the first signal: a restart must not undo a request to stop.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, stopUpdates := context.WithCancel(ctx)
+	defer stopUpdates()
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	lifecycle := &signals{cancel: cancel, exit: os.Exit}
+	go lifecycle.watch(sigs)
 	// The updater is wired before the node, so GET /status can report it.
 	// Only a release build takes part; dev and CI builds never replace
 	// themselves.
@@ -338,6 +386,9 @@ func main() {
 	}
 	n, err := node.New(ctx, cfg)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // a signal during startup
+		}
 		log.Fatal(err)
 	}
 	log.Printf("bitllm %s, peer id %s", node.Version, n.ID())
@@ -379,7 +430,20 @@ func main() {
 		log.Printf("WARNING: GATEWAY %s IS OPEN TO OTHER MACHINES WITH NO KEY. Set --gateway-key or BITLLM_GATEWAY_KEY, or listen on 127.0.0.1.", gateway)
 	}
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}
-	go func() { <-ctx.Done(); srv.Close() }()
+	stopped := make(chan struct{})
+	if !lifecycle.serving(func() {
+		defer close(stopped)
+		log.Printf("stopping: finishing live requests for up to %v (signal again to exit now)", node.Drain)
+		stopUpdates()
+		drain, done := context.WithTimeout(context.Background(), node.Drain)
+		defer done()
+		if err := n.Shutdown(drain, srv); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		cancel()
+	}) {
+		return
+	}
 	if upd != nil {
 		upd.Idle = n.Idle
 		if update.InPlace {
@@ -390,9 +454,11 @@ func main() {
 				return update.Restart(path, append([]string{path}, os.Args[1:]...), os.Environ())
 			}
 		}
-		go upd.Run(ctx)
+		go upd.Run(updates)
 	}
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	// Shutdown makes ListenAndServe return at once, so wait for the drain.
+	<-stopped
 }
