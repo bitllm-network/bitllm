@@ -71,7 +71,7 @@ The seed must **not** start its own network: the GPU hosts are on the network
 that `boot.bitllm.org` runs. Pass `boot` as the third argument so the new seed
 joins it, then `_dnsaddr` clients see the same network.
 
-Wait until `v0.4.5` is published; `latest` must point at it before installing.
+Wait until `v0.4.6` is published; `latest` must point at it before installing.
 The seed takes part in auto-update. It has no jobs, so `Idle()` is true and it
 restarts as soon as a new binary is installed. A stream already relayed through
 it is cut, and clients redial within 15 seconds. If you want a controlled

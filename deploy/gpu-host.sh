@@ -4,7 +4,7 @@
 #
 #   sudo bash gpu-host.sh [VERSION] [UPSTREAM] [MODEL]
 #
-#   VERSION   latest (default) or a tag such as v0.4.5
+#   VERSION   latest (default) or a tag such as v0.4.6
 #   UPSTREAM  OpenAI-compatible base URL (default http://127.0.0.1:8000/v1)
 #   MODEL     optional, local-name or local-name=public-name
 #
