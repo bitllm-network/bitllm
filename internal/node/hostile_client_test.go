@@ -122,8 +122,15 @@ func refuseWith(status int, msg string) script {
 	return func(s network.Stream, _ inferReq) { sayHdr(s, inferHdr{Status: status, Error: msg}) }
 }
 
-// holdOpen keeps a stream open until the other side ends it.
-func holdOpen(s network.Stream) { io.Copy(io.Discard, s) }
+// holdOpen keeps the stream open and silent until the connection ends. Reading to
+// the end is not enough: every client half-closes after its request, so that
+// returns at once, and the handler returning would close the stream.
+func holdOpen(s network.Stream) {
+	io.Copy(io.Discard, s)
+	for !s.Conn().IsClosed() {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
 
 // clientNode is a node with no upstream, on a private network of its own.
 func clientNode(t *testing.T) *Node {
