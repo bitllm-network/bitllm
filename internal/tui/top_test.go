@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -94,6 +98,10 @@ func TestFitCountsRunes(t *testing.T) {
 		{"12D3KooWB3zAyx9hjQ", 9, "12D3KooW…"},
 		{"híjklmn", 4, "híj…"},
 		{"abc", 0, ""},
+		{"a\x1b[2Jb", 20, "a[2Jb"},
+		{"\x1b\x1b\x1b\x1babcdef", 5, "abcd…"}, // cut after cleaning, or the width is wrong
+		{"a\u009b31mb\u202ec\u2028d\te\r\n", 20, "a31mbcd e"},
+		{"bad\x9bbyte", 20, "bad\ufffdbyte"},
 	} {
 		if got := fit(tc.in, tc.w); got != tc.want {
 			t.Errorf("fit(%q, %d) = %q, want %q", tc.in, tc.w, got, tc.want)
@@ -142,6 +150,84 @@ func TestClock(t *testing.T) {
 		if got := clock(tc.in); got != tc.want {
 			t.Errorf("clock(%s) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Escape sequences in /logs or /status must reach the screen as plain text,
+// while the view's own colours and line ends stay. Everything below goes through
+// real JSON and a real HTTP round trip, the way the text arrives.
+func TestRefreshStripsControlCharacters(t *testing.T) {
+	const seq = "\x1b[2J\x1b[1;1H\x1b]0;title\x07\x1b[?1049l\u009b31m\rTEXT\x08\x7f"
+	var keys []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(map[string]any{
+				"version": "v1" + seq, "id": "id" + seq, "serving": []string{"model" + seq},
+				"upstream_up": true, "uptime": 5,
+				"conns":  []map[string]any{{"peer": "peer" + seq, "addr": "/ip4/1.2.3.4" + seq, "dir": "out" + seq}},
+				"ledger": map[string]any{"ledger-peer" + seq: map[string]any{"gave": 1, "took": 2}},
+			})
+		case "/logs":
+			fmt.Fprintf(w, "2026/11/05 first line\n2026/11/05 peer said: %s\n", seq)
+		}
+	}))
+	defer srv.Close()
+	v := &view{base: srv.URL, key: "sekret", client: srv.Client(), every: time.Second, started: time.Now()}
+	v.refresh()
+	if v.status == nil {
+		t.Fatalf("no status: %v", v.err)
+	}
+	if strings.Contains(strings.Join(v.logs, ""), "\x1b") || strings.Contains(v.status.Version, "\x1b") {
+		t.Fatalf("control characters entered the view: %q %q", v.logs, v.status.Version)
+	}
+	if got, want := v.logs[1], "2026/11/05 peer said: [2J[1;1H]0;title[?1049l31mTEXT"; got != want {
+		t.Fatalf("log line = %q, want %q", got, want)
+	}
+	for _, k := range keys {
+		if k != "Bearer sekret" {
+			t.Fatalf("request without the gateway key: %q", k)
+		}
+	}
+	assertOnlyOwnEscapes(t, v.render(160, 40))
+
+	// Text set some other way, or an error from the gateway, is cleaned by fit.
+	v.logs = []string{seq}
+	v.status.Version = seq
+	assertOnlyOwnEscapes(t, v.render(160, 40))
+	v.status, v.err = nil, errOf("x: gateway said "+seq)
+	v.base += seq
+	assertOnlyOwnEscapes(t, v.render(160, 40))
+}
+
+// assertOnlyOwnEscapes fails if a frame holds any control character other than
+// the few escape codes the view itself writes.
+func assertOnlyOwnEscapes(t *testing.T, s string) {
+	t.Helper()
+	if !strings.Contains(s, bold) {
+		t.Fatalf("the view's own escape codes are gone: %q", s)
+	}
+	rest := s
+	for _, own := range []string{reset, dim, bold, green, red, "\x1b[K", "\r\n"} {
+		rest = strings.ReplaceAll(rest, own, "")
+	}
+	for _, r := range rest {
+		if r < 0x20 || (r >= 0x7f && r < 0xa0) {
+			t.Fatalf("control character %#x in the frame: %q", r, rest)
+		}
+	}
+}
+
+func TestRefreshSaysWhenTheKeyIsMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer srv.Close()
+	v := &view{base: srv.URL, client: srv.Client(), every: time.Second, started: time.Now()}
+	v.refresh()
+	if v.err == nil || !strings.Contains(v.err.Error(), "--gateway-key") {
+		t.Fatalf("err = %v", v.err)
 	}
 }
 

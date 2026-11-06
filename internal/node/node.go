@@ -5,10 +5,13 @@ package node
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"maps"
 	"math/rand/v2"
@@ -62,6 +65,7 @@ const (
 type Config struct {
 	Upstream         string                // OpenAI-compatible base URL to share; empty = client only
 	UpstreamKey      string                //
+	GatewayKey       string                // when set, every gateway request but GET / must carry it
 	Models           map[string]string     // public name -> upstream name; empty = discover
 	ModelsFixed      bool                  // Models came from --model; do not replace them from upstream
 	Concurrency      int                   //
@@ -159,19 +163,67 @@ type Node struct {
 	refused   refusals     // why this server refused requests, for /status
 
 	started time.Time // when this node came up, shown by GET /status
+
+	// Stopping (shutdown.go).
+	closing   atomic.Bool        // set first on shutdown: no new peer jobs
+	closers   []func()           // run by Close once the host is down
+	stopLoops context.CancelFunc // ends the loops that announce, dial and sync
+	stopAll   context.CancelFunc // ends the rest: gossip, its readers, the DHT's context
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// LoadKey reads the node key, creating it on first run.
+// LoadKey reads the node key, creating it only when the file does not exist.
+// The key is the node's identity, so a file that cannot be read or parsed is an
+// error for a person to look at, and is never replaced.
 func LoadKey(path string) (crypto.PrivKey, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		return crypto.UnmarshalPrivateKey(b)
+	b, err := os.ReadFile(path)
+	if err == nil {
+		k, err := crypto.UnmarshalPrivateKey(b)
+		if err != nil {
+			return nil, fmt.Errorf("identity file %s is damaged (%w): restore it from a backup, or move it away to start with a new peer id", path, err)
+		}
+		return k, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cannot read identity file %s (%w): fix the file or its permissions; it has not been replaced", path, err)
 	}
 	k, _, err := crypto.GenerateEd25519Key(nil)
 	if err != nil {
 		return nil, err
 	}
-	b, _ := crypto.MarshalPrivateKey(k)
-	return k, os.WriteFile(path, b, 0o600)
+	b, err = crypto.MarshalPrivateKey(k)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(path, b); err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+// writeFileAtomic writes a new private file in one step: a crash leaves either
+// no file or the whole file, never part of one.
+func writeFileAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	err = f.Chmod(0o600)
+	if err == nil {
+		_, err = f.Write(b)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // New starts a node: key, host, DHT, gossip, storage, then the loops. It does
@@ -218,7 +270,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// the first contact: --dht-server is a seed and may start alone, while
 	// --public keeps the default seed list.
 	public := cfg.DHTServer || cfg.Public
+	// Gossip outlives loops: a job that finishes during a drain still publishes
+	// its receipt, while nothing announces this node any more.
+	ctx, stopAll := context.WithCancel(ctx)
+	loops, stopLoops := context.WithCancel(ctx)
 	n := &Node{
+		stopAll:   stopAll,
+		stopLoops: stopLoops,
 		cfg:       cfg,
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      &http.Client{},
@@ -314,7 +372,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	n.nodeKey = key
 	if n.receiptSeed, err = receipts.LoadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
-		return nil, err
+		// Losing the seed only breaks the link to past pseudonyms, which is no
+		// reason to stay down. Use one for this run and leave the file alone.
+		log.Printf("WARNING: %v; using a temporary one until the next start", err)
+		n.receiptSeed = make([]byte, 32)
+		if _, err := crand.Read(n.receiptSeed); err != nil {
+			return nil, err
+		}
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
@@ -386,7 +450,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	go n.readClaims(ctx, csub)
-	go n.claimLoop(ctx)
+	go n.claimLoop(loops)
 	if n.topic, err = ps.Join(protocol.AnnounceTopic); err != nil {
 		return nil, err
 	}
@@ -404,12 +468,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
+		go n.audits.recheckLoop(loops)
 	}
-	go n.joinSeeds(ctx)
-	go n.redialLoop(ctx)
+	go n.joinSeeds(loops)
+	go n.redialLoop(loops)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
-		go n.announceLoop(ctx)
+		go n.announceLoop(loops)
 	}
 	return n, nil
 }
@@ -587,6 +652,9 @@ func (n *Node) announceLoop(ctx context.Context) {
 		// handles one request at a time may not answer the probe meanwhile.
 		if n.inflight.Load() == 0 {
 			ok := n.checkUpstream(ctx)
+			if ctx.Err() != nil {
+				return // stopping: a check cut short says nothing about the server
+			}
 			if ok != n.upOK.Swap(ok) {
 				log.Printf("upstream %s: up=%v", n.cfg.Upstream, ok)
 			}
@@ -1137,6 +1205,16 @@ func (n *Node) Addrs() []string {
 		out = append(out, a.Encapsulate(ma.StringCast("/p2p/"+n.host.ID().String())).String())
 	}
 	return out
+}
+
+// SeedConnected reports whether this node is connected to any of its seeds.
+func (n *Node) SeedConnected() bool {
+	for _, ai := range n.relays {
+		if n.host.Network().Connectedness(ai.ID) == network.Connected {
+			return true
+		}
+	}
+	return false
 }
 
 // Seeds is the resolved bootstrap list: the peers this node dials first. It is
