@@ -85,7 +85,9 @@ bitllm --dht-server --port 4001 \
 ```
 
 `deploy/bootstrap-vps.sh` installs that as a systemd unit on a fresh Ubuntu VM
-and prints the DNS records to publish. Rerunning it updates the binary and
+and prints the DNS records to publish. The deployment handoff, including the
+Oracle instance and the move of the domain, is
+[seed-handoff.md](seed-handoff.md). Rerunning it updates the binary and
 keeps the identity.
 
 Open TCP and UDP 4001. `--dht-server` forces reachability to public, so turn

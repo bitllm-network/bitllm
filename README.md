@@ -4,6 +4,8 @@
 [![release](https://img.shields.io/github/v/release/bitllm-org/bitllm)](https://github.com/bitllm-org/bitllm/releases)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+English | [中文](README.zh.md)
+
 > Using an AI agent? Point it at https://bitllm.org/llms.txt. Changing the code? See [AGENTS.md](AGENTS.md).
 
 **BitTorrent for local LLMs.** Share your local model, use everyone's.
@@ -19,18 +21,84 @@ Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitl
 
 ![The dashboard a running node serves: a terminal-style editor with a model list, a copyable setup snippet, and a test console](docs/images/dashboard.png)
 
-Contents: [Install](#install-and-run) · [Share a model](#share-a-model) ·
+## How the network fits together
+
+Three roles, one binary:
+
+```
+   your node                    seed                     GPU host
+  127.0.0.1:7778          DHT, relay, receipts        vLLM / Ollama
+        │                        ▲                         ▲
+        │  first contact         │                         │
+        └────────────────────────┘                         │
+        │                                                  │
+        └──────── direct, or relay + hole punch ───────────┘
+```
+
+- **Your node** runs the same binary as everyone else. Its gateway listens on
+  `127.0.0.1:7778` and speaks OpenAI and Anthropic, so an agent points at it
+  like any API. Nothing on the internet can call the gateway.
+- **A serving node** is your node plus `--upstream`, pointed at a model server
+  you already run. It can be behind NAT: peers reach it through a relay and
+  hole punching, so no port forwarding is needed.
+- **A seed** is a small always-on public host. It answers DHT queries,
+  relays for NATed peers, and serves the receipt history a new node syncs on
+  join. It serves no model. A new node needs one reachable seed, or a join
+  code, to learn about the rest; the seed is not in the inference path unless
+  it is relaying.
+
+Discovery has two steps. The binary resolves `_dnsaddr.bootstrap.bitllm.org`
+to get seed addresses, then the DHT and gossip carry everything else: which
+peer serves which model, and how to reach it. If the name does not resolve,
+it tries the `boot.bitllm.org` fallback; if that fails too, the node starts
+alone and prints a join code that another machine can pass to `--bootstrap`.
+
+Only these pieces are centrally hosted, and none of them carries inference
+traffic:
+
+| piece | where | what it does | if it is down |
+|---|---|---|---|
+| DNS seed list | Cloudflare DNS, `_dnsaddr.bootstrap.bitllm.org` | names the seeds for first contact | a node with a join code still joins; `boot` covers a missing record, not a dead zone |
+| site and installers | Cloudflare Worker, bitllm.org | the page, `install.sh`, `llms.txt` | installed nodes keep running; install by hand from GitHub |
+| release binaries | GitHub | downloads, checksums, self-update | no new installs or updates |
+
+Everything else is peer to peer: no coordinator, no database, no KV store, and
+no live map. Cloudflare serves DNS and the static site, not inference; the one
+exception is traffic relayed through the temporary `boot` tunnel. DNS is used
+only to find the first peer; an inference request goes from your gateway to the
+serving peer, directly or through a relay. The Mac mini that runs
+`boot.bitllm.org` today is a transition fallback, not part of the design.
+
+### What each piece depends on
+
+| piece | needs | does not need |
+|---|---|---|
+| node and gateway | outbound internet; a seed or a join code to meet others | inbound ports, an account, a wallet |
+| serving node | a local OpenAI-compatible server (vLLM, SGLang, llama.cpp, Ollama, LM Studio, MLX) | a public IP, a port forward, a seed role |
+| seed | an always-on host with a public address; inbound TCP and UDP 4001 | a GPU, a model, a database |
+| DNS seed list | a DNS zone for bitllm.org (Cloudflare here) and TXT records | a Worker or any runtime |
+| site and installers | a Cloudflare Worker with static assets | KV, a database, the Mac mini |
+| self-update | GitHub releases and `SHA256SUMS` | a package manager |
+
+The seed is deliberately separate from the GPUs: a GPU that trains, renders or
+switches off must not take discovery with it. One seed is enough for a new
+node to join; two on different providers are the minimum for reliability.
+[docs/bootstrap.md](docs/bootstrap.md) explains the model and
+[docs/seed-handoff.md](docs/seed-handoff.md) is the deployment checklist.
+
+Contents: [How it works](#how-the-network-fits-together) · [Install](#install-and-run) · [Share a model](#share-a-model) ·
 [Use the network](#use-the-network) · [Manage your node](#watch-and-manage-your-node) ·
 [Credits](#credits-for-serving) · [Access](#how-access-works) ·
-[Bootstrap](#run-a-seed) · [Caveats](#what-you-should-know) ·
+[Seed](#run-a-seed) · [Caveats](#what-you-should-know) ·
 [Build](#build-and-test) · [Contributing](#contributing)
 
 ## Install and run
 
 No port forwarding, no configuration. The script picks the build for your machine, verifies its
 checksum and installs to `~/.local/bin` (no sudo). The node joins through the DNS seed list in
-[docs/bootstrap.md](docs/bootstrap.md). If that list does not resolve, it starts its own network and
-prints a join code: `bitllm --bootstrap /ip4/.../p2p/...`.
+[docs/bootstrap.md](docs/bootstrap.md), or through `boot.bitllm.org` while that fallback lasts. If
+neither answers, it starts its own network and prints a join code:
+`bitllm --bootstrap /ip4/.../p2p/...`.
 
 ```bash
 # macOS (Apple silicon), Linux (x86-64, arm64)
@@ -51,7 +119,7 @@ macOS use curl, not a browser, to avoid the quarantine flag.
 
 The node runs in the foreground. Then open http://127.0.0.1:7778, pick a model, copy the setup
 for your agent, and send a test message. To leave it running after you close the terminal, see
-[keep it running](#keep-it-running). 中文说明见 [docs/JOIN.zh.md](docs/JOIN.zh.md).
+[keep it running](#keep-it-running). 完整的中文说明见 [README.zh.md](README.zh.md)。
 
 While it runs, `bitllm top` in another terminal shows peers, work exchanged and the log; see
 [Watch and manage your node](#watch-and-manage-your-node).
@@ -319,8 +387,9 @@ Separately, each node keeps a private ledger of work exchanged with each peer
 
 ## Run a seed
 
-A seed is the first peer a new node dials. It answers DHT queries and relays for NATed peers until
-they hole-punch a direct connection. It does not answer inference requests or decide membership.
+A seed is the first peer a new node dials. It answers DHT queries, relays for NATed peers until
+they hole-punch a direct connection, and serves the receipt history a node syncs on join. It does
+not answer inference requests or decide membership.
 
 Keep the seed separate from the GPUs. A small always-on VPS, or any machine with a public address,
 is the usual choice, so a GPU that is training, rendering or switched off cannot take the network
@@ -349,8 +418,9 @@ service next to the model server.
 
 The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Publish it with
 `deploy/seed-dns.py`, and a new node joins through any of the records. Adding or retiring a seed is
-a DNS change, not a release. When no seed resolves a node starts its own network and prints a
-join code; nothing fails. The failure behavior is in [docs/bootstrap.md](docs/bootstrap.md).
+a DNS change, not a release. When neither that list nor the temporary `boot.bitllm.org` fallback
+answers, a default node starts its own network and prints a join code; nothing fails. The failure
+behavior is in [docs/bootstrap.md](docs/bootstrap.md).
 
 No public IP? Put it behind an HTTPS tunnel that passes WebSockets (Cloudflare Tunnel, free):
 `bitllm --dht-server --ws-port 4002 --announce /dns4/boot.example.org/tcp/443/wss` and point
@@ -420,8 +490,8 @@ issues and pull requests are handled; read [AGENTS.md](AGENTS.md) before changin
 change to networking, access or the gateway, run the external test workflow
 (`.github/workflows/external-test.yml`), which joins the live network and sends real requests.
 
-Other docs: [audit](docs/audit.md), [host a GPU](docs/host-a-gpu.md), [network map](docs/network-map.md),
-[compatibility](docs/compat.md), [中文说明](docs/JOIN.zh.md), and
+Other docs: [audit](docs/audit.md), [host a GPU](docs/host-a-gpu.md), [seed handoff](docs/seed-handoff.md),
+[network map](docs/network-map.md), [compatibility](docs/compat.md), [中文](README.zh.md), and
 [llms.txt](https://github.com/bitllm-org/landing-page/blob/main/public/llms.txt) (the same
 instructions for AI agents). Brand assets live in
 [bitllm-org/branding](https://github.com/bitllm-org/branding).

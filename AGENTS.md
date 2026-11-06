@@ -45,6 +45,7 @@ package per domain. Tests live with the package they test.
 | `deploy/gpu-host.sh` | installs a GPU host's node beside its model server, as a systemd unit |
 | `deploy/seed-dns.py` | replaces the `_dnsaddr.bootstrap.bitllm.org` seed list through the Cloudflare API |
 | `docs/host-a-gpu.md` | the handoff checklist for a machine that joins the network as a GPU host |
+| `docs/seed-handoff.md` | the deployment handoff for the first public seed and the Cloudflare domain move |
 | `.github/workflows/external-test.yml` | joins the live network from outside and runs real requests |
 | `.github/workflows/test.yml` | gofmt, vet, tidy, actionlint, staticcheck, `go test -race`, the four release builds (kept as a run artifact) and the protocol compatibility check against older releases, on every PR and push to main |
 | `scripts/compat.sh` | old and new binaries in one private 127.0.0.1 network, both directions; see `docs/compat.md` |
@@ -75,9 +76,10 @@ serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
   print `bitllm <tag>` for `--version`; `internal/update` refuses it otherwise.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
-- **User-facing copy** (README, docs/JOIN.zh.md, and `public/` in bitllm-org/landing-page): plain
-  sentences, no em dashes. Keep the three access rules worded the same everywhere, and keep
-  `public/llms.txt` there in step with flags and error messages.
+- **User-facing copy** (README, README.zh.md, docs/JOIN.zh.md, and `public/` in bitllm-org/landing-page):
+  plain sentences, no em dashes. Keep the three access rules worded the same everywhere, and keep
+  `public/llms.txt` there in step with flags and error messages. Keep README.md and README.zh.md in
+  step: same sections, same commands, same flags.
 
 ## Testing changes against the live network
 
