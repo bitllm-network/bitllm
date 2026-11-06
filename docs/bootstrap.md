@@ -51,8 +51,9 @@ var DefaultBootstrap = []string{
 }
 ```
 
-The second entry is the old tunnel, kept as a fallback until the TXT records
-answer. See [The old tunnel seed](#the-old-tunnel-seed).
+The second entry is the old tunnel. The TXT records now answer, so it is a
+fallback for a node that cannot resolve the DNS seed list; the next release can
+drop it. See [The old tunnel seed](#the-old-tunnel-seed).
 
 A `/dnsaddr/` name is resolved through the TXT records at
 `_dnsaddr.bootstrap.bitllm.org`. Every record is one address of one seed:

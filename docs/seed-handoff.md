@@ -1,23 +1,39 @@
 # Handoff: the first public seed
 
-This is the deployment handoff for the first seed that does not depend on the
-Mac mini. The code and the machine are ready; the install, DNS records and the
-outside check are the remaining steps.
+This is the deployment record for the first seed that does not depend on the
+Mac mini. It is live; the remaining work is the KV uploader and the domain
+transfer.
+
+## Status (2026-11-05)
+
+- `seed1.bitllm.org` (A, DNS-only) points at `141.148.22.236` and the seed is
+  running. TCP 4001 and UDP 4001 are open; a libp2p QUIC dial to
+  `/ip4/141.148.22.236/udp/4001/quic-v1/p2p/12D3KooWGU5ZQ8aBeqFsSFXJDPYjuDNdBnf9Cw92kuUwxkLG4RCM`
+  succeeds.
+- `_dnsaddr.bootstrap.bitllm.org` publishes two TXT records for that peer
+  (TCP and QUIC). A fresh `v0.4.6` node on a different network resolves the
+  list, reserves a circuit on the seed, and syncs the receipt history.
+- `bitllm.org` and `www.bitllm.org` are served by the `bitllm-landing` Worker
+  from the `Zjj1993` account. `/network.json` answers from KV; the key is
+  seeded.
+- Still to do: run the KV uploader on an always-on host, and move the
+  registration after 2026-11-10. `boot.bitllm.org` stays in the default list
+  until the next release drops it.
 
 ## State when you start
 
 - `bitllm` main has the DNS seed list, the public-relay role (`--public`) and
-  relay discovery. The release is **v0.4.5** or later.
-- `landing-page` main is being prepared for the Worker and the restored map.
-  The Worker will be deployed in the current `bitllm.org` account before the
-  domain transfer.
+  relay discovery. The release is **v0.4.6** or later.
+- `landing-page` main is the dark site with the live map and `/docs/`. The
+  Worker runs in the current `bitllm.org` account.
 - `bitllm.org` and its zone are still in the current Cloudflare account
   (`Zjj1993@gmail.com`). The old Worker in the BitLLM account is not the target.
 - `seed1.bitllm.org` is an **A record, DNS-only**, pointing at
   `141.148.22.236` (Oracle `VM.Standard.E2.1.Micro`, 1 GB RAM + 2 GB swap).
-  Ingress for TCP 22 and 4001 is open in the VCN; open UDP 4001 as well.
-- `_dnsaddr.bootstrap.bitllm.org` does not exist yet. Clients fall back to
-  `boot.bitllm.org` and log the failed lookup.
+  Ingress for TCP 4001 and UDP 4001 is open in the VCN and the QUIC dial works.
+- `_dnsaddr.bootstrap.bitllm.org` carries two TXT records (TCP and QUIC) for
+  the seed's peer id. Clients no longer need the `boot.bitllm.org` fallback,
+  which the next release can drop.
 
 ## What you do
 
