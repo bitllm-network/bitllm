@@ -23,7 +23,7 @@ irm https://bitllm.org/install.ps1 | iex
 
 然后浏览器打开 http://127.0.0.1:7778 ，选一个模型，复制给你的 agent 用的配置，点"发送测试消息"确认能用。想手动下载的话，到 Releases 页面下载对应系统的文件（Mac 上请用 curl 下载，避免被系统隔离）。
 
-下面的命令里 `./bitllm` 在 Windows 上换成 `.\bitllm.exe`。
+下面的命令都写 `bitllm`。如果 `~/.local/bin` 不在 PATH 里，就用完整路径 `~/.local/bin/bitllm`；Windows 上用 `& "$env:LOCALAPPDATA\bitllm\bitllm.exe"`。
 
 ## 2. 分享你的 DeepSeek V4.1 Flash 1017
 
@@ -36,7 +36,7 @@ curl -s localhost:8000/v1/models     # 看 "id" 字段，比如 "deepseek-v4.1-f
 大多数情况下不需要映射，直接指向服务就行：
 
 ```bash
-./bitllm --upstream http://localhost:8000/v1 --concurrency 2
+bitllm --upstream http://localhost:8000/v1 --concurrency 2
 ```
 
 它会把服务列出的每个模型按原 id 分享，运行中也会重新读取列表，所以之后新加的模型不用重启。Hugging Face 的 id 保留斜杠和大小写（如 `Qwen/Qwen3.8-Flash-Next`）；同一个仓库在多台机器上分享时，客户端会把它们当成同一个模型，一台下线就换另一台。
@@ -44,7 +44,7 @@ curl -s localhost:8000/v1/models     # 看 "id" 字段，比如 "deepseek-v4.1-f
 只有本地服务叫的名字和网络名字不一样时才需要映射：
 
 ```bash
-./bitllm --upstream http://localhost:8000/v1 \
+bitllm --upstream http://localhost:8000/v1 \
   --model deepseek-v4.1-flash=deepseek-v4.1-flash-1017 --concurrency 2
 ```
 
@@ -75,7 +75,7 @@ curl localhost:7778/v1/chat/completions \
   -d '{"model":"deepseek-v4.1-flash-1017","stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-只想用不想分享，直接运行 `./bitllm` 不带参数即可。自己分享的模型会优先由自己的机器回答，不出本机。
+只想用不想分享，直接运行 `bitllm` 不带参数即可。自己分享的模型会优先由自己的机器回答，不出本机。
 
 ## 4. 访问规则（邀请制内测，PT 站式规则）
 
@@ -90,13 +90,13 @@ curl localhost:7778/v1/chat/completions \
 邀请别人：用浏览器钱包的话，在控制台的 Invite 框里填对方地址；用助记词账户的话：
 
 ```bash
-./bitllm invite 0x对方地址
+bitllm invite 0x对方地址
 ```
 
 **只想分享给自己指定的几个人？** 启动时用 `--allow` 列出他们的节点 ID（每个节点启动时会打印自己的 ID，`curl -s 127.0.0.1:7778/status` 里的 `id` 也是）：
 
 ```bash
-./bitllm --upstream http://localhost:8000/v1 --model ... \
+bitllm --upstream http://localhost:8000/v1 --model ... \
   --allow 12D3KooW...朋友1 --allow 12D3KooW...朋友2
 ```
 
@@ -116,9 +116,9 @@ curl localhost:7778/credits
 积分是记在节点上的。想把自己几台机器的积分合到一个账户下，就把每个节点关联到同一个以太坊地址。这只是签一个名：不发交易、不花 gas、不上链。
 
 ```bash
-./bitllm account new --name 你的名字     # 生成新账户（12 个助记词，务必抄下来），并关联这台机器
-./bitllm account link --name 你的名字    # 在另一台机器上，输入同一组助记词关联
-./bitllm account                        # 查看这台机器归谁
+bitllm account new --name 你的名字     # 生成新账户（12 个助记词，务必抄下来），并关联这台机器
+bitllm account link --name 你的名字    # 在另一台机器上，输入同一组助记词关联
+bitllm account                        # 查看这台机器归谁
 ```
 
 也可以在控制台页面点"Link wallet"，用浏览器钱包（MetaMask、Rabby 等）签名关联。助记词就是账户本身，丢了就找不回来，别人拿到就能冒充你。
@@ -132,10 +132,10 @@ curl localhost:7778/credits
 - 你分享模型时，你服务的客户端也能看到你的 IP。
 - 收据用每次推理临时生成的密钥签名，全网公开的记录里只有"哪个节点干了多少活"，没有"谁问的"。
 - 节点理论上可以用别的模型冒充。启动时加 `--audit` 可以抽查给你干活的节点：偶尔给它发一个探针请求，让另一个节点逐 token 给回答打分，连续不合格的节点 24 小时内不再用于这个模型（`curl -s 127.0.0.1:7778/audits` 看结果）。默认的复核方是我们（维护者）自己跑的节点，用 `--auditor 节点ID` 换掉，`--auditor none` 关掉。能查出换模型、贪心请求下换成 Q4 或更粗的量化；查不出能认出探针的节点、只在采样请求上换量化、复核方说谎或和被查方串通；`--weights` 只是服务方自己声明的权重哈希，节点证明不了。数字和局限见 [audit.md](audit.md)。
-- **在中国大陆连不上或很慢？** 默认的 bootstrap 种子来自 `bootstrap.bitllm.org` 的 DNS 列表，直连经常超时或握手很慢。列表为空或解析不到时，节点会自己起一个网络，并在日志里打印 join code（`bitllm --bootstrap ...`）。bitllm 会读 `HTTPS_PROXY`，有 HTTP 代理的话这样启动就会走代理：
+- **在中国大陆连不上或很慢？** 默认的 bootstrap 种子来自 `bootstrap.bitllm.org` 的 DNS 列表，直连经常超时或握手很慢。列表为空或解析不到时，节点会自己起一个网络，并在日志里打印 join code（`bitllm --bootstrap ...`）。`HTTPS_PROXY` 只对 WebSocket 种子有用，目前只有 `boot.bitllm.org` 是这种种子；DNS 列表里的种子，以及节点之间的 TCP 和 QUIC 连接，都不走代理。有 HTTP 代理的话，这样启动可以经代理连上 `boot`：
 
   ```bash
-  HTTPS_PROXY=http://127.0.0.1:7890 NO_PROXY=127.0.0.1,localhost ./bitllm
+  HTTPS_PROXY=http://127.0.0.1:7890 NO_PROXY=127.0.0.1,localhost bitllm
   ```
 
   `NO_PROXY` 保证本机的连接不走代理。地址换成你自己的代理。
