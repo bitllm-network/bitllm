@@ -540,10 +540,10 @@ already streaming through your relay is cut when it goes down, and the user's ag
   request, and another node (the auditor) scores the answer token by token; a peer that keeps
   failing gets no requests for that model for 24 h (`GET /audits` shows the results). The default
   auditor is a node run by us, the maintainers; `--auditor PEER_ID` replaces it and
-  `--auditor none` drops it. Turning it on does not make cheating impossible:
+  `--auditor none` drops it. An audit is a spot check, not a proof:
   - It finds a server running another model, and a coarser quant (Q4 or below) on greedy requests.
-  - It does not find a server that recognizes canaries (the pool is public), a quant swap on
-    sampled requests only, or a light fine-tune swap such as official weights for heretic.
+  - It does not find a server that recognizes canaries (the prompts are public in the source), a
+    quant swap on sampled requests only, or a light fine-tune swap such as official weights for heretic.
   - An auditor can lie: pass a cheater, or make up bad scores for an honest server. A shuffled
     control catches only an auditor that passes everything. Trusting the seed means trusting us.
   - A server and an auditor run by the same person can pass each other. Nodes of the same claimed
