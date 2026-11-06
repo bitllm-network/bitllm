@@ -7,8 +7,10 @@
 <style>
 /* The dashboard is a small local editor: one window, three numbered steps,
    one model selected, one snippet copied, one test run. Everything above
-   sharing and credits is the path from install to first answer. System
-   fonts only, because this page is served offline from your own machine. */
+   sharing and credits is the path from install to first answer. The fonts
+   are inlined below, because this page is served offline from your own
+   machine and must show the same letters on every OS. */
+/*FONTS*/
 :root {
   --bg: #070707;
   --win: #0b0b0b;
@@ -21,8 +23,8 @@
   --dim: #666666;
   --green: #5ddb96;
   --red: #f08a8a;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "Arimo", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -41,6 +43,9 @@ body {
 :focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
 button { font: inherit; color: inherit; cursor: pointer; }
 code, .mono { font-family: var(--mono); }
+/* Commands must show what you type: two hyphens stay two hyphens. Important,
+   because every `font` shorthand below would reset it. */
+pre, code, pre *, code *, .name, .shared { font-variant-ligatures: none !important; }
 a { color: inherit; }
 
 .window {
@@ -231,6 +236,8 @@ main { padding-bottom: 4px; }
 }
 .copy:hover { color: var(--ink); background: #111; }
 .code { display: flex; overflow-x: auto; font: 12.5px/1.75 var(--mono); }
+/* A bare <pre> gets the browser's monospace, not ours. */
+.code pre { font-family: var(--mono); }
 .gutter {
   position: sticky;
   left: 0;
