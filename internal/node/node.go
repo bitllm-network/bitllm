@@ -98,6 +98,8 @@ type Config struct {
 	SyncStall        time.Duration         // longest a seed may stay silent during a sync; 0 = 30s
 	SyncLimit        time.Duration         // longest one sync from a seed may run; 0 = 5m
 	ModelsTimeout    time.Duration         // longest one read of the upstream's model list may take; 0 = 10s
+	UpstreamTimeout  time.Duration         // longest our server may take to send response headers; 0 = 10m
+	PeerFields       []string              // request fields a peer may send beyond the standard ones (--peer-field)
 	Weights          map[string]string     // public name -> bitllm hash-model of the files our server loads (announced, not proven)
 	Audit            bool                  // spot-check the peers that answer us (audit.go)
 	AuditEvery       int                   // real requests to a peer between its spot checks
@@ -149,6 +151,8 @@ type Node struct {
 	seedStops    map[peer.ID]context.CancelFunc // what startSeed is running, per seed
 	seedValues   map[string][]peer.AddrInfo     // what each --bootstrap value last gave; only refreshSeeds changes it after New
 	http         *http.Client
+	timers       serveTimers
+	gate         requestGate
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
 	inflight     atomic.Int32
@@ -266,6 +270,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.ModelsTimeout <= 0 {
 		cfg.ModelsTimeout = 10 * time.Second
 	}
+	if cfg.UpstreamTimeout <= 0 {
+		cfg.UpstreamTimeout = 10 * time.Minute
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -303,7 +310,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		stopLoops:   stopLoops,
 		cfg:         cfg,
 		ledger:      ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:        &http.Client{},
+		http:        upstreamClient(cfg.UpstreamTimeout),
+		timers:      newServeTimers(),
+		gate:        requestGate{budget: bodyBudget},
 		peers:       map[peer.ID]*peerInfo{},
 		peerSlots:   map[peer.ID]int32{},
 		ctx:         loops,
@@ -399,8 +408,6 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 				n.setModels(discovered)
 			}
 		}
-		n.host.SetStreamHandler(protocol.InferProto, n.handleInfer)
-		n.host.SetStreamHandler(protocol.InferProto2, n.handleInfer)
 	}
 
 	n.nodeKey = key
@@ -420,9 +427,6 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
 	n.members = members.Open(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
-	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
-	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
-	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
 
 	ps, err := pubsub.NewGossipSub(ctx, n.host)
 	if err != nil {
@@ -492,6 +496,16 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	go n.readAnnounces(ctx, sub)
+
+	// The host is already listening, so handlers go up only now that everything
+	// they use exists.
+	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
+	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
+	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
+	if cfg.Upstream != "" {
+		n.host.SetStreamHandler(protocol.InferProto, n.handleInfer)
+		n.host.SetStreamHandler(protocol.InferProto2, n.handleInfer)
+	}
 
 	if err := n.dht.Bootstrap(ctx); err != nil {
 		return nil, err

@@ -269,6 +269,8 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			}
 		}
 		if n.ownModel(req.Model) {
+			n.localTake()
+			defer n.localDone()
 			resp, stream, err := n.callUpstream(r.Context(), path, body)
 			if err != nil {
 				pe := err.(*peerError)
