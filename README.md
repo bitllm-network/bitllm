@@ -41,8 +41,9 @@ Four jobs, one binary:
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
-- **A public relay** is a node with inbound TCP and UDP 4001: start it with
-  `--public`. It answers DHT queries and relays for NATed peers, but still
+- **A public relay** is a serving node with inbound TCP and UDP 4001: add
+  `--public`. It must serve a model, because only a serving node announces.
+  It answers DHT queries and relays for NATed peers, but still
   joins the default seeds, so it needs no DNS record. Its announce carries
   `relay=true`; autorelay adds it as a candidate, so a NATed node reserves on
   the seed and on public relays instead of only on the seed.
@@ -350,8 +351,8 @@ directory to start over with a new identity.
 Every job you serve earns credits (prompt tokens / 4 + completion tokens), proven by a receipt:
 the client signs what it received (model, token counts, SHA-256 of the exact response bytes),
 your node checks it against what it sent and countersigns, and the receipt is gossiped to the
-whole network. The client signs with a one-off key per job, so a receipt shows which server did
-the work but not who asked for it. Credits must equal the token formula, and each node accepts at
+whole network. The client signs with a pseudonym, one key per server rotated every 30 days, so a receipt shows which
+server did the work but not who asked for it. That server can link one client's jobs to each other. Credits must equal the token formula, and each node accepts at
 most 120 receipts a minute per server (600 overall) from gossip. Any node can verify both
 signatures and recompute everyone's credits:
 
@@ -452,12 +453,13 @@ A public host that should help but does not need to be a first contact runs as a
 
 ```bash
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. Its
-announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
+It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. It must
+serve a model, because only a serving node announces. Its announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
 capacity grows without adding DNS entries. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving
 node this way.
 
@@ -558,4 +560,5 @@ instructions for AI agents). Brand assets live in
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The dashboard bundles the JetBrains Mono and Arimo fonts under the SIL Open
+Font License 1.1; their notices and license are in [internal/assets/fonts.css](internal/assets/fonts.css).

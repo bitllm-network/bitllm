@@ -58,7 +58,7 @@ class NetworkKVTest(unittest.TestCase):
         self.assertEqual(len(argv_lines), 2, calls)
         self.assertNotIn("secret-token", "\n".join(argv_lines))
         self.assertIn('header = "Authorization: Bearer secret-token"', calls)
-        self.assertIn("accounts/acct/storage/kv/namespaces/NS/values/network?expiration_ttl=600", argv_lines[1])
+        self.assertIn("accounts/acct/storage/kv/namespaces/NS/values/network?expiration_ttl=3600", argv_lines[1])
         self.assertIn("-K -", argv_lines[1])
 
 
