@@ -192,8 +192,8 @@ to KV. Without a third argument it loops every two minutes, for an always-on
 host; with `once` it publishes one snapshot and exits non-zero if the upload
 fails.
 
-The uploader is now the scheduled workflow `.github/workflows/network-map.yml`
-in `bitllm-org/bitllm`, which runs every ten minutes:
+The uploader is now the workflow `.github/workflows/network-map.yml` in
+`bitllm-org/bitllm`:
 
 1. Download the latest release and verify its checksum.
 2. Start a client node with no upstream and no inbound ports
@@ -204,12 +204,24 @@ in `bitllm-org/bitllm`, which runs every ten minutes:
 Ten minutes is 144 writes a day, under the free tier limit of 1,000. The
 value holds counts per model and per cell, with no peer ids or addresses.
 
+GitHub's own cron for a repository this young never fired: a minimal
+five-minute test workflow produced no `schedule` run in a quarter of an hour,
+and `network-map` produced none in ninety minutes. The landing Worker
+therefore carries the real trigger. Its `*/5 * * * *` cron reads the KV value
+and dispatches `network-map` when `updated` is more than fifteen minutes old
+(`src/index.js` in `landing-page`, PR #16). A working GitHub cron still wins,
+and a duplicate run is harmless because the workflow has a concurrency group.
+
 Repository configuration in `bitllm-org/bitllm`:
 
 - variable `CLOUDFLARE_ACCOUNT_ID` = `5119540a40710369f72567699613f12c`
 - variable `NETWORK_KV_NAMESPACE` = `7295150c7ffd436b8e5eb845089d89ce`
 - secret `CLOUDFLARE_API_TOKEN`, currently the shared deploy token; a token
   limited to **Workers KV Storage:Edit** on that account is enough
+
+The `bitllm-landing` Worker has one secret, `GH_DISPATCH_TOKEN`: a fine-grained
+token owned by `bitllm-org`, valid for a year, limited to `bitllm-org/bitllm`
+with **Actions: Read and write**. That is all it needs to dispatch a workflow.
 
 The old laptop unit `bitllm-network-kv.service` is disabled. Its wrapper used
 Wrangler's OAuth login, which expired and made uploads fail; it is kept for
