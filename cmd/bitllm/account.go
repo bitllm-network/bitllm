@@ -155,8 +155,8 @@ const inviteUsage = `bitllm invite: let another account into the network.
   bitllm invite 0xADDRESS            invite an account (asks for your recovery words)
   bitllm invite --revoke 0xADDRESS   remove an account (roots only)
 
-Members invite up to 3 accounts, contributors (served a job in the last 7 days)
-up to 10. Needs this machine's node running, which gossips the signed invite.
+Members invite up to 3 accounts, and up to 10 once their nodes have served.
+Needs this machine's node running, which gossips the signed invite.
 `
 
 func inviteCmd(args []string) {
