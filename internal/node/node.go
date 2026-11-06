@@ -133,7 +133,10 @@ type Node struct {
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
 	self         peer.ID
-	relays       []peer.AddrInfo // bootstrap nodes, which also relay
+	relayMu      sync.RWMutex
+	relays       []peer.AddrInfo                // bootstrap nodes, which also relay; replaced whole, read through seeds
+	seedStops    map[peer.ID]context.CancelFunc // what startSeed is running, per seed
+	seedValues   map[string][]peer.AddrInfo     // what each --bootstrap value last gave; only refreshSeeds changes it after New
 	http         *http.Client
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
@@ -210,7 +213,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// Several addresses of one peer (tcp, quic...) must become one AddrInfo, or
 	// the same node is dialed, synced and used as a relay once per address.
-	bootstrap, err := ResolveBootstrap(ctx, cfg.Bootstrap)
+	seedValues, bootstrap, err := resolveSeeds(ctx, cfg.Bootstrap, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -226,16 +229,17 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// --public keeps the default seed list.
 	public := cfg.DHTServer || cfg.Public
 	n := &Node{
-		cfg:       cfg,
-		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:      &http.Client{},
-		peers:     map[peer.ID]*peerInfo{},
-		peerSlots: map[peer.ID]int32{},
-		ctx:       ctx,
-		self:      self,
-		relays:    bootstrap,
-		models:    cfg.Models,
-		started:   time.Now(),
+		cfg:        cfg,
+		ledger:     ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
+		http:       &http.Client{},
+		peers:      map[peer.ID]*peerInfo{},
+		peerSlots:  map[peer.ID]int32{},
+		ctx:        ctx,
+		self:       self,
+		relays:     bootstrap,
+		seedValues: seedValues,
+		models:     cfg.Models,
+		started:    time.Now(),
 	}
 	// A caller that supplied a map (--model, or a test) pinned it. Only a
 	// node that discovered its models keeps re-reading them from upstream.
@@ -257,7 +261,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
 			n.dht, err = dht.New(h, dht.Mode(mode), dht.ProtocolPrefix("/bitllm"),
-				dht.BootstrapPeers(bootstrap...))
+				dht.BootstrapPeersFunc(n.seeds))
 			return n.dht, err
 		}),
 	}
@@ -421,6 +425,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.joinSeeds(ctx)
 	go n.redialLoop(ctx)
+	if len(cfg.Bootstrap) > 0 {
+		go n.reseedLoop(ctx)
+	}
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
 	}
@@ -526,15 +533,8 @@ func relayResources(behindProxy bool, reservations int) relay.Resources {
 // after that failure the rendezvous advertise sits out two minutes and
 // provideLoop 15 seconds.
 func (n *Node) joinSeeds(ctx context.Context) {
-	for _, ai := range n.relays {
-		go func() {
-			c, cancel := context.WithTimeout(ctx, seedConnectTimeout)
-			if err := n.host.Connect(c, ai); err != nil {
-				log.Printf("bootstrap %s: %v", ai.ID, err)
-			}
-			cancel()
-			n.syncLoop(ctx, ai.ID)
-		}()
+	for _, ai := range n.seeds() {
+		n.startSeed(ctx, ai)
 	}
 	for deadline := time.Now().Add(seedConnectTimeout); n.dht.RoutingTable().Size() == 0 && time.Now().Before(deadline); {
 		select {
@@ -932,7 +932,7 @@ func (n *Node) redialLoop(ctx context.Context) {
 			return
 		case <-time.After(n.cfg.RedialEvery):
 		}
-		for _, ai := range n.relays {
+		for _, ai := range n.seeds() {
 			if n.host.Network().Connectedness(ai.ID) == network.Connected {
 				continue
 			}
@@ -1053,15 +1053,16 @@ func (n *Node) relaySource(_ context.Context, num int) <-chan peer.AddrInfo {
 	}
 	pubs := n.publicRelays()
 	rand.Shuffle(len(pubs), func(i, j int) { pubs[i], pubs[j] = pubs[j], pubs[i] })
+	seeds := n.seeds()
 	var order []peer.AddrInfo
-	if len(n.relays) > 0 {
-		order = append(order, n.relays[0])
+	if len(seeds) > 0 {
+		order = append(order, seeds[0])
 	}
 	if len(pubs) > 0 {
 		order = append(order, pubs[0])
 	}
-	if len(n.relays) > 1 {
-		order = append(order, n.relays[1:]...)
+	if len(seeds) > 1 {
+		order = append(order, seeds[1:]...)
 	}
 	if len(pubs) > 1 {
 		order = append(order, pubs[1:]...)
@@ -1106,7 +1107,7 @@ func (n *Node) publicRelays() []peer.AddrInfo {
 // seeds first, then public peers, capped so one peer's address list does not
 // explode. Used for peers found through the DHT.
 func (n *Node) relayInfos(limit int) []peer.AddrInfo {
-	all := append([]peer.AddrInfo(nil), n.relays...)
+	all := append([]peer.AddrInfo(nil), n.seeds()...)
 	all = append(all, n.publicRelays()...)
 	if limit <= 0 || limit > len(all) {
 		limit = len(all)
@@ -1194,7 +1195,7 @@ func (n *Node) Addrs() []string {
 // empty when no --bootstrap was given or when the DNS seed list did not
 // resolve, which is what lets cmd/bitllm print a join code instead.
 func (n *Node) Seeds() []peer.AddrInfo {
-	return append([]peer.AddrInfo(nil), n.relays...)
+	return append([]peer.AddrInfo(nil), n.seeds()...)
 }
 
 // ListenAddrs is where the p2p host accepts connections: TCP and QUIC on every

@@ -70,7 +70,9 @@ seeds and, after it hears their announces, on public relays that say
 `relay=true`. The DHT replicates its records across the seeds and public
 serving nodes as well.
 
-Adding or retiring a seed is a DNS change, not a release. Adding a public
+Adding or retiring a seed is a DNS change, not a release. From `v0.5.0` a running
+node reads the list again about once an hour, connects to a new seed and syncs
+from it, without a restart. If DNS fails, it keeps the list it has. Adding a public
 relay is not even a DNS change: it joins through the seeds and becomes a
 candidate through its announce. A new node needs only one seed to
 join, and existing nodes keep their direct connections and their other relay

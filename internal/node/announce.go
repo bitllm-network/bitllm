@@ -109,10 +109,11 @@ func relayAddrs(in []ma.Multiaddr, local bool) []ma.Multiaddr {
 // onLocalNetwork reports whether every seed we were given has a private address,
 // as on a LAN or in a test. The public network always has a public seed.
 func (n *Node) onLocalNetwork() bool {
-	if len(n.relays) == 0 {
+	seeds := n.seeds()
+	if len(seeds) == 0 {
 		return false
 	}
-	for _, ai := range n.relays {
+	for _, ai := range seeds {
 		for _, a := range ai.Addrs {
 			if manet.IsPublicAddr(a) {
 				return false
