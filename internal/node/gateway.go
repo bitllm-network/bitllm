@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -156,7 +157,12 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		}
 
 		// Our own model: private and free, no network hop. While our server
-		// is down, peers serving the same model answer instead.
+		// is down the request stays here too, unless the operator chose to
+		// let peers, who can read it, answer instead.
+		if _, ours := n.upstreamModel(req.Model); ours && !n.upOK.Load() && !n.cfg.PeerFallback {
+			jsonErr(w, 503, fmt.Sprintf("your own model server is down, so this request for %q went nowhere; start it, or run bitllm with --peer-fallback to send such requests to peers (they can read them)", req.Model))
+			return
+		}
 		if n.ownModel(req.Model) {
 			resp, stream, err := n.callUpstream(r.Context(), path, body)
 			if err != nil {

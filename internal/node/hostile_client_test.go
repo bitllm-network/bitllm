@@ -993,3 +993,43 @@ func TestStartupWaitEnds(t *testing.T) {
 		}
 	})
 }
+
+// downOwnServer is a node that serves m from a model server that is not running.
+func downOwnServer(t *testing.T, cfg Config) *Node {
+	t.Helper()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	cfg.Upstream = dead.URL + "/v1"
+	cfg.Models = map[string]string{"m": "local-m"}
+	return testNode(t, t.Context(), cfg)
+}
+
+// While our own server is down, a request for its model reaches no peer.
+func TestOwnModelStaysLocal(t *testing.T) {
+	n := downOwnServer(t, Config{})
+	gw := gatewayOf(t, n)
+	sp := addScriptedPeer(t, n, "m", 1, honestAnswer)
+	for _, path := range []string{chatPath, messagePath} {
+		got, _, body, err := ask(t, gw, path, chatBody)
+		if err != nil || got != 503 {
+			t.Fatalf("%s: got %d %q, %v", path, got, body, err)
+		}
+		if msg := errorMessage(t, body); !strings.Contains(msg, "your own model server is down") || !strings.Contains(msg, "--peer-fallback") {
+			t.Fatalf("%s: message %q", path, msg)
+		}
+	}
+	if s := sp.streams.Load(); s != 0 {
+		t.Fatalf("%d streams reached the peer", s)
+	}
+}
+
+// With --peer-fallback, a peer answers while our own server is down.
+func TestPeerFallback(t *testing.T) {
+	n := downOwnServer(t, Config{PeerFallback: true})
+	gw := gatewayOf(t, n)
+	sp := addScriptedPeer(t, n, "m", 1, honestAnswer)
+	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != sp.id.String() {
+		t.Fatalf("got %d %q, %v", got, body, err)
+	}
+}

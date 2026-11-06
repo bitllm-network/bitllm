@@ -93,6 +93,7 @@ type Config struct {
 	AuditServe       bool                  // announce the models our server can score, so others may use us as an auditor
 	Location         string                // coarse geohash cell for the node map (network.go); empty = not shown
 	UpdateStatus     func() map[string]any // what the updater reports, for GET /status; nil = no updater
+	PeerFallback     bool                  // while our own server is down, send requests for its models to peers
 }
 
 // peerInfo is one peer's latest announce and when we heard it. The announce
