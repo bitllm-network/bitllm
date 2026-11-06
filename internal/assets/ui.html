@@ -493,9 +493,8 @@ footer .right { margin-left: auto; }
             <p class="note" style="margin-top:8px">Peers can use these now. Every job you serve earns credits.</p>
           </div>
           <div id="share-off" hidden>
-            <p class="note" style="margin-top:0">You're not sharing a model. If you run vLLM, SGLang, llama.cpp or Ollama, restart BitLLM pointed at it:</p>
-            <pre class="cmd">bitllm --upstream http://localhost:8000/v1 \
-  --model your-name=deepseek-v4.1-flash-1017</pre>
+            <p class="note" style="margin-top:0">You're not sharing a model. If you run vLLM, SGLang, llama.cpp or Ollama, start (or restart) BitLLM pointed at it. Every model it lists is shared under its own id; <code>--model local=public</code> is only for renaming one:</p>
+            <pre class="cmd">bitllm --upstream http://localhost:8000/v1</pre>
           </div>
         </section>
         <section class="panel">

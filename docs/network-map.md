@@ -1,8 +1,8 @@
 # Node map
 
 Every node can report a live picture of the network: roughly where the serving nodes are and what
-they serve. This page says where that data comes from and what it does not reveal. The public map
-at bitllm.org is offline for now; the data is still served at `GET /network` on every node.
+they serve. This page says where that data comes from and what it does not reveal. The map at
+bitllm.org is a snapshot of one node's `GET /network`, published every two minutes.
 
 ## Where the location comes from
 
@@ -57,9 +57,17 @@ cut finer cells down to 3 characters, so the format can change later without bre
 
 ## Publishing it
 
-The map is paused. It needed an always-on node to copy its `/network` into Cloudflare KV, and that
-was one more moving part than the beta needed. `GET /network` on any node still returns the same
-aggregate, so the map can come back without changing the wire format or the node code.
+An always-on node copies its own `/network` into Cloudflare KV:
 
-When it returns, the landing page source is
+```sh
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
+  scripts/network-kv.sh http://127.0.0.1:7778 NAMESPACE_ID
+```
+
+The Worker behind bitllm.org answers `/network.json` from the `network` key in that namespace.
+The uploader never accepts inbound requests, and the token only needs Workers KV Storage:Edit.
+Two minutes is 720 writes a day, under the free tier limit of 1,000. The landing page fetches the
+snapshot once a minute; if the key is empty it shows an empty network instead of failing.
+
+The landing page source is
 [bitllm-org/landing-page](https://github.com/bitllm-org/landing-page).

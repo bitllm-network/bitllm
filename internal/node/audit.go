@@ -664,7 +664,7 @@ func (a *audits) rank(p peer.ID, model string) (excluded, demoted bool) {
 // auditor.
 func (n *Node) probeScoring(ctx context.Context) []string {
 	var out []string
-	for public := range n.cfg.Models {
+	for _, public := range n.modelNames() {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		resp, _, err := n.callUpstream(ctx, "/chat/completions",
 			canaryBody(public, "Say hello.", "Hello! How can I help you today?", false, sampler{}))

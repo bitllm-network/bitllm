@@ -20,8 +20,9 @@ inbound, and you are fine publishing its address.
 - The OpenAI-compatible server is running locally. Its base URL is usually
   `http://127.0.0.1:8000/v1` for vLLM and `http://127.0.0.1:11434/v1` for
   Ollama.
-- You know the model names. Use the canonical names from the README table, or
-  nobody will find the model.
+- You know the model names. For a public model, use its exact Hugging Face
+  repo id; there is no central registration. A private model can use any
+  stable name. See the naming rules in the README.
 - You can run commands as root (sudo).
 
 ## Step 1 (only if this host should be a public relay): can it accept inbound?
@@ -68,8 +69,9 @@ sudo bash gpu-host.sh latest http://127.0.0.1:8000/v1 deepseek-v4.1-flash-1017
 
 The three arguments are version (`latest`), the upstream base URL, and an
 optional model name (`local-name=public-name` if they differ). Without a model
-name, every model the server lists is shared under its own name. To share more
-than one, add another `--model` to `/etc/bitllm/host.env` and
+name, every model the server lists is shared under exactly the id it reports,
+and the node re-reads the list while it runs. To share a subset, or to rename
+a local model, add `--model` to `/etc/bitllm/host.env` and
 `systemctl restart bitllm-host`.
 
 For a host that can accept inbound and should help as a **public relay**:
@@ -166,7 +168,8 @@ not a seed needs no DNS entry.
 - **The upstream is not on `127.0.0.1`.** Pass its real base URL, for example
   `http://10.0.0.5:8000/v1`. The node runs as the `bitllm` user, so check that
   the address is reachable from the host itself.
-- **Model not found by clients.** The shared name must be a canonical name.
-  See the table in the README.
+- **Model not found by clients.** The shared name must match what clients
+  send. For a public model that should be the exact Hugging Face repo id; for
+  a private model, any stable name works. See the naming rules in the README.
 - **No public IP at all.** Keep `PUBLIC=0`. The host joins through the default
   seeds and is reached by relay or hole punching.

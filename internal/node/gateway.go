@@ -101,7 +101,7 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 
 func (n *Node) listModels(w http.ResponseWriter, r *http.Request) {
 	nodes := map[string]int{}
-	for m := range n.cfg.Models {
+	for _, m := range n.modelNames() {
 		if n.ownModel(m) {
 			nodes[m]++
 		}
@@ -242,11 +242,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 }
 
 func (n *Node) status(w http.ResponseWriter, r *http.Request) {
-	serving := []string{}
-	for m := range n.cfg.Models {
-		serving = append(serving, m)
-	}
-	sort.Strings(serving)
+	serving := n.modelNames()
 	conns := []map[string]any{}
 	for _, c := range n.host.Network().Conns() {
 		conns = append(conns, map[string]any{

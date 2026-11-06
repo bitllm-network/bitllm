@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -52,6 +53,7 @@ type Config struct {
 	Upstream         string                // OpenAI-compatible base URL to share; empty = client only
 	UpstreamKey      string                //
 	Models           map[string]string     // public name -> upstream name; empty = discover
+	ModelsFixed      bool                  // Models came from --model; do not replace them from upstream
 	Concurrency      int                   //
 	Listen           []string              // libp2p listen multiaddrs
 	Bootstrap        []string              // multiaddrs with /p2p/ID
@@ -119,6 +121,8 @@ type Node struct {
 	self         peer.ID
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
+	modelMu      sync.RWMutex
+	models       map[string]string // public name -> upstream name; replaced whole, never mutated
 	inflight     atomic.Int32
 	upOK         atomic.Bool                       // upstream answered its last health check
 	lastAnn      atomic.Pointer[protocol.Announce] // what announceLoop last gossiped (GET /network counts us too)
@@ -195,8 +199,12 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		peerSlots: map[peer.ID]int32{},
 		self:      self,
 		relays:    bootstrap,
+		models:    cfg.Models,
 		started:   time.Now(),
 	}
+	// A caller that supplied a map (--model, or a test) pinned it. Only a
+	// node that discovered its models keeps re-reading them from upstream.
+	n.cfg.ModelsFixed = n.cfg.ModelsFixed || len(cfg.Models) > 0
 	mode := dht.ModeAutoServer
 	if public {
 		mode = dht.ModeServer
@@ -262,9 +270,15 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	if cfg.Upstream != "" {
-		if len(n.cfg.Models) == 0 {
-			if n.cfg.Models, err = n.discoverModels(ctx); err != nil {
-				return nil, fmt.Errorf("upstream %s: %w", cfg.Upstream, err)
+		if len(n.modelMap()) == 0 {
+			// A model server that is still starting is not fatal: the
+			// announce loop keeps looking and shares its models when it
+			// answers.
+			discovered, err := n.discoverModels(ctx)
+			if err != nil {
+				log.Printf("upstream %s: %v (will retry)", cfg.Upstream, err)
+			} else {
+				n.setModels(discovered)
 			}
 		}
 		n.host.SetStreamHandler(protocol.InferProto, n.handleInfer)
@@ -381,7 +395,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
 		go n.announceLoop(ctx)
-		go n.provideLoop(ctx, mapKeys(n.cfg.Models))
+		go n.provideLoop(ctx)
 	}
 	return n, nil
 }
@@ -506,13 +520,9 @@ func (n *Node) discoverLoop(ctx context.Context) {
 // clients stop routing to it within three announce periods, and comes back on
 // the first check that passes.
 func (n *Node) announceLoop(ctx context.Context) {
-	models := make([]string, 0, len(n.cfg.Models))
-	for m := range n.cfg.Models {
-		models = append(models, m)
-	}
-	sort.Strings(models)
 	var scorable []string
 	probed := false
+	lastModels := time.Time{}
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
@@ -521,7 +531,21 @@ func (n *Node) announceLoop(ctx context.Context) {
 			if ok != n.upOK.Swap(ok) {
 				log.Printf("upstream %s: up=%v", n.cfg.Upstream, ok)
 			}
+			// A model server can add a model while we run (a new vLLM
+			// deployment, a second model on the same host). Re-read the
+			// list until the operator pins it with --model, so the network
+			// sees the new model without a restart.
+			if ok && !n.cfg.ModelsFixed && time.Since(lastModels) >= 30*time.Second {
+				if m, err := n.discoverModels(ctx); err != nil {
+					log.Printf("upstream %s: %v", n.cfg.Upstream, err)
+				} else if !maps.Equal(m, n.modelMap()) {
+					n.setModels(m)
+					log.Printf("upstream models changed: %v", mapKeys(m))
+				}
+				lastModels = time.Now()
+			}
 		}
+		models := n.modelNames()
 		free := n.cfg.Concurrency - int(n.inflight.Load())
 		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
 		if n.upOK.Load() {
@@ -562,9 +586,38 @@ func (n *Node) checkUpstream(ctx context.Context) bool {
 	return resp.StatusCode/100 == 2
 }
 
+// modelMap returns the current public -> upstream map. The map is replaced
+// whole, never mutated, so a caller may keep reading it after the lock is
+// released.
+func (n *Node) modelMap() map[string]string {
+	n.modelMu.RLock()
+	defer n.modelMu.RUnlock()
+	return n.models
+}
+
+// setModels replaces the map atomically with respect to readers.
+func (n *Node) setModels(m map[string]string) {
+	n.modelMu.Lock()
+	n.models = m
+	n.modelMu.Unlock()
+}
+
+// modelNames returns the public names we serve, sorted.
+func (n *Node) modelNames() []string {
+	return mapKeys(n.modelMap())
+}
+
+// upstreamModel maps a public name to the name our local server knows.
+func (n *Node) upstreamModel(public string) (string, bool) {
+	n.modelMu.RLock()
+	defer n.modelMu.RUnlock()
+	up, ok := n.models[public]
+	return up, ok
+}
+
 // ownModel reports whether we answer model ourselves right now.
 func (n *Node) ownModel(model string) bool {
-	_, ok := n.cfg.Models[model]
+	_, ok := n.upstreamModel(model)
 	return ok && n.upOK.Load()
 }
 
@@ -636,11 +689,11 @@ func modelKey(model string) cid.Cid {
 // refreshes the records often: they expire after 24 h, a refresh repairs a
 // record lost when the DHT had no peers yet, and a bootstrap restart wipes
 // the DHT, so a two minute refresh keeps cold clients able to find us.
-func (n *Node) provideLoop(ctx context.Context, models []string) {
+func (n *Node) provideLoop(ctx context.Context) {
 	every := 2 * time.Minute
 	for {
 		ok := true
-		for _, m := range models {
+		for _, m := range n.modelNames() {
 			pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			if err := n.dht.Provide(pctx, modelKey(m), true); err != nil {
 				log.Printf("dht provide %s: %v", m, err)
@@ -926,6 +979,9 @@ func (n *Node) discoverModels(ctx context.Context) (map[string]string, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("GET /models: %s", resp.Status)
+	}
 	var body struct {
 		Data []struct{ ID string } `json:"data"`
 	}

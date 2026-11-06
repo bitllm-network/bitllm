@@ -135,18 +135,19 @@ While it runs, `bitllm top` in another terminal shows peers, work exchanged and 
 
 ## Share a model
 
-You need an OpenAI-compatible server already running on this machine. Point the node at it and
-give the model its network name:
+You need an OpenAI-compatible server on this machine. Point the node at it:
 
 ```bash
-bitllm --upstream http://localhost:8000/v1 \
-  --model <your-served-name>=deepseek-v4.1-flash-1017 \
-  --concurrency 2
+bitllm --upstream http://localhost:8000/v1 --concurrency 2
 ```
 
-- `--model local=public`: the name on the left is what your server calls the model, the name on
-  the right is the network name. **Use the canonical names below** or nobody will find your model.
-- Without `--model`, every model your server lists is shared under its own name.
+- Without `--model`, every model your server lists is shared under exactly the id it reports. A
+  Hugging Face id such as `Qwen/Qwen3.8-Flash-Next` keeps its slash and its case. The node
+  re-reads the list while it runs, so a model added to vLLM later appears without restarting
+  BitLLM.
+- `--model local=public`: use this only when your server's local name is not the name the
+  network should use. The name on the left is what your server calls the model; the name on the
+  right is the network name.
 - `--concurrency`: how many requests you serve at once. Extra requests wait in this node's queue,
   in order of access class, which improves one step every 20 seconds as a request waits, but never
   past the best class; after that, arrival decides, so the longest wait goes first among equals.
@@ -159,12 +160,29 @@ bitllm --upstream http://localhost:8000/v1 \
   keeps long sessions working. Nothing to set; restart the node after you change the cap.
 - `--location LAT,LON` (optional): declare a coarse location for the network map. Give any point in
   your city, e.g. `--location 52.52,13.40`; the node announces only a cell of about 150 km, never the
-  point. The map is offline for now, so this only shows in `GET /network`. Without it your node is
-  counted as "no location". Details: [docs/network-map.md](docs/network-map.md).
+  point. The map at bitllm.org shows only nodes that opted in. Without it your node is counted as
+  "no location". Details: [docs/network-map.md](docs/network-map.md).
 
 Every flag is listed by `bitllm --help`.
 
-### Canonical model names
+### Model names
+
+A network name is just the `model` string clients send. Two machines that announce the same
+string are interchangeable for it: the gateway picks one, and if it stops answering it tries
+another. The name must identify the weights, not the machine.
+
+1. **A public model uses its exact Hugging Face repo id.** `Qwen/Qwen3.8-Flash-Next`, with the
+   slash and the case as published. Independent hosts that serve the same repo match without a
+   central registry, and one can replace another when it goes down.
+2. **A fine-tune or quant uses the repo id of the actual weights**, if it has one; otherwise the
+   base model plus a suffix that says what changed. Append the suffix to the repo id, for example
+   `Qwen/Qwen3.8-Flash-Next-fp4-alesha`.
+3. **A private or brand-new model can use any stable name.** Nothing has to be registered first:
+   the node announces it, `GET /v1/models` lists it, and the dashboard lets a user pick it. Use
+   `--model` only when the name the server reports locally is not the name clients should send.
+
+The table below lists the short names the beta has used for its reference models. They are not a
+gate; any id is accepted.
 
 | network name | weights |
 |---|---|
@@ -173,21 +191,23 @@ Every flag is listed by `bitllm --help`.
 | `qwen3.8-flash-next-fp4-alesha` | Qwen3.8 Flash-Next, NVIDIA FP4-Local quant, alesha uncensored fine-tune |
 | `qwen3.8-flash-next-nvfp4-lil` | Qwen3.8 Flash-Next, official weights, local-inference-lab NVFP4-MXFP8-CSF-QAD quant (served with NVIDIA Flare: fixed sampling, temperature 1.0 / top-p 0.95 / top-k 20) |
 
-Same name must mean same weights. Add a row (PR or issue) before sharing a new model.
+Same name must mean same weights. A Hub id is the simplest way to make that true across
+operators.
 
-**How names are built:** `<model>[-<quant>][-<source>]`, lowercase, joined with hyphens.
+**How names are built:** `<model>[-<quant>][-<source>]`, joined with hyphens; the model part keeps
+the case and slashes of its Hugging Face repo id.
 
 | part | what it says | when to leave it out | examples |
 |---|---|---|---|
-| model | the base model and release, as its maker names it | never | `deepseek-v4.1-flash-1017`, `qwen3.8-flash-next` |
+| model | the base model and release, as its maker names it | never | `Qwen/Qwen3.8-Flash-Next`, `deepseek-v4.1-flash-1017` |
 | quant | the weight format, if not the maker's own release | official weights as released | `fp4`, `nvfp4`, `int4`, `q4_k_m` |
 | source | who changed the weights: fine-tune name, or the group that made the quant | official weights as released | `heretic`, `alesha`, `lil` |
 
 How a server runs the model (vLLM or SGLang, context length, fixed sampling) does not change the
-name; note it in the table instead. To register a name, open an issue with: the base model, where
-the weights come from (link), the quant format and who made it, and anything a client should know
-(fixed sampling, context length, image support). Your server's address is never needed: nodes find
-each other on the network.
+name; note it in the table instead. To add a reference name, open an issue with: the base model,
+where the weights come from (link), the quant format and who made it, and anything a client
+should know (fixed sampling, context length, image support). Your server's address is never
+needed: nodes find each other on the network.
 
 ## Use the network
 

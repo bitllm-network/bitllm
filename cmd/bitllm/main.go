@@ -200,7 +200,7 @@ func main() {
 	)
 	flag.StringVar(&cfg.Upstream, "upstream", "", "OpenAI-compatible base URL to share, e.g. http://localhost:8080/v1 (empty: use the network only)")
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
-	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model)")
+	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model, refreshed while the node runs)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
 	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3..., or a /dnsaddr/ seed name (repeatable; default: the DNS seed list plus boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
@@ -305,6 +305,7 @@ func main() {
 			}
 			cfg.Models[public] = local
 		}
+		cfg.ModelsFixed = true
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -341,7 +342,11 @@ func main() {
 		}
 	}
 	if cfg.Upstream != "" {
-		log.Printf("sharing %v from %s", cfg.Models, cfg.Upstream)
+		if len(cfg.Models) > 0 {
+			log.Printf("sharing %v from %s", cfg.Models, cfg.Upstream)
+		} else {
+			log.Printf("sharing every model from %s (refreshed while the node runs)", cfg.Upstream)
+		}
 	}
 	if cfg.Audit {
 		if len(cfg.Auditors) > 0 && len(auditors) == len(node.DefaultAuditors) && auditors[0] == node.DefaultAuditors[0] {

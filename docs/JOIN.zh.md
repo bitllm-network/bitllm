@@ -33,16 +33,23 @@ irm https://bitllm.org/install.ps1 | iex
 curl -s localhost:8000/v1/models     # 看 "id" 字段，比如 "deepseek-v4.1-flash"
 ```
 
-然后把这个名字映射成网络里的统一名字：
+大多数情况下不需要映射，直接指向服务就行：
+
+```bash
+./bitllm --upstream http://localhost:8000/v1 --concurrency 2
+```
+
+它会把服务列出的每个模型按原 id 分享，运行中也会重新读取列表，所以之后新加的模型不用重启。Hugging Face 的 id 保留斜杠和大小写（如 `Qwen/Qwen3.8-Flash-Next`）；同一个仓库在多台机器上分享时，客户端会把它们当成同一个模型，一台下线就换另一台。
+
+只有本地服务叫的名字和网络名字不一样时才需要映射：
 
 ```bash
 ./bitllm --upstream http://localhost:8000/v1 \
-  --model deepseek-v4.1-flash=deepseek-v4.1-flash-1017 \
-  --concurrency 2
+  --model deepseek-v4.1-flash=deepseek-v4.1-flash-1017 --concurrency 2
 ```
 
-- 等号左边是你本地的名字，右边是网络统一名字。**官方权重一律用 `deepseek-v4.1-flash-1017`**，去审查版用 `deepseek-v4.1-flash-1017-heretic`。Qwen3.8 Flash-Next 的 NVIDIA FP4-Local 量化 + alesha 去审查微调版用 `qwen3.8-flash-next-fp4-alesha`；local-inference-lab 的 NVFP4-MXFP8-CSF-QAD 量化版用 `qwen3.8-flash-next-nvfp4-lil`。名字不对，别人就找不到你。
-- 命名规则：`模型[-量化][-来源]`，全小写，用连字符连接。模型 = 基础模型和版本（如 `qwen3.8-flash-next`）；量化 = 权重格式（`fp4`、`nvfp4`、`int4`）；来源 = 谁改的权重（微调名，或做量化的团队，如 `alesha`、`lil`）。官方原版权重不加量化和来源。用 vLLM 还是 SGLang、上下文多长不影响名字。新模型先在 GitHub 提 issue 登记，写清基础模型、权重来源链接、量化格式和谁做的、使用注意事项（比如采样参数固定）；不需要提供你服务器的地址。
+- 等号左边是你本地的名字，右边是网络名字。官方权重用 `deepseek-v4.1-flash-1017`，去审查版用 `deepseek-v4.1-flash-1017-heretic`；Qwen3.8 Flash-Next 的 NVIDIA FP4-Local 量化 + alesha 去审查微调版用 `qwen3.8-flash-next-fp4-alesha`，local-inference-lab 的 NVFP4-MXFP8-CSF-QAD 量化版用 `qwen3.8-flash-next-nvfp4-lil`。
+- 命名规则：公开模型用 Hugging Face 原 id；微调或量化用实际权重的仓库 id，没有就在后面接 `-量化-来源`。私有或全新的模型随便取一个稳定的名字，节点会自动广播，客户端在 `/v1/models` 和 dashboard 里就能选。同一个名字必须对应同一套权重。
 - `--concurrency` 是同时接几个请求，按你机器的余量填。多出来的请求留在这个节点的队列里等，先按访问等级、再按到达顺序轮；等久了等级每 20 秒升一级，最多升到最高的一级，之后按到达顺序，所以等得最久的排在最前面。队列满了直接拒绝，不让客户端反复重试。
 
 看到 `sharing map[...]` 和 `gateway http://127.0.0.1:7778/v1` 就说明接上了。

@@ -234,7 +234,7 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 		return nil, false, &peerError{400, "bad json"}
 	}
 	model, _ := body["model"].(string)
-	up, ok := n.cfg.Models[model]
+	up, ok := n.upstreamModel(model)
 	if !ok {
 		return nil, false, &peerError{404, fmt.Sprintf("model %q not served here", model)}
 	}
