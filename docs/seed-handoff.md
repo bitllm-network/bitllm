@@ -1,10 +1,11 @@
 # Handoff: the first public seed
 
 This is the deployment record for the first seed that does not depend on the
-Mac mini. The seed and its DNS list are live. What remains is the domain move
-after 2026-11-10 and the release that drops the old `boot` seed.
+Mac mini. The seed, its DNS list, the landing site and the map publisher are
+live. What remains is the domain move after 2026-11-10 and the release that
+drops the old `boot` seed.
 
-## Status (2026-11-05, Pacific)
+## Status (2026-11-06, Pacific)
 
 Checked at 22:25 PST (06:25 UTC on 2026-11-06).
 
@@ -21,43 +22,63 @@ Done:
 - `v0.4.6` is the latest release. It has four binaries and `SHA256SUMS`;
   `releases/latest` and the installer both point at it.
 - `bitllm.org` and `www.bitllm.org` are served by the `bitllm-landing` Worker
-  from the `Zjj1993` account. `/network.json` answers from KV and is
-  republished every ten minutes by the `network-map` workflow in
-  `bitllm-org/bitllm`.
-- The landing page and `/docs/` now use the `BitLLM_` wordmark. A push to
-  `landing-page` main deploys from CI: the `check` and `deploy` jobs pass, and
-  the latest deployment was `39e41744-30d0-4870-82eb-7291117335ad` on
-  2026-11-06. The `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets
-  are in that repository.
-- The map uploader no longer runs on this laptop. The scheduled
-  `.github/workflows/network-map.yml` starts a client node, waits for the live
-  announces, and publishes one snapshot to KV. The old
-  `bitllm-network-kv.service` user unit is disabled.
+  from the `Zjj1993` account. `/network.json` answers from KV.
+- The landing page and `/docs/` use the `BitLLM_` wordmark. A push to
+  `landing-page` main deploys from CI: `check` and `deploy` both pass.
+- The map no longer depends on this laptop. The `network-map` workflow starts
+  a client node, waits for the live announces, and writes one snapshot to KV;
+  the landing Worker's five-minute cron dispatches it when the snapshot is
+  stale. The old `bitllm-network-kv.service` user unit is disabled.
 - `data.bitllm.org` no longer resolves. `boot.bitllm.org/` returns 404, but
   the tunnel still carries libp2p and the seed uses it to join.
 
 What is left, in order:
 
-1. **Prepare and move the domain.** The current zone is active in `Zjj1993`
-   (`beau.ns.cloudflare.com`, `gloria.ns.cloudflare.com`). The BitLLM account
-   (`ddf432595b4de0a26d81f3ca7fa43619`) does not have `bitllm.org` yet. The
-   earliest transfer request is **2026-11-10**.
-2. **Cut `v0.4.7` after the move.** Remove the `boot.bitllm.org` literal from
-   `DefaultBootstrap`, update the `--bootstrap` help text, and remove the old
-   tunnel section from `docs/bootstrap.md`. Do this only after `_dnsaddr`
-   answers from the new zone. No `v0.4.7` branch exists yet.
+1. **Prepare the new zone, whenever there is time.** Add `bitllm.org` to the
+   BitLLM account, create the `boot` tunnel there, recreate the records, pick
+   the KV namespace and deploy the Worker (steps 1 to 5 under "Moving the
+   domain"). Nothing in this step changes traffic.
+2. **On 2026-11-10, move the domain.** Request the move in `Zjj1993`, accept
+   it in the BitLLM account within five days, point the registration at the
+   new nameserver pair, then verify from an uncached resolver.
+3. **After the switch, repoint the map.** Both repository variables in
+   `bitllm-org/bitllm` and the KV binding in `landing-page/wrangler.jsonc`
+   move to the new account; set `GH_DISPATCH_TOKEN` on the new Worker, since
+   a Worker secret belongs to one script. Confirm `/network.json` is fresh,
+   then leave the old Worker and KV in place for a few days before stopping
+   the old tunnel.
+4. **Cut `v0.4.7` after `_dnsaddr` answers from the new zone.** Remove the
+   `boot.bitllm.org` literal from `DefaultBootstrap`, update the `--bootstrap`
+   help text, and remove the old tunnel section from `docs/bootstrap.md`. No
+   `v0.4.7` branch exists yet.
+5. **Later, none of it urgent.**
+   - `GH_DISPATCH_TOKEN` expires 2027-11-06. Rotate it before then.
+   - GitHub's `schedule` trigger never fired here, which is why the Worker
+     cron exists. Check once in a while; if GitHub's cron starts working, the
+     Worker cron can go.
+   - Remove `~/.local/bin/bitllm-network-kv` and its disabled unit if the
+     reference copy is no longer useful.
+   - A second seed or public relay removes the single point of failure for a
+     fresh install. See "Second public relay, and a second seed".
 
 ## State when you start
 
 - `bitllm` main has the DNS seed list, the public-relay role, the model
-  refresh and the scheduled `network-map` workflow. The latest release is
-  **v0.4.6**. There are no open PRs or issues.
-- `landing-page` main is `0a76fb0`; its CI deploy last published
-  `39e41744-30d0-4870-82eb-7291117335ad` on 2026-11-06.
+  refresh and the `network-map` workflow. The latest release is **v0.4.6**.
+  There are no open PRs or issues.
+- `landing-page` main is `b663704`; its CI deploy last published Worker
+  deployment `8c2bf622-2e03-478b-90d4-8698ca09e2f4`, and the `check` and
+  `deploy` jobs pass on every push to main.
+- The landing Worker has the cron `*/5 * * * *` and writes one `cron` key to
+  KV per tick with its decision, which is how a silent scheduler shows up.
 - `bitllm-org/bitllm` has repository variables `CLOUDFLARE_ACCOUNT_ID` and
   `NETWORK_KV_NAMESPACE`, and the secret `CLOUDFLARE_API_TOKEN` (currently
   the shared deploy token; Workers KV Storage:Edit is enough). The
   `network-map` workflow reads all three.
+- The two tokens for all of this are on this laptop at
+  `~/.cache/tmp/opencode/cf-ci-token` (Cloudflare; sees both accounts) and
+  `~/.cache/tmp/opencode/gh-dispatch-token` (GitHub, `bitllm` only). Copy
+  them somewhere else before you rely on this machine.
 - The `bitllm.org` zone is in `Zjj1993` (`5119540a40710369f72567699613f12c`).
   The Worker and KV namespace `7295150c7ffd436b8e5eb845089d89ce` are in that
   account.
@@ -201,7 +222,9 @@ The uploader is now the workflow `.github/workflows/network-map.yml` in
 3. Wait until it has heard the live announces, then one more announce round.
 4. Run `scripts/network-kv.sh ... once`.
 
-Ten minutes is 144 writes a day, under the free tier limit of 1,000. The
+One publish is one write. With the Worker's five-minute cron as the only
+trigger that is about 96 publishes a day, plus the cron's own probe key every
+five minutes, so the project sits near 400 of the free tier's 1,000 a day. The
 value holds counts per model and per cell, with no peer ids or addresses.
 
 GitHub's own cron for a repository this young never fired: a minimal
@@ -234,8 +257,10 @@ keep the token in a root-only `EnvironmentFile`. Run one uploader at a time:
 a second two-minute loop adds 720 writes a day.
 
 After the domain move, change both repository variables to the new account's
-values. Update the KV binding in `landing-page/wrangler.jsonc` in the same
-change, so the Worker and the uploader point at the same namespace.
+values, and set `GH_DISPATCH_TOKEN` on the Worker in the new account. A Worker
+secret belongs to one script, so it does not travel with the code. Update the
+KV binding in `landing-page/wrangler.jsonc` in the same change, so the Worker
+and the uploader point at the same namespace.
 
 ## Moving the domain (earliest 2026-11-10)
 
@@ -279,13 +304,13 @@ changes traffic:
    proxied).
 4. Choose the KV namespace. The BitLLM account already has `NETWORK`
    `9c0f72be...` from an earlier deployment; reuse it, or create a new one.
-   Change `landing-page/wrangler.jsonc` to that id, and deploy the current
-   code to the BitLLM account. Check it at
-   `bitllm-landing.bitllm-org.workers.dev`. If the pending zone rejects the
-   routes, deploy with `workers_dev` only and add the routes after the switch.
-   Do not redeploy the current account with the destination KV id; use a
-   separate Wrangler environment if both accounts need deploys during the
-   transition.
+   Change `landing-page/wrangler.jsonc` to that id, deploy the current code
+   to the BitLLM account, and set the Worker's `GH_DISPATCH_TOKEN` secret
+   there. Check it at `bitllm-landing.bitllm-org.workers.dev`. If the pending
+   zone rejects the routes, deploy with `workers_dev` only and add the routes
+   after the switch. Do not redeploy the current account with the destination
+   KV id; use a separate Wrangler environment if both accounts need deploys
+   during the transition.
 5. Lower the TTLs in the old zone. Proxied records are 300 s already.
 6. On 2026-11-10, start the move from the old account's **Manage Domain >
    Configuration**, then accept it from **Manage Domains** in the BitLLM
@@ -295,7 +320,7 @@ changes traffic:
    `/docs/` and `/network.json` work, `boot` reaches the new tunnel,
    `_dnsaddr` returns the seed, and `seed1.bitllm.org:4001` answers.
 9. Make sure the new Worker's routes for `bitllm.org/*` and
-   `www.bitllm.org/*` are active, repoint the map uploader at the new account
+   `www.bitllm.org/*` are active, point the map uploader at the new account
    and namespace, and confirm `/network.json` is fresh. Then stop the old
    tunnel and any Mac-hosted site. Keep the old Worker and KV for a rollback
    until the new map has been fresh for a few days.
@@ -342,9 +367,9 @@ removes the single point of failure for a fresh install.
   network, and do not remove `boot` from `DefaultBootstrap` before `_dnsaddr`
   answers from the new zone and a release with the change is the one clients
   install.
-- Do not run two map uploaders against the same KV key for long. The CI
-  workflow already writes 144 times a day; a second two-minute loop adds 720
-  and the free tier stops at 1,000.
+- Do not run two map uploaders against the same KV key for long. The workflow
+  and its cron already write about 400 keys a day; a second two-minute loop
+  adds 720 and the free tier stops at 1,000.
 - Do not stop the old `boot` tunnel until the new tunnel has the same
   hostname, the new zone is authoritative, and `v0.4.7` is the release clients
   install.

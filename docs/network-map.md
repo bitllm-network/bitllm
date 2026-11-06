@@ -63,8 +63,9 @@ The `network-map` workflow in [bitllm-org/bitllm](https://github.com/bitllm-org/
 client node, waits until it hears the live announces, and copies its `GET /network` into Cloudflare
 KV. Two triggers keep it going: its own ten-minute schedule, and the landing Worker's five-minute
 cron, which dispatches the workflow whenever the snapshot is more than fifteen minutes old. The
-second one is the dependable one; the first makes the cadence tighter when GitHub runs it. That is
-about 144 writes a day, under the free tier limit of 1,000.
+second one is the dependable one; the first makes the cadence tighter when GitHub runs it, so a
+snapshot lands every ten to fifteen minutes. That is 96 to 144 writes a day, well under the free
+tier limit of 1,000.
 
 An always-on node can publish the same key instead:
 
