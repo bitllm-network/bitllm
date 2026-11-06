@@ -126,7 +126,8 @@ type Node struct {
 	servedMu     sync.Mutex         // own lock: memberSet holds accessMu while Compute calls servedSets
 	servedAt     time.Time
 	servedEver   map[string]bool // cached, see servedSets
-	servedRecent map[string]bool
+	servedRecent map[string]bool // cached, see contributors
+	recentAt     time.Time
 	annRate      originRate // announce gossip, per origin
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
@@ -320,6 +321,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
 	n.members = members.Open(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
+	n.wireState()
 	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
 	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
 	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
