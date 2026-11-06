@@ -179,6 +179,44 @@ func gatewayExposed(addr string) bool {
 	return host != "localhost"
 }
 
+// concurrencyWarning is for values announces cannot carry: peers drop this
+// node's announces, so the flag is worth a warning, and never a failed start: a
+// self-updated node that exits at startup comes back and exits again.
+func concurrencyWarning(c int) string {
+	if c >= 1 && c <= 256 {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: --concurrency %d is outside 1 to 256; peers will ignore this node's announces", c)
+}
+
+// logJoinCode says how another machine can join this node.
+func logJoinCode(logf func(string, ...any), addrs []string) {
+	codes := joinAddrs(addrs)
+	if len(codes) == 0 {
+		return
+	}
+	logf("another machine joins it with: bitllm --bootstrap %s", codes[0])
+	for _, a := range codes[1:] {
+		logf("or with another address: bitllm --bootstrap %s", a)
+	}
+}
+
+// joinCodeAfter logs the join code once, if no seed has connected after wait.
+// Seeds resolve to something by default, so an empty list says little: a node
+// cut off from all of them is the one that needs another way in.
+func joinCodeAfter(ctx context.Context, wait time.Duration, connected func() bool, addrs func() []string, logf func(string, ...any)) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(wait):
+	}
+	if connected() {
+		return
+	}
+	logf("no seed connected after %v; still trying, and this node is on its own until one answers", wait)
+	logJoinCode(logf, addrs())
+}
+
 // signals turns the process's signals into a shutdown. Before the node serves,
 // the first signal cancels the start. After that it runs stop, and a second
 // signal exits at once, whatever stop is waiting for.
@@ -294,6 +332,9 @@ func main() {
 	// can show what the node has been doing without reading a terminal.
 	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
+	if w := concurrencyWarning(cfg.Concurrency); w != "" {
+		log.Print(w)
+	}
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
 	cfg.GatewayKey = strings.TrimSpace(cfg.GatewayKey)
 	cfg.Bootstrap = boot
@@ -402,12 +443,9 @@ func main() {
 	}
 	if len(n.Seeds()) == 0 {
 		log.Printf("no seed peers: this node is alone on its own network")
-		if codes := joinAddrs(n.Addrs()); len(codes) > 0 {
-			log.Printf("another machine joins it with: bitllm --bootstrap %s", codes[0])
-			for _, a := range codes[1:] {
-				log.Printf("or with another address: bitllm --bootstrap %s", a)
-			}
-		}
+		logJoinCode(log.Printf, n.Addrs())
+	} else {
+		go joinCodeAfter(ctx, 30*time.Second, n.SeedConnected, n.Addrs, log.Printf)
 	}
 	if cfg.Upstream != "" {
 		if len(cfg.Models) > 0 {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +157,38 @@ func TestPostGatewayTimesOut(t *testing.T) {
 		resp.Body.Close()
 		t.Fatal("no timeout")
 	}
+}
+
+func TestConcurrencyWarning(t *testing.T) {
+	for c, want := range map[int]bool{-1: true, 0: true, 1: false, 256: false, 257: true} {
+		if got := concurrencyWarning(c) != ""; got != want {
+			t.Errorf("--concurrency %d: warned %v, want %v", c, got, want)
+		}
+	}
+}
+
+// With seeds that never connect the join code shows up once, and with one
+// connected it does not.
+func TestJoinCodeAfter(t *testing.T) {
+	const id = "12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib"
+	addrs := func() []string { return []string{"/ip4/192.168.0.180/tcp/4001/p2p/" + id} }
+	run := func(connected bool) string {
+		var out strings.Builder
+		logf := func(f string, a ...any) { fmt.Fprintf(&out, f+"\n", a...) }
+		joinCodeAfter(t.Context(), time.Millisecond, func() bool { return connected }, addrs, logf)
+		return out.String()
+	}
+	if got := run(true); got != "" {
+		t.Fatalf("connected, but logged: %q", got)
+	}
+	got := run(false)
+	if n := strings.Count(got, "bitllm --bootstrap /ip4/192.168.0.180/tcp/4001/p2p/"+id); n != 1 {
+		t.Fatalf("join code shown %d times: %q", n, got)
+	}
+	// A node that stops first logs nothing.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	joinCodeAfter(ctx, time.Hour, func() bool { return false }, addrs, func(f string, a ...any) { t.Errorf(f, a...) })
 }
 
 // The first signal starts the stop, and a second one exits while it runs.

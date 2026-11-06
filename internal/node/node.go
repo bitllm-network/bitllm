@@ -1157,6 +1157,16 @@ func (n *Node) Addrs() []string {
 	return out
 }
 
+// SeedConnected reports whether this node is connected to any of its seeds.
+func (n *Node) SeedConnected() bool {
+	for _, ai := range n.relays {
+		if n.host.Network().Connectedness(ai.ID) == network.Connected {
+			return true
+		}
+	}
+	return false
+}
+
 // Seeds is the resolved bootstrap list: the peers this node dials first. It is
 // empty when no --bootstrap was given or when the DNS seed list did not
 // resolve, which is what lets cmd/bitllm print a join code instead.
