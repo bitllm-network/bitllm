@@ -127,6 +127,8 @@ release a higher tag.
 
 Do not delete a published release or move a tag. Nodes read assets by tag.
 
+A tag whose build failed, with no release made from it, is different: nothing reads it, so delete it and tag again once the fix is on `main`.
+
 ## Signing keys
 
 A release is signed if one signature verifies under any key in the list. The list holds the owner's key.

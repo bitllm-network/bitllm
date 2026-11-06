@@ -4,7 +4,8 @@ BitLLM works well between people who know each other. This plan gets it ready
 for strangers and for more nodes. It changes how the node behaves under load
 and at its edges. It does not change what BitLLM is.
 
-All of it ships as one release, v0.5.0.
+All of it shipped as one release, v0.5.0, on 2026-11-06. What is not finished is
+listed in [seed-handoff.md](seed-handoff.md).
 
 ## Goals
 
