@@ -49,10 +49,10 @@ What is left, in order:
    `DefaultBootstrap`, update the `--bootstrap` help text, and remove the old
    tunnel section from `docs/bootstrap.md`. Do this only after `_dnsaddr`
    answers from the new zone. No `v0.4.7` branch exists yet.
-4. **Optional: enable the CI deploy.** The `check` job runs on every PR, but
-   the `deploy` job skips because the repository has no
-   `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` secrets. Until they are
-   added, deploy by hand from `landing-page` with
+4. **Optional: enable the CI deploy.** The `landing-page` repository's
+   `check` job runs on every PR, but its `deploy` job skips because the
+   repository has no `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`
+   secrets. Until they are added, deploy by hand from `landing-page` with
    `CLOUDFLARE_ACCOUNT_ID=5119540a40710369f72567699613f12c npx wrangler@4 deploy`.
    Use the destination account id after the move.
 
@@ -67,9 +67,9 @@ What is left, in order:
   account.
 - The BitLLM account (`ddf432595b4de0a26d81f3ca7fa43619`) has an old
   light-theme `bitllm-landing` Worker and a stale `NETWORK` KV namespace
-  `9c0f72be40074d2dacc64198ed1ebbf6`; its Worker has no KV binding. Redeploy
-  the current code there as part of the move; reuse the namespace or create a
-  new one.
+  `9c0f72be40074d2dacc64198ed1ebbf6`. The old Worker has no KV binding.
+  Redeploy the current code there as part of the move; reuse the namespace or
+  create a new one.
 - `seed1.bitllm.org` is an **A record, DNS-only**, pointing at
   `141.148.22.236` (Oracle `VM.Standard.E2.1.Micro`, 1 GB RAM + 2 GB swap).
   Ingress for TCP 4001 and UDP 4001 is open in the VCN. SSH is open, but the
@@ -268,7 +268,8 @@ changes traffic:
    the switch.
 3. Recreate the records in the new zone: `seed1` (A, DNS-only), `_dnsaddr`
    (TXT via `seed-dns.py`), the proxied placeholder records that the Worker
-   routes need for `bitllm.org` and `www`, and `boot` (the new tunnel's CNAME).
+   routes need for `bitllm.org` and `www`, and `boot` (the new tunnel's CNAME,
+   proxied).
 4. Choose the KV namespace. The BitLLM account already has `NETWORK`
    `9c0f72be...` from an earlier deployment; reuse it, or create a new one.
    Change `landing-page/wrangler.jsonc` to that id, and deploy the current
