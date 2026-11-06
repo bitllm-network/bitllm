@@ -1,0 +1,62 @@
+# Publishes the network map while no always-on host is available. Each run
+# starts a client node, lets the live announces arrive, and writes the
+# aggregate to the KV key the landing Worker serves as /network.json.
+#
+# Ten minutes is 144 writes a day, well under the free tier's 1,000. Running
+# this from CI keeps the map fresh when the laptop that used to upload it is
+# asleep, and needs no inbound ports of its own.
+name: network-map
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: network-map
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+      - name: download and verify the latest release
+        run: |
+          base=https://github.com/${{ github.repository }}/releases/latest/download
+          curl -fsSL -o bitllm "$base/bitllm-linux-amd64"
+          curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
+          want=$(awk '$2 == "bitllm-linux-amd64" || $2 == "*bitllm-linux-amd64" { print $1 }' SHA256SUMS)
+          got=$(sha256sum bitllm | awk '{ print $1 }')
+          test -n "$want" && test "$want" = "$got"
+          chmod +x bitllm
+      - name: join the network and publish the map
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NETWORK_KV_NAMESPACE: ${{ vars.NETWORK_KV_NAMESPACE }}
+        run: |
+          set -eu
+          ./bitllm --data "$RUNNER_TEMP/bitllm-data" --gateway 127.0.0.1:7778 \
+            --port 4101 --ws-port 4102 --mdns=false --upnp=false \
+            --auto-update=false > "$RUNNER_TEMP/bitllm.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          seen=
+          for _ in $(seq 1 36); do
+            if curl -sf -m 2 http://127.0.0.1:7778/network -o "$RUNNER_TEMP/network.json" &&
+               python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("nodes") else 1)' "$RUNNER_TEMP/network.json"; then
+              seen=1
+              break
+            fi
+            sleep 5
+          done
+          test -n "$seen" || { echo "no announces heard"; exit 1; }
+          # Every node announces every 10 s; wait two rounds so a snapshot
+          # taken now includes the nodes that were a few seconds late.
+          sleep 25
+          CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" \
+          CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+            scripts/network-kv.sh http://127.0.0.1:7778 "$NETWORK_KV_NAMESPACE" once
+      - if: always()
+        run: tail -40 "$RUNNER_TEMP/bitllm.log" || true

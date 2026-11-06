@@ -8,12 +8,17 @@
 #   CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
 #   scripts/network-kv.sh http://127.0.0.1:7779 NAMESPACE_ID
 #
+# Pass "once" as the third argument to publish one snapshot and exit; a
+# failed upload then exits non-zero. That is the mode the scheduled GitHub
+# workflow uses, so the map no longer depends on a laptop staying awake.
+#
 # The token needs Workers KV Storage:Edit on the account. The value holds
 # counts per model and per ~156 km cell; it names no peer ids and no
 # addresses (see internal/netmap and docs/network-map.md).
 set -eu
-GATEWAY="${1:?usage: network-kv.sh GATEWAY_URL NAMESPACE_ID}"
-NS="${2:?usage: network-kv.sh GATEWAY_URL NAMESPACE_ID}"
+GATEWAY="${1:?usage: network-kv.sh GATEWAY_URL NAMESPACE_ID [once]}"
+NS="${2:?usage: network-kv.sh GATEWAY_URL NAMESPACE_ID [once]}"
+MODE="${3:-loop}"
 : "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}"
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 URL="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces/$NS/values/network"
@@ -21,16 +26,23 @@ TMP=$(mktemp "${TMPDIR:-/tmp}/bitllm-network.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 
 while :; do
+  ok=0
   if curl -sf -m 10 "$GATEWAY/network" -o "$TMP" &&
      python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "cells" in d' "$TMP" 2>/dev/null; then
-    if ! curl -sf -m 10 -X PUT "$URL" \
+    if curl -sf -m 10 -X PUT "$URL" \
       -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
       -H "Content-Type: application/json" \
       --data-binary @"$TMP" > /dev/null; then
+      ok=1
+    else
       echo "network-kv: upload failed" >&2
     fi
   else
     echo "network-kv: $GATEWAY/network unavailable or invalid" >&2
+  fi
+  if [ "$MODE" = once ]; then
+    test "$ok" = 1 || exit 1
+    exit 0
   fi
   sleep 120
 done
