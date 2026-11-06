@@ -27,6 +27,7 @@ var (
 	streamHeaderGrace = 60 * time.Second
 	progressStall     = 60 * time.Second
 	maxGenerate       = 30 * time.Minute
+	requestWriteStall = 60 * time.Second // sending a request to a peer
 )
 
 // dialTimeout bounds opening one stream to a peer, dial and negotiation together.

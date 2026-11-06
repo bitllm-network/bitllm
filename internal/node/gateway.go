@@ -220,10 +220,14 @@ func (n *Node) complete(path string) http.HandlerFunc {
 
 		// Our own model: private and free, no network hop. While our server
 		// is down the request stays here too, unless the operator chose to
-		// let peers, who can read it, answer instead.
-		if _, ours := n.upstreamModel(req.Model); ours && !n.upOK.Load() && !n.cfg.PeerFallback {
-			gatewayErr(w, path, 503, fmt.Sprintf("your own model server is down, so this request for %q went nowhere; start it, or run bitllm with --peer-fallback to send such requests to peers (they can read them)", req.Model))
-			return
+		// let peers, who can read it, answer instead. A node that has not yet
+		// reached its server cannot tell which names are its own, so until it
+		// can, every request stays here.
+		if n.cfg.Upstream != "" && !n.upOK.Load() && !n.cfg.PeerFallback {
+			if _, ours := n.upstreamModel(req.Model); ours || len(n.modelMap()) == 0 {
+				gatewayErr(w, path, 503, fmt.Sprintf("your own model server is down, so this request for %q went nowhere; start it, or run bitllm with --peer-fallback to send such requests to peers (they can read them)", req.Model))
+				return
+			}
 		}
 		if n.ownModel(req.Model) {
 			resp, stream, err := n.callUpstream(r.Context(), path, body)
@@ -256,6 +260,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		// spins when every peer refused at once.
 		var last, denied error
 		refused := map[peer.ID]bool{} // servers that serve only an allow list we are not on
+		saidBusy := map[peer.ID]bool{}
 		deadline := time.Now().Add(busyWait)
 		for {
 			busy, tried := true, 0
@@ -312,6 +317,8 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					if next := time.Now().Add(peerWait); next.After(deadline) {
 						deadline = next
 					}
+				} else {
+					saidBusy[p] = true
 				}
 				last = err
 			}
@@ -324,6 +331,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			if c := n.candidates(req.Model); len(c) > 0 {
 				cands = c
 			}
+			cands = askedLast(cands, saidBusy)
 		}
 		if last == nil {
 			last = denied // every server for this model serves only its own allow list
@@ -338,6 +346,24 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			gatewayErr(w, path, 502, "all peers failed: "+cleanPeerText(last.Error(), maxPeerText))
 		}
 	}
+}
+
+// askedLast moves the peers that refused this request behind the ones not asked
+// yet, keeping each group's order. Each round tries only a few peers, so without
+// this the same few could refuse every round and hide the rest.
+func askedLast(cands []peer.ID, asked map[peer.ID]bool) []peer.ID {
+	out := make([]peer.ID, 0, len(cands))
+	for _, p := range cands {
+		if !asked[p] {
+			out = append(out, p)
+		}
+	}
+	for _, p := range cands {
+		if asked[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // awaitCandidates looks for candidates until one shows up, startupWait runs

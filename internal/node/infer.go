@@ -594,6 +594,8 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	stop := context.AfterFunc(ctx, func() { s.Reset() })
 	defer stop()
 
+	// A peer that stops reading must not hold the request here.
+	s.SetWriteDeadline(time.Now().Add(requestWriteStall))
 	if _, err := s.Write(requestLine(req)); err != nil {
 		return false, err
 	}

@@ -1164,3 +1164,72 @@ func TestErrorShapes(t *testing.T) {
 		})
 	}
 }
+
+// A node that has not reached its own server yet cannot tell which names are its
+// own, so a request stays here until it can.
+func TestRequestStaysLocalBeforeNamesAreKnown(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	for _, fallback := range []bool{false, true} {
+		cfg := Config{Upstream: dead.URL + "/v1", PeerFallback: fallback}
+		n := testNode(t, t.Context(), cfg)
+		gw := gatewayOf(t, n)
+		sp := addScriptedPeer(t, n, "m", 1, honestAnswer)
+		got, _, body, err := ask(t, gw, chatPath, chatBody)
+		if !fallback {
+			if err != nil || got != 503 || sp.streams.Load() != 0 {
+				t.Fatalf("got %d %q, %v, with %d streams at the peer", got, body, err, sp.streams.Load())
+			}
+			continue
+		}
+		if err != nil || got != 200 || sp.streams.Load() == 0 {
+			t.Fatalf("with fallback: got %d %q, %v", got, body, err)
+		}
+	}
+}
+
+// Peers that keep saying busy do not hide one further down the list.
+func TestBusyPeersDoNotHideOthers(t *testing.T) {
+	setVar(t, &busyBackoff, 10*time.Millisecond)
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	var refusers []*scriptedPeer
+	for range 3 {
+		refusers = append(refusers, addScriptedPeer(t, client, "m", 4, refuseWith(429, msgBusy)))
+	}
+	honest := addScriptedPeer(t, client, "m", 0, honestAnswer)
+	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != honest.id.String() {
+		t.Fatalf("got %d %q %v, %v", got, body, hdr, err)
+	}
+	for _, r := range refusers {
+		if r.streams.Load() != 1 {
+			t.Fatalf("a refuser was asked %d times before the others were asked at all", r.streams.Load())
+		}
+	}
+}
+
+// A peer that stops reading does not hold up a request while it is being sent.
+func TestRequestWriteBounded(t *testing.T) {
+	setVar(t, &requestWriteStall, 200*time.Millisecond)
+	client := clientNode(t)
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h.SetStreamHandler(protocol.InferProto2, func(network.Stream) { <-release })
+	client.host.Peerstore().AddAddrs(h.ID(), h.Addrs(), peerstore.PermanentAddrTTL)
+
+	body := []byte(paddedBody(8<<20, "x"))
+	start := time.Now()
+	started, err := client.infer(t.Context(), h.ID(), "/chat/completions", body, false, httptest.NewRecorder(), time.Second)
+	if started || err == nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("took %v", took)
+	}
+}
