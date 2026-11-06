@@ -88,3 +88,15 @@ func TestAggregate(t *testing.T) {
 		t.Fatalf("versions %v", v.Versions)
 	}
 }
+
+// A node's slots are shared by all its models, so totals count it once.
+func TestAggregateSlotTotalsCountNodesOnce(t *testing.T) {
+	v := Aggregate([]protocol.Announce{
+		{Models: []string{"a", "b", "c"}, Free: 1, Max: 2},
+		{Models: []string{"a"}, Free: 4, Max: 4},
+		{Models: nil, Free: 9, Max: 9}, // not serving, not counted
+	}, time.Time{})
+	if v.Free != 5 || v.Max != 6 {
+		t.Errorf("totals: free %d max %d, want free 5 max 6", v.Free, v.Max)
+	}
+}

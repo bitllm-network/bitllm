@@ -36,6 +36,8 @@ gossip, its own announce included:
 {
   "updated": "2026-11-03T20:00:00Z",
   "nodes": 3,
+  "free": 9,
+  "max": 16,
   "unlocated": 1,
   "cell_km": 156,
   "models": [{"id": "deepseek-v4.1-flash-1017-heretic", "nodes": 2, "free": 9, "max": 16}],
