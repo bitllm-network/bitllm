@@ -506,6 +506,7 @@ footer .right { margin-left: auto; }
             <p class="note" style="margin-top:0">You're not sharing a model. If you run vLLM, SGLang, llama.cpp or Ollama, start (or restart) BitLLM pointed at it. Every model it lists is shared under its own id; <code>--model local=public</code> is only for renaming one:</p>
             <pre class="cmd">bitllm --upstream http://localhost:8000/v1</pre>
           </div>
+          <p class="note" id="share-err" hidden></p>
         </section>
         <section class="panel">
           <div class="panel-head"><span class="label">credits</span><span class="head-meta">// earned by this node</span></div>
@@ -536,11 +537,11 @@ footer .right { margin-left: auto; }
       </div>
 
       <details class="ledger">
-        <summary>Credits across the network<span class="head-meta">// signed receipts, same table on every node</span></summary>
+        <summary>Credits across the network<span class="head-meta">// self-reported receipts, as this node heard them</span></summary>
         <div class="table-wrap">
           <table><thead><tr><th>Account</th><th class="n">Jobs</th><th class="n">Credits</th></tr></thead><tbody id="credits"></tbody></table>
         </div>
-        <p class="note">Counted from receipts signed by both sides and gossiped to every node. Every node computes the same table.</p>
+        <p class="note">Counted from self-reported receipts this node has heard, so another node's table can differ.</p>
       </details>
     </main>
   </div>
@@ -561,8 +562,17 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":
 const base = location.origin;
 $("base-url").textContent = base + "/v1";
 $("host").textContent = location.host;
-let me = "", model = "", modelsKey = "";
-try { model = localStorage.getItem("bitllm-model") || ""; } catch {}
+// Text from elsewhere goes into a snippet through one of these, whatever it is:
+// shq for a shell, jq for JSON. In a snippet that is both, jq comes first.
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const jq = s => JSON.stringify(String(s));
+// The same rule as protocol.ValidModelName.
+const validName = id => typeof id === "string" && /^[A-Za-z0-9._:/@+=-]+$/.test(id) && id[0] !== "-";
+// model is what the snippets use. A name counts as a default only if it is ours
+// or canonical, and that goes for the one saved last time too. A click is a
+// choice, and stands for as long as the model is listed.
+let me = "", model = "", clicked = false, saved = "", modelsKey = "";
+try { saved = localStorage.getItem("bitllm-model") || ""; } catch {}
 
 async function refresh() {
   try {
@@ -576,7 +586,8 @@ async function refresh() {
     me = st.id;
     $("peerid").textContent = short(me);
     $("peerid").title = me + ". Click to copy.";
-    $("version").textContent = st.version || "";
+    const upd = st.update || {};
+    $("version").textContent = [st.version, upd.signature && "signature " + upd.signature, upd.pending_restart && "restart pending"].filter(Boolean).join(" / ");
     const byPeer = {};
     for (const c of st.conns) (byPeer[c.peer] ||= []).push(c);
     const peers = Object.keys(byPeer).length;
@@ -586,15 +597,21 @@ async function refresh() {
       ? `Connected to ${peers} peer${peers === 1 ? "" : "s"}${relayed ? `, ${relayed} via relay` : ""}`
       : "No peers yet";
 
-    const ids = models.data.map(m => m.id);
-    if (!ids.includes(model)) model = ids[0] || "";
-    const key = JSON.stringify(models.data) + st.serving.join();
-    if (key !== modelsKey) {
+    const rows = models.data.filter(m => validName(m.id));
+    const ids = rows.map(m => m.id);
+    const trusted = id => rows.some(m => m.id === id && (m.canonical === true || st.serving.includes(id)));
+    const before = model;
+    if (!(clicked && ids.includes(model)) && !trusted(model)) {
+      clicked = false;
+      model = trusted(saved) ? saved : ids.find(trusted) || "";
+    }
+    const key = JSON.stringify(rows) + st.serving.join();
+    if (key !== modelsKey || model !== before) {
       modelsKey = key;
-      $("models").innerHTML = models.data.length ? models.data.map(m => `
+      $("models").innerHTML = rows.length ? rows.map(m => `
         <label class="model"><input type="radio" name="model" value="${esc(m.id)}" ${m.id === model ? "checked" : ""}>
           <span class="name">${esc(m.id)}</span>
-          <span class="meta">${st.serving.includes(m.id) ? `<span class="tag">yours</span>` : ""}${m.nodes} node${m.nodes === 1 ? "" : "s"}</span></label>`).join("")
+          <span class="meta">${st.serving.includes(m.id) ? `<span class="tag">yours</span>` : m.canonical === true ? "" : `<span class="tag">unverified name</span>`}${m.nodes} node${m.nodes === 1 ? "" : "s"}</span></label>`).join("")
         : `<div class="empty">No models on the network yet. Waiting for peers...</div>`;
       renderSnip();
     }
@@ -602,6 +619,8 @@ async function refresh() {
     $("share-on").hidden = !st.serving.length;
     $("share-off").hidden = !!st.serving.length;
     $("shared").textContent = st.serving.join("\n");
+    $("share-err").hidden = !st.announce_error;
+    $("share-err").textContent = st.announce_error ? "Not reaching peers: " + st.announce_error : "";
 
     const myOwner = acct.owner || "";
     const isMine = c => (myOwner && c.owner === myOwner) || c.nodes.some(x => x.node === me);
@@ -644,13 +663,13 @@ async function refresh() {
 }
 
 const agents = {
-  "Claude Code": m => `export ANTHROPIC_BASE_URL=${base}
+  "Claude Code": m => `export ANTHROPIC_BASE_URL=${shq(base)}
 export ANTHROPIC_API_KEY=bitllm
-export ANTHROPIC_MODEL=${m}
-export ANTHROPIC_DEFAULT_OPUS_MODEL=${m}
-export ANTHROPIC_DEFAULT_SONNET_MODEL=${m}
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=${m}
-export CLAUDE_CODE_SUBAGENT_MODEL=${m}
+export ANTHROPIC_MODEL=${shq(m)}
+export ANTHROPIC_DEFAULT_OPUS_MODEL=${shq(m)}
+export ANTHROPIC_DEFAULT_SONNET_MODEL=${shq(m)}
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=${shq(m)}
+export CLAUDE_CODE_SUBAGENT_MODEL=${shq(m)}
 claude`,
   "OpenAI-compatible": m => `# Cline, Continue, OpenCode, Aider, Cursor, any OpenAI client
 Base URL:  ${base}/v1
@@ -658,13 +677,13 @@ API key:   bitllm  (any value)
 Model:     ${m}`,
   "pi": m => `// ~/.pi/agent/models.json, under "providers"
 "bitllm": {
-  "baseUrl": "${base}/v1",
+  "baseUrl": ${jq(base + "/v1")},
   "api": "openai-completions",
   "apiKey": "bitllm",
-  "models": [{ "id": "${m}" }]
+  "models": [{ "id": ${jq(m)} }]
 }`,
-  "curl": m => `curl ${base}/v1/chat/completions \\
-  -d '{"model":"${m}","messages":[{"role":"user","content":"hi"}]}'`,
+  "curl": m => `curl ${shq(base + "/v1/chat/completions")} \\
+  -d ${shq(`{"model":${jq(m)},"messages":[{"role":"user","content":"hi"}]}`)}`,
 };
 let tab = "Claude Code";
 try { tab = localStorage.getItem("bitllm-tab") || tab; } catch {}
@@ -711,13 +730,14 @@ $("tabs").onclick = e => {
   renderSnip();
 };
 $("models").onchange = e => {
-  model = e.target.value;
+  model = saved = e.target.value;
+  clicked = true;
   try { localStorage.setItem("bitllm-model", model); } catch {}
   renderSnip();
 };
 
 $("test").onclick = async () => {
-  if (!model) { $("result").innerHTML = `<span class="bad">No models on the network yet.</span>`; return; }
+  if (!model) { $("result").innerHTML = `<span class="bad">${$("models").querySelector("input") ? "Pick a model above first." : "No models on the network yet."}</span>`; return; }
   $("test").disabled = true;
   $("result").textContent = "Waiting for an answer...";
   const t0 = performance.now();
