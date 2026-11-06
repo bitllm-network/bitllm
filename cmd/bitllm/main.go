@@ -193,6 +193,7 @@ func main() {
 		allow            listFlag
 		weights          listFlag
 		auditors         listFlag
+		peerFields       listFlag
 		wsPort           int
 		gateway          string
 		port             int
@@ -214,6 +215,8 @@ func main() {
 	flag.BoolVar(&cfg.MDNS, "mdns", true, "find peers on the local network")
 	flag.BoolVar(&ipv6, "ipv6", true, "accept p2p connections over IPv6 too; --ipv6=false listens on IPv4 only, so a public IPv6 address does not expose the p2p port")
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
+	flag.DurationVar(&cfg.UpstreamTimeout, "upstream-timeout", 10*time.Minute, "longest your server may take to send response headers; a non-streaming answer sends them only after generating")
+	flag.Var(&peerFields, "peer-field", "request field peers may send to your server beyond the standard ones (repeatable)")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 32768, "most new tokens a peer may ask for in one request (0: no limit)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Var(&allow, "allow", "peer id to serve (repeatable). With any --allow, this server serves only the listed peers, on any free slot like members, and refuses every other peer with a clear error")
@@ -239,6 +242,7 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
+	cfg.PeerFields = peerFields
 	cfg.Bootstrap = boot
 	cfg.Roots = DefaultRoots
 	if len(roots) > 0 {

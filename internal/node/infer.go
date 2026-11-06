@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +38,72 @@ const maxRequest = 16 << 20
 
 // readTimeout bounds how long a peer may take to send its request line.
 const readTimeout = 30 * time.Second
+
+// upstreamDial bounds connecting to our own server, and the TLS handshake.
+const upstreamDial = 10 * time.Second
+
+// Timers of the serving path. A node reads these once, when it starts.
+var (
+	// upstreamStall is how long our server may send no bytes of a response
+	// body while we wait for them.
+	upstreamStall = 2 * time.Minute
+)
+
+// serveTimers is what one node read from the vars above.
+type serveTimers struct {
+	upstreamStall time.Duration
+}
+
+func newServeTimers() serveTimers {
+	return serveTimers{upstreamStall: upstreamStall}
+}
+
+// upstreamClient talks to our own server, which may hang like any other. Its
+// response headers get long: a non-streaming answer sends them only after
+// generating. Per request, a context still cancels at any time.
+func upstreamClient(headers time.Duration) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: upstreamDial, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   upstreamDial,
+		ResponseHeaderTimeout: headers,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}}
+}
+
+// upstreamDown records that our server stopped answering. Health checks are
+// skipped while jobs run, so nothing else would notice. The next check that
+// passes marks it up again.
+func (n *Node) upstreamDown(why string) {
+	if n.upOK.Swap(false) {
+		log.Printf("upstream %s: marked down: %s", n.cfg.Upstream, why)
+	}
+}
+
+// stallBody cancels a response whose body sends nothing for too long. The clock
+// runs only while a Read waits for our server, so time spent writing to a slow
+// reader downstream never counts against the server.
+type stallBody struct {
+	io.ReadCloser
+	wait   time.Duration
+	fired  func()
+	cancel context.CancelFunc
+}
+
+func (b *stallBody) Read(p []byte) (int, error) {
+	t := time.AfterFunc(b.wait, b.fired)
+	defer t.Stop()
+	return b.ReadCloser.Read(p)
+}
+
+func (b *stallBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
 
 type inferReq struct {
 	Job  string          `json:"job"` // client-chosen id, named in the receipt
@@ -278,6 +346,7 @@ func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http
 // back as a *peerError carrying the server's status and message.
 func (n *Node) postUpstream(ctx context.Context, path string, body map[string]any) (*http.Response, error) {
 	b, _ := json.Marshal(body)
+	ctx, cancel := context.WithCancel(ctx)
 	req, _ := http.NewRequestWithContext(ctx, "POST", n.cfg.Upstream+path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	if path == "/messages" {
@@ -288,8 +357,18 @@ func (n *Node) postUpstream(ctx context.Context, path string, body map[string]an
 	n.upstreamAuth(req)
 	resp, err := n.http.Do(req)
 	if err != nil {
+		// A transport timeout, not the caller's own deadline or hang-up.
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() && ctx.Err() == nil {
+			n.upstreamDown("no response in time")
+		}
+		cancel()
 		return nil, &peerError{502, "upstream: " + err.Error()}
 	}
+	resp.Body = &stallBody{ReadCloser: resp.Body, wait: n.timers.upstreamStall, cancel: cancel, fired: func() {
+		n.upstreamDown("a response stopped sending")
+		cancel()
+	}}
 	if resp.StatusCode != 200 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
@@ -515,7 +594,9 @@ func (n *Node) handleInfer(s network.Stream) {
 	}
 	defer resp.Body.Close()
 	reply(200, "")
-	pipe(s, nil, resp.Body, stream, &m)
+	if err := pipe(s, nil, resp.Body, stream, &m); err != nil && !m.done {
+		s.Reset() // a cut answer must not end like a complete one
+	}
 	n.ledger.Served(remote, m.credits())
 	if req.Job != "" {
 		var model struct{ Model string }

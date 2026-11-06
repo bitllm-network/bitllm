@@ -2,12 +2,8 @@ package node
 
 import (
 	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -287,6 +283,3 @@ func TestQueueLimitByAccount(t *testing.T) {
 		t.Fatalf("a second id of the same account: %d %s", s, msg)
 	}
 }
-
-var _ = bytes.Contains
-var _ context.Context

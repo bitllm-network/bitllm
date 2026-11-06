@@ -86,6 +86,8 @@ type Config struct {
 	SyncStall        time.Duration         // longest a seed may stay silent during a sync; 0 = 30s
 	SyncLimit        time.Duration         // longest one sync from a seed may run; 0 = 5m
 	ModelsTimeout    time.Duration         // longest one read of the upstream's model list may take; 0 = 10s
+	UpstreamTimeout  time.Duration         // longest our server may take to send response headers; 0 = 10m
+	PeerFields       []string              // request fields a peer may send beyond the standard ones (--peer-field)
 	Weights          map[string]string     // public name -> bitllm hash-model of the files our server loads (announced, not proven)
 	Audit            bool                  // spot-check the peers that answer us (audit.go)
 	AuditEvery       int                   // real requests to a peer between its spot checks
@@ -133,6 +135,7 @@ type Node struct {
 	self         peer.ID
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
+	timers       serveTimers
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
 	inflight     atomic.Int32
@@ -187,6 +190,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.ModelsTimeout <= 0 {
 		cfg.ModelsTimeout = 10 * time.Second
 	}
+	if cfg.UpstreamTimeout <= 0 {
+		cfg.UpstreamTimeout = 10 * time.Minute
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -218,7 +224,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n := &Node{
 		cfg:       cfg,
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:      &http.Client{},
+		http:      upstreamClient(cfg.UpstreamTimeout),
+		timers:    newServeTimers(),
 		peers:     map[peer.ID]*peerInfo{},
 		peerSlots: map[peer.ID]int32{},
 		self:      self,
