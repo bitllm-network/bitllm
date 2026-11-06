@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ func TestIsRelease(t *testing.T) {
 func TestTagFromPath(t *testing.T) {
 	for _, tc := range []struct{ path, want string }{
 		{"/bitllm-org/bitllm/releases/download/v0.3.0/SHA256SUMS", "v0.3.0"},
-		{"/bitllm-network/bitllm/releases/download/v1.2.3/bitllm-linux-amd64", "v1.2.3"},
+		{"/bitllm-org/bitllm/releases/download/v1.2.3/bitllm-linux-amd64", "v1.2.3"},
 		{"/bitllm-org/bitllm/releases/latest/download/SHA256SUMS", ""},
 		{"/bitllm-org/bitllm/releases/download/main/SHA256SUMS", ""},
 		{"/nothing/here", ""},
@@ -109,29 +110,67 @@ func TestParseSums(t *testing.T) {
 }
 
 // release serves a fake release: a redirect for the checksum file, the file
-// itself, and one binary.
+// itself, its signature file if there is one, and one binary.
 type release struct {
-	tag    string
-	asset  string
-	bin    []byte
-	server *httptest.Server
+	tag       string
+	asset     string
+	bin       []byte
+	sums      []byte
+	server    *httptest.Server
+	sumsHits  atomic.Int32
+	assetHits atomic.Int32
 }
 
+// releaseOpts changes what the fake release serves.
+type releaseOpts struct {
+	// sig makes SHA256SUMS.sig from the checksum file. Nil, or nil returned,
+	// is a 404.
+	sig func(sums []byte) []byte
+	// dropSig cuts the connection on SHA256SUMS.sig.
+	dropSig bool
+	// extraSums is more text in the checksum file.
+	extraSums string
+}
+
+// newRelease serves a release signed by a key trusted for this test, as a real
+// one is.
 func newRelease(t *testing.T, tag string, bin []byte) *release {
+	t.Helper()
+	a := newSigner(t)
+	trust(t, a.pub)
+	return serveRelease(t, tag, bin, signed(a, tag))
+}
+
+func serveRelease(t *testing.T, tag string, bin []byte, o releaseOpts) *release {
 	t.Helper()
 	r := &release{tag: tag, asset: AssetName(), bin: bin}
 	if r.asset == "" {
 		t.Skip("no release asset for this platform")
 	}
 	sum := sha256.Sum256(bin)
-	sums := hex.EncodeToString(sum[:]) + "  " + r.asset + "\n"
+	r.sums = []byte(hex.EncodeToString(sum[:]) + "  " + r.asset + "\n" + o.extraSums)
+	var sig []byte
+	if o.sig != nil {
+		sig = o.sig(r.sums)
+	}
 	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.URL.Path == "/latest/download/SHA256SUMS":
 			http.Redirect(w, req, "/releases/download/"+r.tag+"/SHA256SUMS", http.StatusFound)
 		case req.URL.Path == "/releases/download/"+r.tag+"/SHA256SUMS":
-			fmt.Fprint(w, sums)
+			r.sumsHits.Add(1)
+			w.Write(r.sums)
+		case req.URL.Path == "/releases/download/"+r.tag+"/SHA256SUMS.sig":
+			if o.dropSig {
+				panic(http.ErrAbortHandler)
+			}
+			if sig == nil {
+				http.NotFound(w, req)
+				return
+			}
+			w.Write(sig)
 		case req.URL.Path == "/releases/download/"+r.tag+"/"+r.asset:
+			r.assetHits.Add(1)
 			w.Write(r.bin)
 		default:
 			http.NotFound(w, req)
@@ -141,11 +180,13 @@ func newRelease(t *testing.T, tag string, bin []byte) *release {
 	return r
 }
 
+// client enforces signatures the way New does.
 func (r *release) client() *Client {
 	return &Client{
-		Sums:  r.server.URL + "/latest/download/SHA256SUMS",
-		Asset: r.server.URL + "/releases/download/%s/%s",
-		HTTP:  r.server.Client(),
+		Sums:             r.server.URL + "/latest/download/SHA256SUMS",
+		Asset:            r.server.URL + "/releases/download/%s/%s",
+		HTTP:             r.server.Client(),
+		RequireSignature: requireSignature,
 	}
 }
 
@@ -187,7 +228,7 @@ func TestFetch(t *testing.T) {
 		t.Skip("the test binary is a shell script")
 	}
 	r := newRelease(t, "v9.9.9", script("v9.9.9"))
-	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: fmt.Sprintf("%x", sha256.Sum256(r.bin))}
+	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: fmt.Sprintf("%x", sha256.Sum256(r.bin)), Signature: SigOK}
 	dir := t.TempDir()
 	path, err := r.client().Fetch(context.Background(), rel, dir)
 	if err != nil {
@@ -210,7 +251,7 @@ func TestFetchRejectsBadChecksum(t *testing.T) {
 		t.Skip("the test binary is a shell script")
 	}
 	r := newRelease(t, "v9.9.9", script("v9.9.9"))
-	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: strings.Repeat("0", 64)}
+	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: strings.Repeat("0", 64), Signature: SigOK}
 	dir := t.TempDir()
 	if _, err := r.client().Fetch(context.Background(), rel, dir); err == nil {
 		t.Fatal("Fetch accepted a bad checksum")
@@ -226,7 +267,7 @@ func TestFetchRejectsWrongVersion(t *testing.T) {
 	}
 	bin := script("v0.0.1")
 	r := newRelease(t, "v9.9.9", bin)
-	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: fmt.Sprintf("%x", sha256.Sum256(bin))}
+	rel := Release{Tag: r.tag, Asset: r.asset, Sha256: fmt.Sprintf("%x", sha256.Sum256(bin)), Signature: SigOK}
 	if _, err := r.client().Fetch(context.Background(), rel, t.TempDir()); err == nil {
 		t.Fatal("Fetch accepted a binary that reports another version")
 	}
@@ -271,7 +312,6 @@ func runnerFor(t *testing.T, r *release, dir, target string) *Runner {
 		DataDir:    dir,
 		Client:     r.client(),
 		Poll:       time.Millisecond,
-		WaitIdle:   2 * time.Second,
 		CacheFor:   time.Minute,
 		Logf:       t.Logf,
 	}
@@ -334,6 +374,8 @@ func TestRunnerUpdatesWhenIdle(t *testing.T) {
 	}
 }
 
+// While the node stays busy, short of MaxIdleWait, the new binary is in place
+// and nothing restarts: only the end of the node stops the wait.
 func TestRunnerUpdatesButKeepsServing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
@@ -343,17 +385,421 @@ func TestRunnerUpdatesButKeepsServing(t *testing.T) {
 	target := filepath.Join(dir, "bitllm")
 	os.WriteFile(target, []byte("old"), 0o755)
 	run := runnerFor(t, r, dir, target)
-	run.WaitIdle = 20 * time.Millisecond
-	run.Idle = func() bool { return false }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	run.Idle = func() bool {
+		if polls++; polls == 100 {
+			cancel() // the node shuts down, still busy
+		}
+		return false
+	}
 	run.Restart = func(string) error {
 		t.Error("restarted while busy")
 		return nil
 	}
 
-	run.once(context.Background())
+	run.once(ctx)
+
+	if polls < 100 {
+		t.Errorf("stopped waiting after %d polls, while still busy", polls)
+	}
 
 	if b, _ := os.ReadFile(target); string(b) != string(script("v9.9.9")) {
 		t.Errorf("target = %q, want the new release in place for the next start", b)
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+}
+
+// The deadline on a check and download does not apply to the wait after it.
+func TestRunnerBusyPastTheDeadlineRestartsOnceIdle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Timeout = 2 * time.Second
+	var busySince time.Time
+	sawPending := false
+	run.Idle = func() bool {
+		if busySince.IsZero() {
+			busySince = time.Now()
+		}
+		if run.Status()["pending_restart"] == true {
+			sawPending = true
+		}
+		return time.Since(busySince) > run.Timeout+200*time.Millisecond
+	}
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return nil }
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if !sawPending {
+		t.Error("status did not show pending_restart during the wait")
+	}
+}
+
+// One stuck client must not hold an update back forever: after MaxIdleWait of
+// continuous waiting the node says so and restarts anyway.
+func TestRunnerIdleCapRestartsAnyway(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.MaxIdleWait = 20 * time.Millisecond
+	polls := 0
+	run.Idle = func() bool { polls++; return false }
+	restarts := 0
+	run.Restart = func(path string) error {
+		restarts++
+		// It goes through the next start's check like any other restart.
+		if got := run.loadState(); got.PendingTag != "v9.9.9" || got.From != "v0.3.0" || got.Attempts != 0 {
+			t.Errorf("state at restart = %+v", got)
+		}
+		return nil
+	}
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if polls < 2 {
+		t.Errorf("polled %d times, so it did not wait", polls)
+	}
+	if n := logs.count("restarting anyway"); n != 1 {
+		t.Errorf("logged the cap %d times, want once: %v", n, logs.all())
+	}
+}
+
+// A node that goes idle in time restarts without any mention of the cap.
+func TestRunnerIdleBeforeTheCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	var calls atomic.Int32
+	run.Idle = func() bool { return calls.Add(1) >= 3 }
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return nil }
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if n := logs.count("restarting anyway"); n != 0 {
+		t.Errorf("logged the cap: %v", logs.all())
+	}
+}
+
+// The end of the node beats the cap: nothing restarts on the way out.
+func TestRunnerStoppedBeforeTheCapDoesNotRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	run.Idle = func() bool {
+		if polls++; polls == 3 {
+			cancel()
+		}
+		return false
+	}
+	run.Restart = func(string) error { t.Error("restarted while stopping"); return nil }
+
+	run.once(ctx)
+}
+
+func TestMaxIdleWaitDefaultsToADay(t *testing.T) {
+	if got := (&Runner{}).maxIdleWait(); got != 24*time.Hour {
+		t.Errorf("maxIdleWait = %v", got)
+	}
+}
+
+// Where the platform cannot restart in place the binary is installed and the
+// node carries on, without waiting and without repeating itself.
+func TestRunnerWithoutRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Idle = func() bool { return false }
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+	run.once(context.Background())
+
+	if b, _ := os.ReadFile(target); string(b) != string(script("v9.9.9")) {
+		t.Errorf("target = %q, want the new release", b)
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+	if n := logs.count("restart the node"); n != 1 {
+		t.Errorf("logged the restart hint %d times, want once: %v", n, logs.all())
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
+	}
+}
+
+// appliedState is the state left behind after v9.9.9 was installed.
+func appliedState(r *release) state {
+	return state{
+		Checked:   time.Now(),
+		Latest:    r.tag,
+		Asset:     r.asset,
+		Sha256:    fmt.Sprintf("%x", sha256.Sum256(r.bin)),
+		Signature: SigOK,
+		Applied:   r.tag,
+	}
+}
+
+// A node that was installed but never restarted picks the wait up again,
+// without downloading anything.
+func TestRunnerResumesWhenAlreadyApplied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	var calls atomic.Int32
+	run.Idle = func() bool { return calls.Add(1) >= 3 }
+	restarts := 0
+	run.Restart = func(path string) error {
+		if path != target {
+			t.Errorf("restarted into %q, want %q", path, target)
+		}
+		restarts++
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if calls.Load() < 3 {
+		t.Errorf("restarted after %d idle checks, without waiting for idle", calls.Load())
+	}
+	if r.assetHits.Load() != 0 {
+		t.Errorf("downloaded %d times, want none", r.assetHits.Load())
+	}
+}
+
+// A release already on disk does not need the release page to be up.
+func TestRunnerResumesWithoutTheNetwork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	st := appliedState(r)
+	st.Checked = time.Now().Add(-time.Hour)
+	run.saveState(st)
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return nil }
+	r.server.Close()
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+}
+
+// Nothing resumes once the node already runs that release, or a later one.
+func TestRunnerDoesNotResumeWhenCurrent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Current = "v9.9.9"
+	run.saveState(appliedState(r))
+	run.Restart = func(string) error {
+		t.Error("restarted a node that is already current")
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if st := run.Status(); st["pending_restart"] != nil {
+		t.Errorf("status = %v, want no pending_restart", st)
+	}
+}
+
+// A binary replaced by hand is not the release the state names. Restarting
+// into it would start the same check over, so it is fetched again instead.
+func TestRunnerHandReplacedBinaryIsFetchedAgain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, script("v0.3.0"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	restarts := 0
+	run.Restart = func(path string) error {
+		restarts++
+		if err := runsAs(context.Background(), path, "v9.9.9"); err != nil {
+			t.Errorf("restarted into the wrong binary: %v", err)
+		}
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
+	}
+	if got := run.loadState().Applied; got != "v9.9.9" {
+		t.Errorf("state applied = %q, want v9.9.9", got)
+	}
+}
+
+// When it cannot be fetched again, the node stays where it is, with no restart
+// now or at the next check.
+func TestRunnerHandReplacedBinaryDoesNotLoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	own := script("v0.3.0")
+	os.WriteFile(target, own, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	run.Restart = func(string) error {
+		t.Error("restarted into a binary that is not the release")
+		return nil
+	}
+	r.server.Close()
+
+	run.once(context.Background())
+	run.once(context.Background())
+
+	if got := run.loadState().Applied; got != "" {
+		t.Errorf("state applied = %q, want it cleared", got)
+	}
+	if st := run.Status(); st["applied"] != nil || st["pending_restart"] != nil {
+		t.Errorf("status = %v, want no applied and no pending_restart", st)
+	}
+	if b, _ := os.ReadFile(target); string(b) != string(own) {
+		t.Error("the binary changed")
+	}
+}
+
+// A restart that fails is tried again at the next regular check, once per
+// check, and not in a loop.
+func TestRunnerFailedRestartWaitsForTheNextCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Idle = func() bool { return true }
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return fmt.Errorf("exec failed") }
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+	if restarts != 1 {
+		t.Fatalf("restarted %d times in one check, want once", restarts)
+	}
+	if n := logs.count("exec failed"); n != 1 {
+		t.Errorf("logged the failure %d times, want once: %v", n, logs.all())
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+
+	run.once(context.Background())
+	if restarts != 2 {
+		t.Errorf("restarted %d times after a second check, want 2", restarts)
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
+	}
+}
+
+func TestRunnerFailedRestartDoesNotSpin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.After = time.Millisecond
+	run.Every = time.Hour
+	run.Idle = func() bool { return true }
+	var restarts atomic.Int32
+	run.Restart = func(string) error { restarts.Add(1); return fmt.Errorf("exec failed") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { run.Run(ctx); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for restarts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // Poll is 1 ms, so a spin would show here
+	cancel()
+	<-done
+
+	if got := restarts.Load(); got != 1 {
+		t.Errorf("restarted %d times, want once until the next check", got)
 	}
 }
 
@@ -373,12 +819,41 @@ func TestRunnerCachesTheCheck(t *testing.T) {
 	before := run.Status()["checked"]
 	r.server.Close() // any second request would now fail
 
-	run.mu.Lock()
-	run.applied = "" // pretend the restart failed, so a check is impossible to skip on that ground
-	run.mu.Unlock()
 	run.once(context.Background())
 
 	if after := run.Status()["checked"]; after != before {
 		t.Errorf("checked time changed from %v to %v despite the cache", before, after)
 	}
+}
+
+// logs collects a Runner's log lines.
+type logs struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func captureLogs(run *Runner) *logs {
+	l := &logs{}
+	run.Logf = func(format string, args ...any) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	}
+	return l
+}
+
+func (l *logs) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.lines...)
+}
+
+func (l *logs) count(sub string) int {
+	n := 0
+	for _, line := range l.all() {
+		if strings.Contains(line, sub) {
+			n++
+		}
+	}
+	return n
 }

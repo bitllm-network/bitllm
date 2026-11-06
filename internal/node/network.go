@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/netmap"
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/netmap"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 )
 
 // GET /network aggregates what this node hears: per model and per cell, node

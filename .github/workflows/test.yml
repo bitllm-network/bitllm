@@ -1,5 +1,6 @@
-# Runs on every pull request and every push to main. All jobs run in
-# parallel, so the whole check takes about as long as the slowest job (~2 min).
+# Runs on every pull request and every push to main. All jobs run in parallel,
+# so the whole check takes about as long as the slowest job, which is usually
+# the tests on macOS or Windows.
 # Collaborators push to main directly; keep this green (see CONTRIBUTING.md).
 name: test
 on:
@@ -16,19 +17,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
-      - name: public links use the current GitHub org
-        run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md deploy docs'
-      - name: deploy scripts parse
+      - name: nothing points at the old GitHub org
+        run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md go.mod deploy docs scripts cmd internal'
+      - name: scripts parse
         run: |
           bash -n deploy/bootstrap-vps.sh
           bash -n deploy/gpu-host.sh
+          bash -n scripts/release.sh
+          bash -n scripts/compat.sh
+          sh -n scripts/fonts-css.sh
+          sh -n scripts/network-kv.sh
           python3 -m py_compile deploy/seed-dns.py
+      - name: deploy script tests
+        run: python3 -m unittest discover -s deploy -p 'test_*.py'
+      # Pinned and checked by hash, like the Go tools below, so a new release
+      # cannot turn a green branch red. On PATH, actionlint uses the same version
+      # for the run blocks in the workflows.
+      - name: shellcheck
+        env:
+          VERSION: v0.11.0
+          SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$VERSION/shellcheck-$VERSION.linux.x86_64.tar.xz"
+          echo "$SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-$VERSION/shellcheck" deploy/*.sh scripts/*.sh
+          echo "$RUNNER_TEMP/shellcheck-$VERSION" >> "$GITHUB_PATH"
       - run: go vet ./...
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff
@@ -42,21 +63,77 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
 
+  # Hosted macOS and Windows runners are slower, and on Windows -race builds
+  # through cgo with the gcc on the runner image. CGO_ENABLED is set so a runner
+  # without gcc fails here with a clear error. The shell is bash everywhere, so
+  # PowerShell does not get to reinterpret the flags.
   unit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 8 || 20 }}
+    env:
+      CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: go test -race -shuffle=on -count=1 ./...
+        shell: bash
+
+  # Known vulnerabilities in the code this module calls, in its dependencies and
+  # in the Go standard library. The version is pinned like staticcheck's. With
+  # -format json the exit code only says whether the scan ran, so the step reads
+  # the findings itself, the way plain govulncheck decides: a finding counts when
+  # its trace names a function. govulncheck has no ignore list of its own.
+  #
+  # Accepted: GO-2024-3218 in go-libp2p-kad-dht, which has no fixed version
+  # upstream. It stays accepted only while that is true, so this job fails once
+  # a fix exists and the dependency should move to it.
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > "$RUNNER_TEMP/govulncheck.json"
+          python3 - "$RUNNER_TEMP/govulncheck.json" <<'EOF'
+          import json, sys
+          ACCEPTED = {"GO-2024-3218"}
+          text = open(sys.argv[1]).read()
+          decoder, pos, accepted, failed = json.JSONDecoder(), 0, set(), set()
+          while pos < len(text):
+              if text[pos].isspace():
+                  pos += 1
+                  continue
+              message, pos = decoder.raw_decode(text, pos)
+              finding = message.get("finding")
+              if not finding or not finding["trace"][0].get("function"):
+                  continue
+              fixed = finding.get("fixed_version")
+              if finding["osv"] in ACCEPTED and not fixed:
+                  accepted.add(finding["osv"])
+              else:
+                  failed.add(f'{finding["osv"]} in {finding["trace"][0]["module"]}, fixed in {fixed or "no release yet"}')
+          for osv in sorted(accepted):
+              print("accepted, no fix upstream:", osv)
+          for line in sorted(failed):
+              print("vulnerable:", line)
+          sys.exit(1 if failed else 0)
+          EOF
 
   # The same binaries scripts/release.sh makes, kept for 7 days as a
   # downloadable artifact of the run (handy for testing a PR on a real machine).
@@ -66,8 +143,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: build release assets
@@ -79,7 +156,7 @@ jobs:
           for f in bitllm-darwin-arm64 bitllm-linux-amd64 bitllm-linux-arm64 bitllm-windows-amd64.exe SHA256SUMS; do
             test -s "dist/$f" || { echo "missing or empty dist/$f"; exit 1; }
           done
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bitllm-${{ github.sha }}
           path: dist/
@@ -87,18 +164,19 @@ jobs:
 
   # Protocol compatibility: a node built from this commit must work with nodes
   # still running older releases, in both directions (see scripts/compat.sh
-  # and docs/compat.md). "latest" is the newest release; the pinned version is
-  # the oldest one we know is still running on the public network.
+  # and docs/compat.md). "latest" is the newest release, v0.2.0 serves on the
+  # public network today, and v0.1.11 is the oldest release we know is still
+  # running there.
   compat:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        old: [latest, v0.1.11]
+        old: [latest, v0.2.0, v0.1.11]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: go build -o bitllm-new ./cmd/bitllm

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 )
 
 func TestGeohash(t *testing.T) {

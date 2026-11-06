@@ -16,6 +16,10 @@ package node
 // each with another auditor, and fails only if three of those are bad too.
 // A failed peer gets no requests for that model for failFor. The verdict
 // stays on this node: nothing is gossiped.
+//
+// A suspect goes last in the candidate list, so it sees little real traffic to
+// trigger a new round. So a timer checks it again, and a suspect with no bad
+// result for suspectDecay goes back to unchecked.
 
 import (
 	"bufio"
@@ -35,9 +39,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/assets"
-	"github.com/bitllm-network/bitllm/internal/models"
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/assets"
+	"github.com/bitllm-org/bitllm/internal/models"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -67,6 +71,8 @@ const (
 	followUps    = 4   // checks of a suspect, each with another auditor
 	failBad      = 3   // bad follow-ups that make a suspect fail
 	failFor      = 24 * time.Hour
+	suspectDecay = 24 * time.Hour // a suspect with no bad result for this long is unchecked again
+	recheckBatch = 4              // rounds the timer starts at once, so suspects do not all run together
 	auditorBan   = 24 * time.Hour // an auditor that passed a shuffled answer
 	controlEvery = 4              // one check in this many also scores a shuffled answer
 
@@ -141,6 +147,20 @@ type peerAudit struct {
 	real    int // real requests since the last round
 	running bool
 	rounds  []time.Time
+	rp      reqParams // of our latest real request, for a round the timer starts
+	seen    time.Time // our latest real request
+	lastBad time.Time // when it last became a suspect
+}
+
+// pruneRounds keeps the rounds of the last hour, which the budget counts.
+func (pa *peerAudit) pruneRounds(now time.Time) {
+	recent := pa.rounds[:0]
+	for _, t := range pa.rounds {
+		if now.Sub(t) < time.Hour {
+			recent = append(recent, t)
+		}
+	}
+	pa.rounds = recent
 }
 
 type auditKey struct {
@@ -170,6 +190,9 @@ type audits struct {
 
 const maxAudited = 1024 // (peer, model) pairs remembered
 
+// recheckEvery is how often the timer looks for suspects to check again.
+var recheckEvery = 5 * time.Minute
+
 func newAudits(n *Node, every int, seeds []peer.ID) *audits {
 	a := &audits{n: n, every: max(every, 1), seeds: seeds, peers: map[auditKey]*peerAudit{}, banned: map[peer.ID]time.Time{}}
 	a.scoreFn, a.checkFn = a.score, a.check
@@ -182,34 +205,90 @@ func (a *audits) observe(p peer.ID, model string, body []byte) {
 	json.Unmarshal(body, &rp)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := time.Now()
 	k := auditKey{p, model}
 	pa := a.peers[k]
 	if pa == nil {
-		if len(a.peers) >= maxAudited {
+		if len(a.peers) >= maxAudited && !a.evictOldest(now) {
 			return
 		}
 		pa = &peerAudit{Peer: p.String(), Model: model, State: "unchecked"}
 		a.peers[k] = pa
 	}
 	pa.real++
-	now := time.Now()
+	pa.rp, pa.seen = rp, now
 	if pa.State == "fail" && now.After(pa.Until) {
 		pa.State = "unchecked"
 	}
 	due := pa.State == "unchecked" || pa.real >= a.every
-	recent := pa.rounds[:0]
-	for _, t := range pa.rounds {
-		if now.Sub(t) < time.Hour {
-			recent = append(recent, t)
-		}
-	}
-	pa.rounds = recent
+	pa.pruneRounds(now)
 	if !due || pa.running || len(pa.rounds) >= auditsPerHr {
 		return
 	}
 	pa.running, pa.real = true, 0
 	pa.rounds = append(pa.rounds, now)
 	go a.round(p, model, rp)
+}
+
+// evictOldest makes room by dropping the entry used longest ago. A live failure
+// stays, or a peer could shed it by crowding it out, and so does a running round,
+// which still has to report back. It returns false if nothing could go.
+func (a *audits) evictOldest(now time.Time) bool {
+	var oldest auditKey
+	var at time.Time
+	found := false
+	for k, pa := range a.peers {
+		if pa.running || (pa.State == "fail" && now.Before(pa.Until)) {
+			continue
+		}
+		if !found || pa.seen.Before(at) {
+			oldest, at, found = k, pa.seen, true
+		}
+	}
+	if found {
+		delete(a.peers, oldest)
+	}
+	return found
+}
+
+// recheckLoop runs sweep until ctx ends.
+func (a *audits) recheckLoop(ctx context.Context) {
+	t := time.NewTicker(recheckEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			a.sweep(now)
+		}
+	}
+}
+
+// sweep moves suspects along: one with no bad result for suspectDecay is
+// unchecked again, and any other gets a round if it had none in the last hour.
+// These rounds count against the same budget as the ones real requests start.
+func (a *audits) sweep(now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	started := 0
+	for k, pa := range a.peers {
+		if pa.State != "suspect" || pa.running {
+			continue
+		}
+		if now.Sub(pa.lastBad) >= suspectDecay {
+			pa.State = "unchecked"
+			continue
+		}
+		pa.pruneRounds(now)
+		if len(pa.rounds) > 0 || started == recheckBatch {
+			continue
+		}
+		started++
+		pa.running, pa.real = true, 0
+		pa.rounds = append(pa.rounds, now)
+		go a.round(k.p, k.model, pa.rp)
+	}
 }
 
 // round checks p once, and four more times if that check is bad. Follow-ups
@@ -266,6 +345,9 @@ func (a *audits) setState(p peer.ID, model, state string, d time.Duration) {
 	defer a.mu.Unlock()
 	pa := a.peers[auditKey{p, model}]
 	pa.State = state
+	if state == "suspect" {
+		pa.lastBad = time.Now()
+	}
 	pa.Until = time.Time{}
 	if d > 0 {
 		pa.Until = time.Now().Add(d)

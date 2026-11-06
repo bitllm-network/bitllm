@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/netmap"
+	"github.com/bitllm-org/bitllm/internal/netmap"
 )
 
 // A server with --location shows up on a client's /network as a cell, with no

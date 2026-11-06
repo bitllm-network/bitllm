@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
-	"github.com/bitllm-network/bitllm/internal/receipts"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/receipts"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -64,8 +64,12 @@ func TestAccessRules(t *testing.T) {
 	stranger := randomPeer(t)
 	now := time.Now()
 
-	// Rule 3: a contributor served a job recently (a receipt names its node as server).
-	ck, _, _ := crypto.GenerateEd25519Key(nil)
+	// Rule 3: a contributor served a job we asked for recently: the receipt names
+	// its node as server and is signed by our pseudonym for that node.
+	ck, err := receipts.Key(n.receiptSeed, contribNode, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cid, _ := peer.IDFromPrivateKey(ck)
 	r := receipts.Receipt{Job: "j1", Model: "m", Client: cid.String(), Server: contribNode.String(),
 		Prompt: 4, Completion: 1, Credits: receipts.Price(4, 1), Output: "x", TS: now.Unix()}
@@ -147,9 +151,10 @@ func TestInviteGossipAndSync(t *testing.T) {
 	}
 	late := cfg()
 	late.Bootstrap = bs
-	if !testNode(t, ctx, late).members.Compute().Member[guest.addr] {
-		t.Fatal("late joiner did not sync the invite")
-	}
+	lateNode := testNode(t, ctx, late)
+	eventually(t, 15*time.Second, "late joiner did not sync the invite", func() bool {
+		return lateNode.members.Compute().Member[guest.addr]
+	})
 }
 
 // TestOpenServer: --open serves uninvited nodes on spare slots (at most

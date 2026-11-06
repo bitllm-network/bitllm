@@ -61,18 +61,33 @@ Only needed for a public relay. Port `4001`, both TCP and UDP.
 
 ## Step 3: install the node
 
+Get the script from a release tag, not from `main`. Use the newest tag on the
+[releases page](https://github.com/bitllm-org/bitllm/releases):
+
 ```sh
 curl -fsSL -o gpu-host.sh \
-  https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/gpu-host.sh
+  https://raw.githubusercontent.com/bitllm-org/bitllm/v0.5.0/deploy/gpu-host.sh
 sudo bash gpu-host.sh latest http://127.0.0.1:8000/v1 deepseek-v4.1-flash-1017
 ```
 
-The three arguments are version (`latest`), the upstream base URL, and an
-optional model name (`local-name=public-name` if they differ). Without a model
-name, every model the server lists is shared under exactly the id it reports,
-and the node re-reads the list while it runs. To share a subset, or to rename
-a local model, add `--model` to `/etc/bitllm/host.env` and
-`systemctl restart bitllm-host`.
+The three arguments are version, the upstream base URL, and an optional model
+name (`local-name=public-name` if they differ). With `latest` the node keeps
+itself up to date. A tag such as `v0.5.0` adds `--auto-update=false`, so the host
+stays on that version until you rerun the script. Without a model name, every
+model the server lists is shared under exactly the id it reports, and the node
+re-reads the list while it runs.
+
+To share a subset, rename a local model, or add any other flag, put it on
+`BITLLM_EXTRA_OPTS` in `/etc/bitllm/host.override.env`, then
+`systemctl restart bitllm-host`:
+
+```sh
+BITLLM_EXTRA_OPTS=--model local-a=public-a --model local-b=public-b
+```
+
+An API key for the upstream goes in the same file, as
+`BITLLM_UPSTREAM_KEY=...`, which keeps it out of the process list. The script
+creates this file once with mode 600 and keeps what you put there.
 
 For a host that can accept inbound and should help as a **public relay**:
 
@@ -98,9 +113,21 @@ sudo PUBLIC=1 BOOTSTRAP=/ip4/203.0.113.20/tcp/4001/p2p/12D3KooW... \
   bash gpu-host.sh latest http://127.0.0.1:8000/v1 deepseek-v4.1-flash-1017
 ```
 
-Flags live in `/etc/bitllm/host.env`, the unit in
-`/etc/systemd/system/bitllm-host.service`. Rerun the script to change them; it
-keeps the identity in `/var/lib/bitllm`.
+The script's flags live in `/etc/bitllm/host.env`, the unit in
+`/etc/systemd/system/bitllm-host.service`. A rerun with nothing passed keeps every
+setting, and passing a value changes only that one. An empty value clears the
+model, `BOOTSTRAP` or `ANNOUNCE`, and `PUBLIC=0` turns the relay role off. The
+announce addresses are saved too, so if the public IP changes, rerun with the new
+`ANNOUNCE`, or with `ANNOUNCE=` to look it up again. A flag the script does not
+manage, found in `host.env` from an older install, moves to the override file.
+
+The node's identity is in `/var/lib/bitllm/.bitllm/`. Back up that whole directory.
+`identity.key` in it is the node's peer id.
+
+The unit runs in a systemd sandbox with a memory limit of half the RAM, up to
+4 GiB. The node's own binary directory stays writable so it can update itself. To
+change the limit, use `systemctl edit bitllm-host` and set `MemoryMax=`; a rerun
+keeps that.
 
 ## Step 4: verify locally
 
@@ -161,7 +188,7 @@ not a seed needs no DNS entry.
 ## Troubleshooting
 
 - **`--public: advertising this node as a public relay` but nobody connects.**
-  Inbound is closed. Remove `PUBLIC=1` until it works; the node still serves
+  Inbound is closed. Rerun with `PUBLIC=0` until it works; the node still serves
   through a relay.
 - **`bind: address already in use`.** Something else holds 4001. Pick another
   port with `PORT=4002`, and forward that one instead.
@@ -171,5 +198,5 @@ not a seed needs no DNS entry.
 - **Model not found by clients.** The shared name must match what clients
   send. For a public model that should be the exact Hugging Face repo id; for
   a private model, any stable name works. See the naming rules in the README.
-- **No public IP at all.** Keep `PUBLIC=0`. The host joins through the default
+- **No public IP at all.** Use `PUBLIC=0`. The host joins through the default
   seeds and is reached by relay or hole punching.

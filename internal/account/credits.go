@@ -3,7 +3,7 @@ package account
 import (
 	"sort"
 
-	"github.com/bitllm-network/bitllm/internal/receipts"
+	"github.com/bitllm-org/bitllm/internal/receipts"
 )
 
 // OwnerCredits is the credits table row for one owner (or one unclaimed node).

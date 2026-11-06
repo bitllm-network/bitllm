@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -28,35 +28,59 @@ func (n *Node) memberSet() *members.MemberSet {
 	return n.access
 }
 
-// invalidateMembers drops the cached member set after a change.
+// invalidateMembers reacts to a membership change: it drops the cached sets and
+// files each claim again by whether its owner is a member now.
 func (n *Node) invalidateMembers() {
+	n.dropCachedSets()
+	n.claims.Reevaluate()
+}
+
+func (n *Node) dropCachedSets() {
 	n.accessMu.Lock()
 	n.access = nil
 	n.accessMu.Unlock()
 	n.servedMu.Lock()
-	n.servedEver = nil
+	n.servedEver, n.servedRecent = nil, nil
 	n.servedMu.Unlock()
 }
 
-// servedSets are the accounts owning a node that has a receipt as server:
-// ever (10 invites) and within the contributor window (no quota).
-func (n *Node) servedSets() (ever, recent map[string]bool) {
+// servedSets are the accounts owning a node that has a public receipt as server,
+// which is what the 10-invite limit reads. Every node must reach the same member
+// set from the same facts, so this takes any valid receipt.
+func (n *Node) servedSets() map[string]bool {
 	n.servedMu.Lock()
 	defer n.servedMu.Unlock()
 	if n.servedEver != nil && time.Since(n.servedAt) < 10*time.Second {
-		return n.servedEver, n.servedRecent
+		return n.servedEver
 	}
-	since := time.Now().Add(-members.ContributorWindow).Unix()
-	servers := n.receipts.ServersSince(since) // node -> served recently
-	ever, recent = map[string]bool{}, map[string]bool{}
-	for s, rec := range servers {
+	ever := map[string]bool{}
+	for s := range n.receipts.ServersSince(0) {
 		if c, ok := n.claims.Get(s); ok {
 			ever[c.Owner] = true
-			recent[c.Owner] = recent[c.Owner] || rec
 		}
 	}
-	n.servedEver, n.servedRecent, n.servedAt = ever, recent, time.Now()
-	return ever, recent
+	n.servedEver, n.servedAt = ever, time.Now()
+	return ever
+}
+
+// contributors are the accounts this node has its own proof about: one of their
+// nodes did a paid job we asked for, in the contributor window. It decides who
+// skips this server's quota, and nothing here feeds the member set. A node that
+// has never been a client sees no contributors.
+func (n *Node) contributors() map[string]bool {
+	n.servedMu.Lock()
+	defer n.servedMu.Unlock()
+	if n.servedRecent != nil && time.Since(n.recentAt) < 10*time.Second {
+		return n.servedRecent
+	}
+	recent := map[string]bool{}
+	for s := range n.receipts.Proven(time.Now().Add(-members.ContributorWindow).Unix()) {
+		if c, ok := n.claims.Get(s); ok {
+			recent[c.Owner] = true
+		}
+	}
+	n.servedRecent, n.recentAt = recent, time.Now()
+	return recent
 }
 
 // accountOf is the account that owns node p, or "".
@@ -123,6 +147,11 @@ func (r *refusals) snapshot() map[string]int64 {
 	}
 }
 
+// notAllowedText is the refusal for a peer the owner did not list.
+func notAllowedText(remote peer.ID) string {
+	return fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote)
+}
+
 // admit takes a serving slot for remote, or queues it, or says why not. The
 // caller must call done when the job ends, and must watch a.w.ready when a
 // waiter is returned.
@@ -132,14 +161,14 @@ func (r *refusals) snapshot() map[string]int64 {
 func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Duration, amount int64) (status int, msg string, a admission) {
 	if len(n.cfg.Allow) > 0 && !n.cfg.Allow[remote] {
 		n.refused.allow.Add(1)
-		return 403, fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote), a
+		return 403, notAllowedText(remote), a
 	}
 	account := n.accountOf(remote)
 	member, contributor := true, false
 	if n.members.Enabled() {
 		ms := n.memberSet()
 		member = account != "" && ms.Member[account]
-		contributor = member && ms.Contributors[account]
+		contributor = member && n.contributors()[account]
 	}
 	if len(n.cfg.Allow) > 0 {
 		member = true // the owner's list replaces the invite rule on this server
@@ -210,8 +239,9 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 	}
 	w := &waiter{peer: remote, model: model, class: class, at: now,
 		key: t.key, limit: t.limit, amount: amount, open: open, pool: t.poolLimit,
-		ready: make(chan struct{})}
+		acct: account, ready: make(chan struct{})}
 	w.t = t
+	victim := n.evictForLocked(w)
 	if !n.enqueueLocked(w) {
 		n.qmu.Unlock()
 		n.quota.Drop(t.key, t.reserved, now)
@@ -223,6 +253,10 @@ func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Dura
 	}
 	n.dispatchLocked()
 	n.qmu.Unlock()
+	if victim != nil {
+		n.dropReservation(victim, now)
+		n.refused.queue.Add(1)
+	}
 	return 202, "", admission{w: w}
 }
 
@@ -293,7 +327,7 @@ type MemberInfo struct {
 	Account      string `json:"account,omitempty"`
 	Member       bool   `json:"member"`
 	Root         bool   `json:"root"`
-	Contributor  bool   `json:"contributor"`
+	Contributor  bool   `json:"contributor"` // its node did a paid job for this node lately, so this node exempts it from quota
 	InvitedBy    string `json:"invited_by,omitempty"`
 	InvitesUsed  int    `json:"invites_used"`
 	InvitesLimit int    `json:"invites_limit"` // -1: unlimited
@@ -308,7 +342,7 @@ func (n *Node) memberInfo(acct string) MemberInfo {
 	}
 	info.Member = ms.Member[acct]
 	info.Root = ms.IsRoot(acct)
-	info.Contributor = ms.Contributors[acct]
+	info.Contributor = n.contributors()[acct]
 	if inv := ms.InvitedBy[acct]; inv != "" {
 		info.InvitedBy = account.ChecksumAddress(inv)
 	}
@@ -354,9 +388,12 @@ func sigOf(it members.Item) string {
 }
 
 // membersList shows every member with who invited it and how much its nodes
-// served lately, so a root can spot a receipt farm and revoke it.
+// served lately by the public receipts, so a root can spot a receipt farm and
+// revoke it. Sharer and Jobs7d are those public, self-reported facts. Contributor
+// is this node's own proof, so it differs from node to node.
 func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	ms := n.memberSet()
+	contributors := n.contributors()
 	since := time.Now().Add(-members.ContributorWindow).Unix()
 	jobs := n.receipts.JobsSince(since)
 	perAccount := map[string]int{}
@@ -377,7 +414,7 @@ func (n *Node) membersList(w http.ResponseWriter, r *http.Request) {
 	out := []row{}
 	for a := range ms.Member {
 		rw := row{Account: account.ChecksumAddress(a), Root: ms.IsRoot(a), Sharer: ms.Sharers[a],
-			Contributor: ms.Contributors[a], Invited: ms.Used[a], Jobs7d: perAccount[a]}
+			Contributor: contributors[a], Invited: ms.Used[a], Jobs7d: perAccount[a]}
 		if inv := ms.InvitedBy[a]; inv != "" {
 			rw.InvitedBy = account.ChecksumAddress(inv)
 		}

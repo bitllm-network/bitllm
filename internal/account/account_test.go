@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/receipts"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/receipts"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -109,6 +109,9 @@ func TestClaimsKeepNewestAndReload(t *testing.T) {
 		t.Fatal("older claim replaced the newer one")
 	}
 	// The store survives a reopen, as a node restart would.
+	if err := cs.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	again := account.OpenClaims(path)
 	if got, ok := again.Get(newer.Node); !ok || got.Time != newer.Time {
 		t.Fatalf("after reopen: %+v %v", got, ok)

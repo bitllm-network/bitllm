@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/account"
 )
 
 // mockUpstream is an OpenAI-compatible server with one model; every reply
@@ -90,7 +90,7 @@ func testNode(t *testing.T, ctx context.Context, cfg Config) *Node {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { n.host.Close() })
+	t.Cleanup(func() { n.host.Close(); n.closeState() })
 	return n
 }
 
