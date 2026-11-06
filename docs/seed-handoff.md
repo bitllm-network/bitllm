@@ -6,7 +6,7 @@ after 2026-11-10 and the release that drops the old `boot` seed.
 
 ## Status (2026-11-05, Pacific)
 
-Checked at 20:45 PST (04:45 UTC on 2026-11-06).
+Checked at 22:25 PST (06:25 UTC on 2026-11-06).
 
 Done:
 
