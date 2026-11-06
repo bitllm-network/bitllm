@@ -14,10 +14,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -163,6 +165,97 @@ func lanRank(ip net.IP) int {
 	}
 }
 
+// gatewayExposed reports whether a --gateway address listens beyond this
+// machine. An empty host means every interface, and a name other than
+// localhost may resolve to anything.
+func gatewayExposed(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = strings.Trim(addr, "[]")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return !ip.IsLoopback()
+	}
+	return host != "localhost"
+}
+
+// concurrencyWarning is for values announces cannot carry: peers drop this
+// node's announces, so the flag is worth a warning, and never a failed start: a
+// self-updated node that exits at startup comes back and exits again.
+func concurrencyWarning(c int) string {
+	if c >= 1 && c <= 256 {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: --concurrency %d is outside 1 to 256; peers will ignore this node's announces", c)
+}
+
+// logJoinCode says how another machine can join this node.
+func logJoinCode(logf func(string, ...any), addrs []string) {
+	codes := joinAddrs(addrs)
+	if len(codes) == 0 {
+		return
+	}
+	logf("another machine joins it with: bitllm --bootstrap %s", codes[0])
+	for _, a := range codes[1:] {
+		logf("or with another address: bitllm --bootstrap %s", a)
+	}
+}
+
+// joinCodeAfter logs the join code once, if no seed has connected after wait.
+// Seeds resolve to something by default, so an empty list says little: a node
+// cut off from all of them is the one that needs another way in.
+func joinCodeAfter(ctx context.Context, wait time.Duration, connected func() bool, addrs func() []string, logf func(string, ...any)) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(wait):
+	}
+	if connected() {
+		return
+	}
+	logf("no seed connected after %v; still trying, and this node is on its own until one answers", wait)
+	logJoinCode(logf, addrs())
+}
+
+// signals turns the process's signals into a shutdown. Before the node serves,
+// the first signal cancels the start. After that it runs stop, and a second
+// signal exits at once, whatever stop is waiting for.
+type signals struct {
+	cancel context.CancelFunc
+	exit   func(int)
+
+	mu    sync.Mutex
+	stop  func()
+	fired bool
+}
+
+func (s *signals) watch(c <-chan os.Signal) {
+	<-c
+	go func() {
+		<-c
+		log.Printf("second signal: exiting now")
+		s.exit(130)
+	}()
+	s.mu.Lock()
+	s.fired = true
+	stop := s.stop
+	s.mu.Unlock()
+	if stop == nil {
+		s.cancel()
+		return
+	}
+	stop()
+}
+
+// serving hands over the shutdown to run from now on. It returns false if a
+// signal came first, and then the caller should just return.
+func (s *signals) serving(stop func()) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stop = stop
+	return !s.fired
+}
+
 func main() {
 	home, _ := os.UserHomeDir()
 	if len(os.Args) > 1 && os.Args[1] == "account" {
@@ -193,6 +286,7 @@ func main() {
 		allow            listFlag
 		weights          listFlag
 		auditors         listFlag
+		peerFields       listFlag
 		wsPort           int
 		gateway          string
 		port             int
@@ -202,8 +296,10 @@ func main() {
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
 	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model, refreshed while the node runs)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
+	flag.BoolVar(&cfg.PeerFallback, "peer-fallback", false, "if your own model server is down, send requests for that model to peers (they can read them)")
 	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3..., or a /dnsaddr/ seed name (repeatable; default: the DNS seed list plus boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
+	flag.StringVar(&cfg.GatewayKey, "gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "key every gateway request except the dashboard page must carry, as Authorization: Bearer or x-api-key; open the dashboard once with ?key=KEY (default $BITLLM_GATEWAY_KEY, which keeps it out of the process list)")
 	flag.IntVar(&port, "port", 4001, "p2p port, TCP and UDP (QUIC)")
 	flag.IntVar(&wsPort, "ws-port", 0, "also accept libp2p over WebSocket on 127.0.0.1:PORT, for an HTTPS tunnel (Cloudflare Tunnel etc.) in front of a bootstrap node")
 	flag.Var(&roots, "roots", "root account of the invite tree (repeatable; default: the BitLLM root). For private networks and tests")
@@ -214,6 +310,8 @@ func main() {
 	flag.BoolVar(&cfg.MDNS, "mdns", true, "find peers on the local network")
 	flag.BoolVar(&ipv6, "ipv6", true, "accept p2p connections over IPv6 too; --ipv6=false listens on IPv4 only, so a public IPv6 address does not expose the p2p port")
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
+	flag.DurationVar(&cfg.UpstreamTimeout, "upstream-timeout", 10*time.Minute, "longest your server may take to send response headers; a non-streaming answer sends them only after generating")
+	flag.Var(&peerFields, "peer-field", "request field peers may send to your server beyond the standard ones (repeatable)")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 32768, "most new tokens a peer may ask for in one request (0: no limit)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Var(&allow, "allow", "peer id to serve (repeatable). With any --allow, this server serves only the listed peers, on any free slot like members, and refuses every other peer with a clear error")
@@ -238,12 +336,17 @@ func main() {
 	// can show what the node has been doing without reading a terminal.
 	log.SetOutput(io.MultiWriter(os.Stderr, node.LogOutput))
 
+	if w := concurrencyWarning(cfg.Concurrency); w != "" {
+		log.Print(w)
+	}
 	// Only the node command gets here, past the subcommands above and --version.
 	// A self-updated release that keeps failing to start goes back from here,
 	// and this call does not return if it restarts into the previous binary.
 	rolledBackFrom := startCheck(cfg.DataDir, *autoUpdate)
 
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
+	cfg.GatewayKey = strings.TrimSpace(cfg.GatewayKey)
+	cfg.PeerFields = peerFields
 	cfg.Bootstrap = boot
 	cfg.Roots = DefaultRoots
 	if len(roots) > 0 {
@@ -313,8 +416,16 @@ func main() {
 		cfg.ModelsFixed = true
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// The node's context ends last, once it has drained. The updater's ends at
+	// the first signal: a restart must not undo a request to stop.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, stopUpdates := context.WithCancel(ctx)
+	defer stopUpdates()
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	lifecycle := &signals{cancel: cancel, exit: os.Exit}
+	go lifecycle.watch(sigs)
 	// The updater is wired before the node, so GET /status can report it.
 	// Only a release build takes part; dev and CI builds never replace
 	// themselves.
@@ -324,8 +435,18 @@ func main() {
 		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New(), RolledBackFrom: rolledBackFrom}
 		cfg.UpdateStatus = upd.Status
 	}
+	// A stop by signal is no failed start, however far the start had come.
+	signalStopped := func() {
+		if upd != nil {
+			upd.Stopped()
+		}
+	}
 	n, err := node.New(ctx, cfg)
 	if err != nil {
+		if ctx.Err() != nil {
+			signalStopped()
+			return
+		}
 		log.Fatal(err)
 	}
 	log.Printf("bitllm %s, peer id %s", node.Version, n.ID())
@@ -339,12 +460,9 @@ func main() {
 	}
 	if len(n.Seeds()) == 0 {
 		log.Printf("no seed peers: this node is alone on its own network")
-		if codes := joinAddrs(n.Addrs()); len(codes) > 0 {
-			log.Printf("another machine joins it with: bitllm --bootstrap %s", codes[0])
-			for _, a := range codes[1:] {
-				log.Printf("or with another address: bitllm --bootstrap %s", a)
-			}
-		}
+		logJoinCode(log.Printf, n.Addrs())
+	} else {
+		go joinCodeAfter(ctx, 30*time.Second, n.SeedConnected, n.Addrs, log.Printf)
 	}
 	if cfg.Upstream != "" {
 		if len(cfg.Models) > 0 {
@@ -361,8 +479,28 @@ func main() {
 		}
 	}
 	log.Printf("gateway http://%s/v1", gateway)
+	if cfg.GatewayKey != "" {
+		log.Printf("gateway key on: clients send it as their API key; open the dashboard once at http://%s/?key=YOUR_KEY", gateway)
+	} else if gatewayExposed(gateway) {
+		log.Printf("WARNING: GATEWAY %s IS OPEN TO OTHER MACHINES WITH NO KEY. Set --gateway-key or BITLLM_GATEWAY_KEY, or listen on 127.0.0.1.", gateway)
+	}
 	srv := &http.Server{Addr: gateway, Handler: n.Gateway()}
-	go func() { <-ctx.Done(); srv.Close() }()
+	stopped := make(chan struct{})
+	if !lifecycle.serving(func() {
+		defer close(stopped)
+		log.Printf("stopping: finishing live requests for up to %v (signal again to exit now)", node.Drain)
+		stopUpdates()
+		signalStopped()
+		drain, done := context.WithTimeout(context.Background(), node.Drain)
+		defer done()
+		if err := n.Shutdown(drain, srv); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		cancel()
+	}) {
+		signalStopped()
+		return
+	}
 	ln, err := net.Listen("tcp", gateway)
 	if err != nil {
 		log.Fatal(err)
@@ -377,13 +515,12 @@ func main() {
 				return restartInto(path)
 			}
 		}
-		go upd.Run(ctx)
-		go upd.MarkHealthy(ctx) // the gateway is bound, so this start counts from here
+		go upd.Run(updates)
+		go upd.MarkHealthy(updates) // the gateway is bound, so this start counts from here
 	}
 	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-	if upd != nil {
-		upd.Stopped()
-	}
+	// Shutdown makes Serve return at once, so wait for the drain.
+	<-stopped
 }

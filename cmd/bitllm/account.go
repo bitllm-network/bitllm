@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"
+	"golang.org/x/term"
 )
 
 const accountUsage = `bitllm account: tie this node to an Ethereum address so its credits add up
@@ -36,6 +39,7 @@ func accountCmd(args []string, home string) {
 	fs := flag.NewFlagSet("account", flag.ExitOnError)
 	data := fs.String("data", filepath.Join(home, ".bitllm"), "identity and ledger directory")
 	gateway := fs.String("gateway", "127.0.0.1:7778", "gateway of the running node, if any")
+	gatewayKey := fs.String("gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "the gateway's key, if it was started with one (default $BITLLM_GATEWAY_KEY)")
 	name := fs.String("name", "", "display name shown in the credits table (max 32 bytes)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, accountUsage) }
 	sub := "show"
@@ -51,6 +55,7 @@ func accountCmd(args []string, home string) {
 	}
 	self, _ := peer.IDFromPrivateKey(nodeKey)
 	claims := account.OpenClaims(filepath.Join(*data, "claims.json"))
+	claims.SetSelf(self.String()) // this process exits right after linking, so the claim is written at once
 
 	var key *secp256k1.PrivateKey
 	switch sub {
@@ -67,9 +72,12 @@ func accountCmd(args []string, home string) {
 		key, _ = account.KeyFromMnemonic(words)
 		fmt.Printf("Your account: %s\n\nRecovery words (write them down; they are shown once and are the only way\nto link other machines or prove this account later):\n\n    %s\n\n", account.ChecksumAddress(account.EthAddress(key.PubKey())), words)
 		fmt.Println("They also work in any Ethereum wallet (MetaMask, Rabby...), first account.")
+		fmt.Println("Once they are written down, clear this terminal's scrollback.")
 	case "link":
-		fmt.Print("Recovery words: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := readWords("Recovery words (not shown): ", os.Stdin, os.Stdout)
+		if err != nil {
+			fail(err)
+		}
 		if key, err = account.KeyFromMnemonic(line); err != nil {
 			fail(err)
 		}
@@ -86,7 +94,7 @@ func accountCmd(args []string, home string) {
 
 	// Prefer the running node, which also gossips the claim right away.
 	body, _ := json.Marshal(map[string]any{"owner": c.Owner, "name": c.Name, "time": c.Time, "owner_sig": c.OwnerSig})
-	if resp, err := http.Post("http://"+*gateway+"/account/link", "application/json", bytes.NewReader(body)); err == nil {
+	if resp, err := postGateway(*gateway, *gatewayKey, "/account/link", body); err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			var e struct{ Error struct{ Message string } }
@@ -105,6 +113,39 @@ func accountCmd(args []string, home string) {
 	fmt.Printf("Linked node %s to %s. It is announced when the node starts.\n", self, account.ChecksumAddress(c.Owner))
 }
 
+// postGateway sends JSON to the running node, with its key if it has one.
+func postGateway(gateway, key, path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest("POST", "http://"+gateway+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key = strings.TrimSpace(key); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	return gatewayClient.Do(req)
+}
+
+// gatewayClient talks to the running node, which answers these at once. One
+// that hangs must not hold up the command for good.
+var gatewayClient = &http.Client{Timeout: 15 * time.Second}
+
+// readWords asks for recovery words: with no echo on a terminal, and as one
+// plain line from a pipe.
+func readWords(prompt string, in *os.File, out io.Writer) (string, error) {
+	fmt.Fprint(out, prompt)
+	if fd := int(in.Fd()); term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(out) // the Enter key was not echoed either
+		return string(b), err
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return line, nil
+}
+
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
@@ -115,13 +156,14 @@ const inviteUsage = `bitllm invite: let another account into the network.
   bitllm invite 0xADDRESS            invite an account (asks for your recovery words)
   bitllm invite --revoke 0xADDRESS   remove an account (roots only)
 
-Members invite up to 3 accounts, contributors (served a job in the last 7 days)
-up to 10. Needs this machine's node running, which gossips the signed invite.
+Members invite up to 3 accounts, and up to 10 once their nodes have served.
+Needs this machine's node running, which gossips the signed invite.
 `
 
 func inviteCmd(args []string) {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
 	gateway := fs.String("gateway", "127.0.0.1:7778", "gateway of the running node")
+	gatewayKey := fs.String("gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "the gateway's key, if it was started with one (default $BITLLM_GATEWAY_KEY)")
 	revoke := fs.Bool("revoke", false, "revoke the account instead (roots only)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, inviteUsage) }
 	var addr string
@@ -138,8 +180,10 @@ func inviteCmd(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
-	fmt.Print("Your recovery words: ")
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := readWords("Your recovery words (not shown): ", os.Stdin, os.Stdout)
+	if err != nil {
+		fail(err)
+	}
 	key, err := account.KeyFromMnemonic(line)
 	if err != nil {
 		fail(err)
@@ -156,7 +200,7 @@ func inviteCmd(args []string) {
 		it.Invite = i
 	}
 	body, _ := json.Marshal(it)
-	resp, err := http.Post("http://"+*gateway+"/members", "application/json", bytes.NewReader(body))
+	resp, err := postGateway(*gateway, *gatewayKey, "/members", body)
 	if err != nil {
 		fail(fmt.Errorf("no node running at %s; start bitllm first", *gateway))
 	}

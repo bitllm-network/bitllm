@@ -48,6 +48,8 @@ gossip, its own announce included:
 ```
 
 - Only nodes that serve something right now are counted (client-only nodes do not announce).
+- `free` and `max` under `models` count a node once per model it serves. A node's slots are shared
+  by all its models, so adding up the models overstates capacity.
 - `lat`/`lon` are the middle of the cell, not of any node.
 - No peer ids and no addresses, so a published copy cannot link a node's identity to its region.
   (Peer ids and their cells do travel in the gossip itself; anyone running a node can see them.)

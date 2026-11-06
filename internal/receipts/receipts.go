@@ -14,7 +14,6 @@
 package receipts
 
 import (
-	"bufio"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
@@ -22,11 +21,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/bitllm-org/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/store"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -84,101 +85,6 @@ type pendingJob struct {
 type ServerCredits struct {
 	Credits int64 `json:"credits"`
 	Jobs    int   `json:"jobs"`
-}
-
-// Receipts is every valid receipt this node has seen, appended to a file.
-type Receipts struct {
-	mu      sync.Mutex
-	f       *os.File
-	seen    map[string]bool
-	all     []SignedReceipt
-	pending map[string]*pendingJob
-	rate    gossipRate
-	key     crypto.PrivKey
-	self    peer.ID
-}
-
-func Open(path string, key crypto.PrivKey, self peer.ID) (*Receipts, error) {
-	rs := &Receipts{seen: map[string]bool{}, pending: map[string]*pendingJob{}, key: key, self: self}
-	if f, err := os.Open(path); err == nil {
-		sc := bufio.NewScanner(f)
-		sc.Buffer(nil, 1<<20)
-		for sc.Scan() {
-			var sr SignedReceipt
-			if json.Unmarshal(sc.Bytes(), &sr) == nil && sr.Valid() && !rs.seen[sr.Receipt.Job] {
-				rs.seen[sr.Receipt.Job] = true
-				rs.all = append(rs.all, sr)
-			}
-		}
-		f.Close()
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	rs.f = f
-	return rs, err
-}
-
-// Add stores a receipt if it is valid and new; it reports whether it was.
-func (rs *Receipts) Add(sr SignedReceipt) bool {
-	if !sr.Valid() {
-		return false
-	}
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	if rs.seen[sr.Receipt.Job] {
-		return false
-	}
-	rs.seen[sr.Receipt.Job] = true
-	rs.all = append(rs.all, sr)
-	b, _ := json.Marshal(sr)
-	rs.f.Write(append(b, '\n'))
-	return true
-}
-
-// Tally sums credits per server.
-func (rs *Receipts) Tally() map[string]ServerCredits {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	out := map[string]ServerCredits{}
-	for _, sr := range rs.all {
-		r := sr.Receipt
-		c := out[r.Server]
-		c.Credits += r.Credits
-		c.Jobs++
-		out[r.Server] = c
-	}
-	return out
-}
-
-// All returns a copy of every receipt this node has stored.
-func (rs *Receipts) All() []SignedReceipt {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	return append([]SignedReceipt(nil), rs.all...)
-}
-
-// ServersSince reports, per server, whether it served a job at or after since.
-func (rs *Receipts) ServersSince(since int64) map[string]bool {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	out := map[string]bool{}
-	for _, sr := range rs.all {
-		r := sr.Receipt
-		out[r.Server] = out[r.Server] || r.TS >= since
-	}
-	return out
-}
-
-// JobsSince counts jobs per server at or after since.
-func (rs *Receipts) JobsSince(since int64) map[string]int {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	out := map[string]int{}
-	for _, sr := range rs.all {
-		if sr.Receipt.TS >= since {
-			out[sr.Receipt.Server]++
-		}
-	}
-	return out
 }
 
 // Gossip limits. Valid receipts cost nothing to forge between two keys you
@@ -274,13 +180,21 @@ func Key(seed []byte, server peer.ID, t time.Time) (crypto.PrivKey, error) {
 
 // LoadSeed reads the receipt pseudonym seed, creating it on first run.
 // Deleting the file breaks the link to past pseudonyms without changing the peer id.
+// A file that exists but cannot be used is an error and is left as it is.
 func LoadSeed(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil && len(b) == 32 {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		if len(b) != 32 {
+			return nil, fmt.Errorf("receipt seed %s is %d bytes, not 32: restore it from a backup, or delete it to start a new one", path, len(b))
+		}
 		return b, nil
 	}
-	b := make([]byte, 32)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cannot read receipt seed %s: %w", path, err)
+	}
+	b = make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
-	return b, os.WriteFile(path, b, 0o600)
+	return b, store.WriteFile(path, b, 0o600)
 }

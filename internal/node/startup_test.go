@@ -49,7 +49,7 @@ func startNode(t *testing.T, ctx context.Context, cfg Config) *Node {
 		if r.err != nil {
 			t.Fatal(r.err)
 		}
-		t.Cleanup(func() { r.n.host.Close() })
+		t.Cleanup(func() { r.n.host.Close(); r.n.closeState() })
 		return r.n
 	case <-time.After(startBudget):
 		t.Fatalf("New did not return within %v", startBudget)
@@ -267,6 +267,7 @@ func TestLateSeedGetsSynced(t *testing.T) {
 	id, _ := claimNode(t, first, newEthKey(t))
 	claimed, seedID := id.String(), first.ID()
 	first.host.Close()
+	first.closeState()
 	stopFirst()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -284,7 +285,7 @@ func TestLateSeedGetsSynced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { seed.host.Close() })
+	t.Cleanup(func() { seed.host.Close(); seed.closeState() })
 	eventually(t, 15*time.Second, "the late seed was not synced", func() bool { return holdsClaim(n, claimed) })
 }
 

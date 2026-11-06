@@ -44,7 +44,7 @@ func TestReceiptCreditsFollowTokens(t *testing.T) {
 func TestReceiptGossipLimits(t *testing.T) {
 	ck, cid := newKey(t)
 	sk, sid := newKey(t)
-	rs := &Receipts{seen: map[string]bool{}, pending: map[string]*pendingJob{}}
+	rs := &Receipts{}
 	server, _ := peer.Decode(sid)
 	other, _ := peer.Decode(cid)
 	mk := func(job string, ts int64) *SignedReceipt {

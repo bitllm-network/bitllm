@@ -353,7 +353,7 @@ host that serves a model and has inbound TCP and UDP 4001 joins through `seed1`
 and needs no record. Use `deploy/gpu-host.sh` with `PUBLIC=1`. Its announce
 carries `relay=true`, and NATed nodes use it alongside `seed1`.
 
-A bare relay that serves no model does not work this way yet:
+A bare relay that serves no model works from `v0.5.0`, once the seeds run `v0.5.0`:
 
 ```sh
 bitllm --public --port 4001 \
@@ -361,9 +361,10 @@ bitllm --public --port 4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-This node answers DHT queries, but it sends no announce, so NATed nodes never pick
-it as a relay. That needs a later release. Until then, use a host that serves a
-model, or add a second seed.
+It announces `relay=true` with no models, so NATed nodes can pick it as a relay.
+Nodes older than `v0.5.0` refuse that announce and do not forward it, so one old
+seed in the path keeps it from spreading. Update the seeds first. Until then, use a
+host that serves a model, which older nodes accept, or add a second seed.
 
 A **second seed** is for new joins, and is a public relay that is always on and
 listed in DNS. It joins the first:

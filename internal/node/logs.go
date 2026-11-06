@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // recentLogs keeps the tail of what this node logged, so a local view can show
@@ -53,6 +54,21 @@ func (n *Node) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	for _, line := range recentLogs.Tail(limit) {
-		fmt.Fprintln(w, line)
+		fmt.Fprintln(w, printableLine(line))
 	}
+}
+
+// printableLine drops what a terminal would act on instead of print: control
+// characters (ESC among them), bidi overrides and line separators. So printing
+// GET /logs in a terminal only ever prints.
+func printableLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r), r == '\u2028', r == '\u2029':
+			return -1
+		}
+		return r
+	}, s)
 }
