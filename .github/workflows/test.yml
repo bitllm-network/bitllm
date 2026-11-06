@@ -23,7 +23,7 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
       - name: public links use the current GitHub org
-        run: "! git grep -n 'bitllm-network' -- README.md deploy docs"
+        run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md deploy docs'
       - name: deploy scripts parse
         run: |
           bash -n deploy/bootstrap-vps.sh
