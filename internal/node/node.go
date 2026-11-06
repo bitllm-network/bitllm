@@ -465,6 +465,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
+		go n.audits.recheckLoop(loops)
 	}
 	go n.joinSeeds(loops)
 	go n.redialLoop(loops)
