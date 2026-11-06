@@ -25,7 +25,7 @@ func eventually(t *testing.T, within time.Duration, what string, cond func() boo
 }
 
 // heldUpstream streams one event for a chat request and then holds the
-// response open until release is called or the request goes away.
+// response open until release ends it properly or the request goes away.
 func heldUpstream(t *testing.T) (up *httptest.Server, release func()) {
 	t.Helper()
 	held := make(chan struct{})
@@ -41,6 +41,7 @@ func heldUpstream(t *testing.T) (up *httptest.Server, release func()) {
 		w.(http.Flusher).Flush()
 		select {
 		case <-held:
+			fmt.Fprint(w, "data: [DONE]\n\n")
 		case <-r.Context().Done():
 		}
 	}))

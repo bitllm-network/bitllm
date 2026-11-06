@@ -295,6 +295,7 @@ func main() {
 	flag.StringVar(&cfg.UpstreamKey, "upstream-key", os.Getenv("BITLLM_UPSTREAM_KEY"), "API key for the upstream (default $BITLLM_UPSTREAM_KEY, which keeps it out of the process list)")
 	flag.Var(&modelFlags, "model", "local-name or local-name=public-name to share (repeatable; default: every upstream model, refreshed while the node runs)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "requests served in parallel")
+	flag.BoolVar(&cfg.PeerFallback, "peer-fallback", false, "if your own model server is down, send requests for that model to peers (they can read them)")
 	flag.Var(&boot, "bootstrap", "multiaddr of a known peer, /ip4/.../tcp/4001/p2p/12D3..., or a /dnsaddr/ seed name (repeatable; default: the DNS seed list plus boot.bitllm.org)")
 	flag.StringVar(&gateway, "gateway", "127.0.0.1:7778", "local OpenAI-compatible gateway address")
 	flag.StringVar(&cfg.GatewayKey, "gateway-key", os.Getenv("BITLLM_GATEWAY_KEY"), "key every gateway request except the dashboard page must carry, as Authorization: Bearer or x-api-key; open the dashboard once with ?key=KEY (default $BITLLM_GATEWAY_KEY, which keeps it out of the process list)")
