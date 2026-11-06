@@ -32,7 +32,9 @@ import (
 // InferProto2 adds wait_ms and an optional queue. A server that has no free
 // slot answers with one {status: 202, position, eta_ms} line per check and
 // keeps the stream open; when a slot is free it sends {status: 200} and the
-// body follows. Old clients never send wait_ms, so they never see a 202.
+// body follows. A {status: 202} line with no position says the job holds a
+// slot and is waiting on the model server. Old clients never send wait_ms, so
+// they never see a 202.
 const maxRequest = 16 << 20
 
 // readTimeout bounds how long a peer may take to send its request line.
@@ -599,10 +601,16 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 	// not hold this request (and the gateway's writer) forever. Once the
 	// header is in, the deadline restarts with each read, so a long generation
 	// is not cut and a silent peer ends.
-	s.SetReadDeadline(time.Now().Add(wait + 30*time.Second))
+	grace := headerGrace
+	if stream {
+		grace = streamHeaderGrace
+	}
+	deadline := time.Now().Add(wait + grace)
+	s.SetReadDeadline(deadline)
 	in := &stallReader{s: s}
 	r := bufio.NewReaderSize(in, 64<<10)
 	var hdr inferHdr
+	var firstBeat time.Time
 	for {
 		// ReadSlice keeps one header line inside the buffer, so a peer
 		// cannot make us grow it without bound.
@@ -610,13 +618,29 @@ func (n *Node) infer(ctx context.Context, p peer.ID, path string, body []byte, s
 		if err != nil {
 			return false, err
 		}
+		hdr = inferHdr{} // a field this line leaves out must not keep the last line's value
 		if err := json.Unmarshal(line, &hdr); err != nil {
 			return false, err
 		}
-		if hdr.Status == 202 { // queued; the slot comes on this stream
+		if hdr.Status != 202 {
+			break
+		}
+		if hdr.Position != 0 { // queued; the slot comes on this stream
 			continue
 		}
-		break
+		// Position 0: the job holds a slot and waits on its model server.
+		now := time.Now()
+		if firstBeat.IsZero() {
+			firstBeat = now
+		}
+		next := now.Add(progressStall)
+		if last := firstBeat.Add(maxGenerate); next.After(last) {
+			next = last
+		}
+		if next.After(deadline) {
+			deadline = next
+			s.SetReadDeadline(deadline)
+		}
 	}
 	if hdr.Status != 200 {
 		return false, &peerError{hdr.Status, cleanPeerText(hdr.Error, maxPeerText)}

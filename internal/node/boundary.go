@@ -18,6 +18,17 @@ var (
 	peerStall         = 5 * time.Minute // longest a peer may stay silent while sending a body
 )
 
+// How long a peer may take to send its header line, after the time it may
+// queue the request. A server that says a job holds a slot gets progressStall
+// from each such line, up to maxGenerate from the first. A server too old to
+// say so sends nothing until its model server answers, so it gets the grace.
+var (
+	headerGrace       = 180 * time.Second
+	streamHeaderGrace = 60 * time.Second
+	progressStall     = 60 * time.Second
+	maxGenerate       = 30 * time.Minute
+)
+
 // Ways a peer's answer can end without being a whole answer.
 var (
 	errPeerTooLarge = errors.New("the answer is over the size limit")

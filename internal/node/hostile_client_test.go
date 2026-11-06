@@ -517,3 +517,142 @@ func TestFailoverAfterBusyWait(t *testing.T) {
 		t.Fatalf("got %d %q %s, %v", got, body, hdr.Get("X-Bitllm-Peer"), err)
 	}
 }
+
+// beat sends a header line every 50 ms until the stream ends or until is over.
+func beat(s network.Stream, h inferHdr, until time.Duration) {
+	for end := time.Now().Add(until); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if sayHdr(s, h) != nil {
+			return
+		}
+	}
+}
+
+// inferOnce runs one request against a scripted peer directly and reports how
+// it ended and how long that took.
+func inferOnce(t *testing.T, stream bool, run script) (started bool, took time.Duration, err error) {
+	t.Helper()
+	client := clientNode(t)
+	sp := addScriptedPeer(t, client, "m", 1, run)
+	body := chatBody
+	if stream {
+		body = chatStream
+	}
+	start := time.Now()
+	started, err = client.infer(t.Context(), sp.id, "/chat/completions", []byte(body), stream, httptest.NewRecorder(), 0)
+	return started, time.Since(start), err
+}
+
+// Lines saying the job holds a slot keep a long wait for the model server alive.
+func TestHeartbeatExtendsHeaderWait(t *testing.T) {
+	setVar(t, &headerGrace, 200*time.Millisecond)
+	setVar(t, &progressStall, 300*time.Millisecond)
+	started, _, err := inferOnce(t, false, func(s network.Stream, req inferReq) {
+		beat(s, inferHdr{Status: 202}, time.Second)
+		honestAnswer(s, req)
+	})
+	if !started || err != nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+}
+
+// The first heartbeat often follows queue lines. A line with no position means
+// position 0 even after lines that named one.
+func TestHeartbeatAfterQueueLines(t *testing.T) {
+	setVar(t, &headerGrace, 200*time.Millisecond)
+	setVar(t, &progressStall, 300*time.Millisecond)
+	started, _, err := inferOnce(t, false, func(s network.Stream, req inferReq) {
+		sayHdr(s, inferHdr{Status: 202, Position: 3, ETA: 500})
+		beat(s, inferHdr{Status: 202}, time.Second)
+		honestAnswer(s, req)
+	})
+	if !started || err != nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+}
+
+// Queue lines extend nothing: past the queue bound the request ends.
+func TestQueueLinesDoNotExtend(t *testing.T) {
+	setVar(t, &headerGrace, 300*time.Millisecond)
+	setVar(t, &progressStall, time.Hour)
+	for _, pos := range []int{1, 7, -1} {
+		started, took, err := inferOnce(t, false, func(s network.Stream, _ inferReq) {
+			beat(s, inferHdr{Status: 202, Position: pos, ETA: 1000}, 20*time.Second)
+		})
+		if started || err == nil || took > 3*time.Second {
+			t.Fatalf("position %d: started=%v err=%v after %v", pos, started, err, took)
+		}
+	}
+}
+
+// A queue line after a heartbeat does not push the deadline either.
+func TestQueueLinesAfterHeartbeatDoNotExtend(t *testing.T) {
+	setVar(t, &headerGrace, 100*time.Millisecond)
+	setVar(t, &progressStall, 400*time.Millisecond)
+	started, took, err := inferOnce(t, false, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 202})
+		beat(s, inferHdr{Status: 202, Position: 1}, 20*time.Second)
+	})
+	if started || err == nil || took > 3*time.Second {
+		t.Fatalf("started=%v err=%v after %v", started, err, took)
+	}
+}
+
+// Heartbeats alone cannot hold a request past maxGenerate.
+func TestHeartbeatBoundedOverall(t *testing.T) {
+	setVar(t, &headerGrace, 100*time.Millisecond)
+	setVar(t, &progressStall, 200*time.Millisecond)
+	setVar(t, &maxGenerate, 500*time.Millisecond)
+	started, took, err := inferOnce(t, false, func(s network.Stream, _ inferReq) {
+		beat(s, inferHdr{Status: 202}, 20*time.Second)
+	})
+	if started || err == nil || took > 3*time.Second {
+		t.Fatalf("started=%v err=%v after %v", started, err, took)
+	}
+}
+
+// A heartbeat that goes quiet ends the request after progressStall.
+func TestHeartbeatStops(t *testing.T) {
+	setVar(t, &headerGrace, 100*time.Millisecond)
+	setVar(t, &progressStall, 300*time.Millisecond)
+	started, took, err := inferOnce(t, false, func(s network.Stream, _ inferReq) {
+		sayHdr(s, inferHdr{Status: 202})
+		holdOpen(s)
+	})
+	if started || err == nil || took > 3*time.Second {
+		t.Fatalf("started=%v err=%v after %v", started, err, took)
+	}
+}
+
+// A heartbeat never shortens the time the request already had.
+func TestHeartbeatKeepsLongerDeadline(t *testing.T) {
+	setVar(t, &headerGrace, 800*time.Millisecond)
+	setVar(t, &progressStall, 100*time.Millisecond)
+	started, _, err := inferOnce(t, false, func(s network.Stream, req inferReq) {
+		sayHdr(s, inferHdr{Status: 202})
+		time.Sleep(400 * time.Millisecond)
+		honestAnswer(s, req)
+	})
+	if !started || err != nil {
+		t.Fatalf("started=%v err=%v", started, err)
+	}
+}
+
+// A server too old to send heartbeats gets more time before its first line
+// when not streaming, since a non-streamed answer sends nothing until it is done.
+func TestHeaderGraceForOldServers(t *testing.T) {
+	if headerGrace != 180*time.Second || streamHeaderGrace != 60*time.Second {
+		t.Fatalf("grace %v and %v, want 180 s and 60 s", headerGrace, streamHeaderGrace)
+	}
+	setVar(t, &headerGrace, 1500*time.Millisecond)
+	setVar(t, &streamHeaderGrace, 200*time.Millisecond)
+	late := func(s network.Stream, req inferReq) {
+		time.Sleep(600 * time.Millisecond)
+		honestAnswer(s, req)
+	}
+	if started, _, err := inferOnce(t, false, late); !started || err != nil {
+		t.Fatalf("non-streamed: started=%v err=%v", started, err)
+	}
+	if started, _, err := inferOnce(t, true, late); started || err == nil {
+		t.Fatalf("streamed: started=%v err=%v, want the shorter grace to end it", started, err)
+	}
+}
