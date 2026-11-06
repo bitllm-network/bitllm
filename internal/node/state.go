@@ -1,9 +1,13 @@
 package node
 
-import "log"
+import (
+	"log"
+	"path/filepath"
+)
 
 // wireState connects the stores to each other once they all exist.
 func (n *Node) wireState() {
+	n.syncCursors = openSyncCursors(filepath.Join(n.cfg.DataDir, "sync-cursors.json"))
 	n.claims.SetSelf(n.host.ID().String())
 	if n.members.Enabled() {
 		n.claims.SetMembership(func(owner string) bool { return n.memberSet().Member[owner] })

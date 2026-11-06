@@ -128,6 +128,8 @@ type Node struct {
 	servedEver   map[string]bool // cached, see servedSets
 	servedRecent map[string]bool // cached, see contributors
 	recentAt     time.Time
+	syncGate     syncGate
+	syncCursors  *syncCursors
 	annRate      originRate // announce gossip, per origin
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
@@ -324,6 +326,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n.wireState()
 	n.host.SetStreamHandler(protocol.ReceiptProto, n.handleReceipt)
 	n.host.SetStreamHandler(protocol.SyncProto, n.handleSync)
+	n.host.SetStreamHandler(protocol.SyncProto2, n.handleSync2)
 	n.host.SetStreamHandler(protocol.HelloProto, n.handleHello)
 
 	ps, err := pubsub.NewGossipSub(ctx, n.host)

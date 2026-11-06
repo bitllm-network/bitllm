@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/bitllm-org/bitllm/internal/account"
-	"github.com/bitllm-org/bitllm/internal/members"
 	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/bitllm-org/bitllm/internal/receipts"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -19,9 +18,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// receiptWait bounds both sides of a receipt exchange, which is one short line
+// each way, and receiptReply bounds the answer a client reads.
+const (
+	receiptWait  = 10 * time.Second
+	receiptReply = 4 << 10
+)
+
 // handleReceipt: a client hands us its signed receipt for a job we served.
 func (n *Node) handleReceipt(s network.Stream) {
 	defer s.Close()
+	s.SetReadDeadline(time.Now().Add(receiptWait))
 	var sr receipts.SignedReceipt
 	if err := json.NewDecoder(io.LimitReader(s, 64<<10)).Decode(&sr); err != nil {
 		return
@@ -68,18 +75,19 @@ func (n *Node) sendReceipt(p peer.ID, job, model string, m meter) error {
 func (n *Node) deliverReceipt(p peer.ID, sr receipts.SignedReceipt) error {
 	// A receipt is one short line: give a stalled peer ten seconds, then let
 	// the retry above open a fresh stream instead of blocking here.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), receiptWait)
 	defer cancel()
 	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "receipt"), p, protocol.ReceiptProto)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(receiptWait))
 	if err := json.NewEncoder(s).Encode(sr); err != nil {
 		return err
 	}
 	s.CloseWrite()
-	line, _ := bufio.NewReader(s).ReadString('\n')
+	line, _ := bufio.NewReader(io.LimitReader(s, receiptReply)).ReadString('\n')
 	switch line {
 	case "ok\n":
 		return nil
@@ -87,81 +95,6 @@ func (n *Node) deliverReceipt(p peer.ID, sr receipts.SignedReceipt) error {
 		return receipts.ErrUnknownJob
 	}
 	return fmt.Errorf("server refused receipt: %q", line)
-}
-
-// syncItem is one line of the sync stream: a receipt, or a node claim.
-type syncItem struct {
-	receipts.SignedReceipt
-	Claim  *account.Claim  `json:"claim,omitempty"`
-	Invite *members.Invite `json:"invite,omitempty"`
-	Revoke *members.Revoke `json:"revoke,omitempty"`
-}
-
-// handleSync streams every receipt and claim we know, so a new node can catch up.
-func (n *Node) handleSync(s network.Stream) {
-	defer s.Close()
-	enc := json.NewEncoder(s)
-	for _, sr := range n.receipts.All() {
-		if enc.Encode(sr) != nil {
-			return
-		}
-	}
-	for _, c := range n.claims.All() {
-		if enc.Encode(map[string]any{"claim": c}) != nil {
-			return
-		}
-	}
-	for _, it := range n.members.Items() {
-		if enc.Encode(it) != nil {
-			return
-		}
-	}
-}
-
-// syncReceipts reads one seed's sync stream. A seed may answer slowly but may
-// not go silent or run on forever: the read deadline restarts with each item,
-// SyncLimit bounds the whole sync, and a sync that fails resets the stream.
-func (n *Node) syncReceipts(ctx context.Context, p peer.ID) (added int, err error) {
-	ctx, cancel := context.WithTimeout(ctx, n.cfg.SyncLimit)
-	defer cancel()
-	open, cancelOpen := context.WithTimeout(ctx, n.cfg.SyncStall)
-	defer cancelOpen()
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(open, "sync"), p, protocol.SyncProto)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err != nil {
-			s.Reset()
-		} else {
-			s.Close()
-		}
-	}()
-	// The context does not reach a read that is already blocked; this does.
-	stop := context.AfterFunc(ctx, func() { s.Reset() })
-	defer stop()
-	s.SetDeadline(time.Now().Add(n.cfg.SyncStall))
-	s.CloseWrite()
-	dec := json.NewDecoder(s)
-	for {
-		s.SetReadDeadline(time.Now().Add(n.cfg.SyncStall))
-		var it syncItem
-		if err := dec.Decode(&it); err != nil {
-			if err == io.EOF {
-				return added, nil
-			}
-			return added, err
-		}
-		if it.Claim != nil {
-			n.claims.Add(*it.Claim)
-		} else if it.Invite != nil || it.Revoke != nil {
-			if n.members.Add(members.Item{Invite: it.Invite, Revoke: it.Revoke}) {
-				n.invalidateMembers()
-			}
-		} else if n.receipts.Add(it.SignedReceipt) {
-			added++
-		}
-	}
 }
 
 func (n *Node) readReceipts(ctx context.Context, sub *pubsub.Subscription) {

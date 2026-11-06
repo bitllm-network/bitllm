@@ -28,6 +28,7 @@ const (
 	ReceiptTopic = "bitllm/receipts/1"
 	ReceiptProto = "/bitllm/receipt/1.0.0"
 	SyncProto    = "/bitllm/receipts-sync/1.0.0"
+	SyncProto2   = "/bitllm/sync/2.0.0" // from a cursor; a node asks for it first and falls back to SyncProto
 )
 
 // Gossip bounds. Peer ids cost nothing, so these do not stop a determined
