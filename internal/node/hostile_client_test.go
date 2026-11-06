@@ -203,7 +203,7 @@ func TestCleanPeerText(t *testing.T) {
 		{"escape sequences", "\x1b[31mred\x1b[0m\x07", 100, "[31mred[0m"},
 		{"line breaks", "one\r\ntwo\tthree", 100, "one  two three"},
 		{"invalid utf-8", "a\xff\xfeb", 100, "ab"},
-		{"c1 and format controls", "a\u0085b‮c d", 100, "abcd"},
+		{"c1 and format controls", "a\u0085b\u202ec\u2028d", 100, "abcd"},
 		{"other languages stay", "服务器繁忙 busy", 100, "服务器繁忙 busy"},
 		{"cut to max", "abcdef", 3, "abc"},
 		{"cut between characters", "服务器", 4, "服"},
@@ -279,23 +279,23 @@ func TestPeerErrorCleaned(t *testing.T) {
 	client := clientNode(t)
 	gw := gatewayOf(t, client)
 	logs := captureLogs(t)
-	addScriptedPeer(t, client, "m", 1, refuseWith(500, "bad\x1b]0;title\x07\ninjected line\xff"+strings.Repeat("x", 2*maxPeerText)))
+	addScriptedPeer(t, client, "m", 1, refuseWith(500, "bad\x1b]0;title\x07\nsecond line\xff"+strings.Repeat("x", 2*maxPeerText)))
 	got, _, body, _ := ask(t, gw, chatPath, chatBody)
 	if got != 500 {
 		t.Fatalf("got %d %q", got, body)
 	}
 	msg := errorMessage(t, body)
-	if strings.ContainsAny(msg, "\x1b\x07\n\xff") || !strings.Contains(msg, "bad]0;title injected line") {
+	if strings.ContainsAny(msg, "\x1b\x07\n") || !utf8.ValidString(msg) || !strings.Contains(msg, "bad]0;title second line") {
 		t.Fatalf("message not cleaned: %q", msg)
 	}
 	if len(msg) > maxPeerText+len("all peers refused: ") {
 		t.Fatalf("message not capped: %d bytes", len(msg))
 	}
 	out := logs.String()
-	if !strings.Contains(out, "injected line") {
+	if !strings.Contains(out, "second line") {
 		t.Fatalf("the failure was not logged: %q", out)
 	}
-	if strings.ContainsAny(out, "\x1b\x07") || strings.Contains(out, "\ninjected line") {
+	if strings.ContainsAny(out, "\x1b\x07") || strings.Contains(out, "\nsecond line") {
 		t.Fatalf("log line not cleaned: %q", out)
 	}
 }
