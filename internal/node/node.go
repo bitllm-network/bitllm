@@ -94,6 +94,7 @@ type Config struct {
 	AuditServe       bool                  // announce the models our server can score, so others may use us as an auditor
 	Location         string                // coarse geohash cell for the node map (network.go); empty = not shown
 	UpdateStatus     func() map[string]any // what the updater reports, for GET /status; nil = no updater
+	PeerFallback     bool                  // while our own server is down, send requests for its models to peers
 }
 
 // peerInfo is one peer's latest announce and when we heard it. The announce
@@ -144,6 +145,7 @@ type Node struct {
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
 	audits       *audits        // nil without --audit
+	peerMem      peerMemory     // how peers have done per model, for candidates
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
@@ -896,7 +898,12 @@ func (n *Node) alive() map[peer.ID]protocol.Announce {
 	return out
 }
 
-// candidates lists remote peers serving model, best first.
+// rttNear is how close two latencies must be to count as equal when ranking.
+const rttNear = 50 * time.Millisecond
+
+// candidates lists remote peers serving model, best first: a peer in cooldown
+// goes behind all others but is still listed, so a sole server gets retried.
+// Peers that rank the same come in random order, so load spreads over them.
 func (n *Node) candidates(model string) []peer.ID {
 	type c struct {
 		id      peer.ID
@@ -904,9 +911,12 @@ func (n *Node) candidates(model string) []peer.ID {
 		q       int
 		rtt     time.Duration
 		demoted bool // an audit suspect: used only when nobody else can answer
+		cooling bool // failed recently
+		recent  bool // answered recently
 	}
 	var cs []c
 	want := models.Manifest[model].Weights
+	now := time.Now()
 	for p, a := range n.alive() {
 		// A peer that says it loads other weights than the name stands for
 		// is serving another model under this name, by its own account.
@@ -929,24 +939,32 @@ func (n *Node) candidates(model string) []peer.ID {
 				if rtt <= 0 {
 					rtt = time.Duration(1<<62 - 1)
 				}
-				cs = append(cs, c{p, a.Free, a.Q, rtt, demoted})
+				cooling, recent := n.peerMem.rank(p, model, now)
+				cs = append(cs, c{p, a.Free, a.Q, rtt, demoted, cooling, recent})
 				break
 			}
 		}
 	}
-	sort.Slice(cs, func(i, j int) bool {
+	rand.Shuffle(len(cs), func(i, j int) { cs[i], cs[j] = cs[j], cs[i] })
+	sort.SliceStable(cs, func(i, j int) bool {
+		if cs[i].cooling != cs[j].cooling {
+			return !cs[i].cooling
+		}
 		if cs[i].demoted != cs[j].demoted {
 			return !cs[i].demoted
 		}
 		if (cs[i].free > 0) != (cs[j].free > 0) {
 			return cs[i].free > 0
 		}
+		if cs[i].recent != cs[j].recent {
+			return cs[i].recent
+		}
 		// A peer with a shorter queue sends the answer sooner than one with
 		// a long one, whatever the ping says. q is the depth it announced.
 		if cs[i].q != cs[j].q {
 			return cs[i].q < cs[j].q
 		}
-		return cs[i].rtt < cs[j].rtt
+		return cs[i].rtt/rttNear < cs[j].rtt/rttNear
 	})
 	out := make([]peer.ID, len(cs))
 	for i := range cs {
