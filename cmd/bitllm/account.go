@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"
+	"golang.org/x/term"
 )
 
 const accountUsage = `bitllm account: tie this node to an Ethereum address so its credits add up
@@ -68,9 +71,12 @@ func accountCmd(args []string, home string) {
 		key, _ = account.KeyFromMnemonic(words)
 		fmt.Printf("Your account: %s\n\nRecovery words (write them down; they are shown once and are the only way\nto link other machines or prove this account later):\n\n    %s\n\n", account.ChecksumAddress(account.EthAddress(key.PubKey())), words)
 		fmt.Println("They also work in any Ethereum wallet (MetaMask, Rabby...), first account.")
+		fmt.Println("Once they are written down, clear this terminal's scrollback.")
 	case "link":
-		fmt.Print("Recovery words: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := readWords("Recovery words (not shown): ", os.Stdin, os.Stdout)
+		if err != nil {
+			fail(err)
+		}
 		if key, err = account.KeyFromMnemonic(line); err != nil {
 			fail(err)
 		}
@@ -116,7 +122,27 @@ func postGateway(gateway, key, path string, body []byte) (*http.Response, error)
 	if key = strings.TrimSpace(key); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	return http.DefaultClient.Do(req)
+	return gatewayClient.Do(req)
+}
+
+// gatewayClient talks to the running node, which answers these at once. One
+// that hangs must not hold up the command for good.
+var gatewayClient = &http.Client{Timeout: 15 * time.Second}
+
+// readWords asks for recovery words: with no echo on a terminal, and as one
+// plain line from a pipe.
+func readWords(prompt string, in *os.File, out io.Writer) (string, error) {
+	fmt.Fprint(out, prompt)
+	if fd := int(in.Fd()); term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(out) // the Enter key was not echoed either
+		return string(b), err
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return line, nil
 }
 
 func fail(err error) {
@@ -153,8 +179,10 @@ func inviteCmd(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
-	fmt.Print("Your recovery words: ")
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := readWords("Your recovery words (not shown): ", os.Stdin, os.Stdout)
+	if err != nil {
+		fail(err)
+	}
 	key, err := account.KeyFromMnemonic(line)
 	if err != nil {
 		fail(err)

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A join code a remote machine can use: public addresses first, LAN second,
@@ -111,5 +114,43 @@ func TestPostGatewaySendsTheKey(t *testing.T) {
 	resp.Body.Close()
 	if got != "" {
 		t.Fatalf("Authorization without a key = %q", got)
+	}
+}
+
+// Words from a pipe are read as a line, with or without a final newline.
+func TestReadWordsFromAPipe(t *testing.T) {
+	for _, in := range []string{"one two three\nleft over", "one two three"} {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.WriteString(in)
+		w.Close()
+		var out strings.Builder
+		got, err := readWords("words: ", r, &out)
+		r.Close()
+		if err != nil || strings.TrimSpace(got) != "one two three" || out.String() != "words: " {
+			t.Fatalf("readWords(%q) = %q, %v, printed %q", in, got, err, out.String())
+		}
+	}
+}
+
+// A node that takes the POST and never answers must not hang the command.
+func TestPostGatewayTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	defer func(d time.Duration) { gatewayClient.Timeout = d }(gatewayClient.Timeout)
+	if gatewayClient.Timeout <= 0 {
+		t.Fatal("the CLI's HTTP client has no timeout")
+	}
+	gatewayClient.Timeout = 50 * time.Millisecond
+	if resp, err := postGateway(strings.TrimPrefix(srv.URL, "http://"), "", "/members", []byte("{}")); err == nil {
+		resp.Body.Close()
+		t.Fatal("no timeout")
 	}
 }
