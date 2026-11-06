@@ -154,6 +154,9 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
   A full queue answers at once, so nobody waits on a place that does not exist.
 - `--max-tokens` (default 32768): the most new tokens one peer request may ask for. Peers also get one
   choice per request (`n` is dropped).
+- Requests from peers are narrowed: your node forwards known fields only, `data:` images only, and
+  one prompt per `/completions` request. `--peer-field NAME` adds a field. Your own requests to your
+  own server are not narrowed.
 - Images: if your server caps images per prompt (vLLM's `--limit-mm-per-prompt`), the node learns the
   cap from the server's first refusal and from then on sends only the newest images, with a short note
   in place of each older one. Agents send every screenshot of a session again on each turn, so this
@@ -237,9 +240,15 @@ CLAUDE_CODE_SUBAGENT_MODEL=$M claude
 ```
 
 OpenAI clients (Cline, Continue, OpenCode, Aider...): base URL `http://127.0.0.1:7778/v1`, any API key.
-Anthropic requests need the serving peer's upstream to support `/v1/messages` (vLLM does). If you share
-a model yourself, your gateway answers it from your own server (free, never leaves your machine).
+Anthropic requests need the serving peer's upstream to support `/v1/messages` (vLLM does).
 The response header `X-Bitllm-Peer` says which peer answered.
+
+A model you share stays on your machine: your gateway answers it from your own server, for free. If
+your server is down, the gateway answers 503. `--peer-fallback` opts in to using peers instead, and
+those peers can read the prompts.
+
+Hosts narrow what they take from peers: known fields only, `data:` images only, one prompt per
+`/completions` request. If a client sends an unusual field, the host may need `--peer-field` for it.
 
 ## Watch and manage your node
 

@@ -100,6 +100,7 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
 - `--model 本地=公开`：只有本地服务叫的名字和网络名字不一样时才需要。等号左边是你的服务叫的名字，右边是网络名字。
 - `--concurrency`：同时接几个请求。多出来的请求在这个节点的队列里等，先按访问等级、再按到达顺序；等得越久等级每 20 秒升一级，但不会超过最高等级，之后到达顺序决定，所以同级里等得最久的先走。队列满了立刻回答，不让人等一个不存在的名额。
 - `--max-tokens`（默认 32768）：一个请求最多要多少新 token。每个请求只保留一个选择（`n` 会被丢掉）。
+- 来自其他节点的请求会被收窄：节点只转发已知字段，图片只收 `data:`，每个 `/completions` 请求只有一个 prompt。`--peer-field NAME` 可以加字段。你自己发给自己服务的请求不受影响。
 - 图片：如果你的服务限制了每个 prompt 的图片数（vLLM 的 `--limit-mm-per-prompt`），节点会从服务第一次拒绝里学到这个上限，之后只发最新的图片，旧的用一句短说明代替。Agent 每一轮都会把整个会话的截图再发一遍，这样长会话才不会撞上限。不用设置；改上限后重启节点。
 - `--location LAT,LON`（可选）：声明一个粗略位置，给 bitllm.org 的地图用。填城市里任意一点，比如 `--location 52.52,13.40`；节点只广播大约 150 公里的格子，永远不发这个点。不加就记为"没有位置"。细节见 [docs/network-map.md](docs/network-map.md)。
 
@@ -158,7 +159,11 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=$M ANTHROPIC_DEFAULT_SONNET_MODEL=$M ANTHROPIC_DEFA
 CLAUDE_CODE_SUBAGENT_MODEL=$M claude
 ```
 
-OpenAI 兼容客户端（Cline、Continue、OpenCode、Aider 等）：Base URL 填 `http://127.0.0.1:7778/v1`，API key 随便填。Anthropic 请求要求服务方的上游支持 `/v1/messages`（vLLM 支持）。如果你自己也分享了同一个模型，网关会直接用你自己的服务回答，不出本机。响应头 `X-Bitllm-Peer` 告诉你哪个节点回答的。
+OpenAI 兼容客户端（Cline、Continue、OpenCode、Aider 等）：Base URL 填 `http://127.0.0.1:7778/v1`，API key 随便填。Anthropic 请求要求服务方的上游支持 `/v1/messages`（vLLM 支持）。响应头 `X-Bitllm-Peer` 告诉你哪个节点回答的。
+
+你分享的模型留在你的机器上：网关用你自己的服务回答，免费。你的服务挂了时，网关返回 503。加 `--peer-fallback` 才会改用其他节点，那些节点能读到 prompt。
+
+服务方对来自其他节点的请求做了收窄：只收已知字段，图片只收 `data:`，每个 `/completions` 请求只有一个 prompt。如果客户端发了不常见的字段，服务方可能要用 `--peer-field` 放行。
 
 ## 观察和管理节点
 

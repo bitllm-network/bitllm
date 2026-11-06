@@ -51,6 +51,7 @@ bitllm --upstream http://localhost:8000/v1 \
 - 等号左边是你本地的名字，右边是网络名字。官方权重用 `deepseek-v4.1-flash-1017`，去审查版用 `deepseek-v4.1-flash-1017-heretic`；Qwen3.8 Flash-Next 的 NVIDIA FP4-Local 量化 + alesha 去审查微调版用 `qwen3.8-flash-next-fp4-alesha`，local-inference-lab 的 NVFP4-MXFP8-CSF-QAD 量化版用 `qwen3.8-flash-next-nvfp4-lil`。
 - 命名规则：公开模型用 Hugging Face 原 id；微调或量化用实际权重的仓库 id，没有就在后面接 `-量化-来源`。私有或全新的模型随便取一个稳定的名字，节点会自动广播，客户端在 `/v1/models` 和 dashboard 里就能选。同一个名字必须对应同一套权重。
 - `--concurrency` 是同时接几个请求，按你机器的余量填。多出来的请求留在这个节点的队列里等，先按访问等级、再按到达顺序轮；等久了等级每 20 秒升一级，最多升到最高的一级，之后按到达顺序，所以等得最久的排在最前面。队列满了直接拒绝，不让客户端反复重试。
+- 来自其他节点的请求会被收窄：节点只转发已知字段，图片只收 `data:`，每个 `/completions` 请求只有一个 prompt。客户端发了不常见的字段时，可以用 `--peer-field NAME` 放行（可重复）。
 
 看到 `sharing map[...]` 和 `gateway http://127.0.0.1:7778/v1` 就说明接上了。
 
@@ -75,7 +76,7 @@ curl localhost:7778/v1/chat/completions \
   -d '{"model":"deepseek-v4.1-flash-1017","stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-只想用不想分享，直接运行 `bitllm` 不带参数即可。自己分享的模型会优先由自己的机器回答，不出本机。
+只想用不想分享，直接运行 `bitllm` 不带参数即可。你分享的模型留在你的机器上，由你自己的服务回答；你的服务挂了时，网关返回 503。加 `--peer-fallback` 才会改用其他节点，那些节点能读到 prompt。
 
 ## 4. 访问规则（邀请制内测，PT 站式规则）
 
