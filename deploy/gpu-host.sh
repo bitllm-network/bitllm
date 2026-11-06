@@ -4,7 +4,7 @@
 #
 #   sudo bash gpu-host.sh [VERSION] [UPSTREAM] [MODEL]
 #
-#   VERSION   latest (default) or a tag such as v0.4.7. A tag also adds
+#   VERSION   latest (default) or a tag such as v0.5.0. A tag also adds
 #             --auto-update=false, so the host stays on it. latest keeps
 #             auto-update on.
 #   UPSTREAM  OpenAI-compatible base URL (default http://127.0.0.1:8000/v1)

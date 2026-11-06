@@ -8,6 +8,9 @@ hand.
 CI builds the binaries and never holds a signing key. An admin signs on their
 own machine, and nothing is public until an admin publishes it.
 
+Signatures are required from v0.5.0. A node on v0.5.0 or later refuses a release
+that has no good `SHA256SUMS.sig`, so a release must never go out without one.
+
 ## Cut a release
 
 ### 1. Tag
@@ -41,7 +44,7 @@ gh release upload vX.Y.Z SHA256SUMS.sig
 ```
 
 `verify` makes the same check a node makes, against the keys in that checkout.
-If it fails, do not upload.
+If it fails, do not upload, and do not go on to the next step.
 
 ### 3. Publish as a prerelease
 
@@ -52,21 +55,38 @@ gh release edit vX.Y.Z --draft=false
 It stays marked as a prerelease. `releases/latest` skips prereleases, so no node
 picks it up on its own, and neither do the installers.
 
-### 4. Test on a test node
+### 4. Check the signature and test
+
+Run the new binary against the published prerelease. Use the asset for your
+machine:
+
+```sh
+gh release download vX.Y.Z --pattern bitllm-linux-amd64
+chmod +x bitllm-linux-amd64
+./bitllm-linux-amd64 update --check --tag vX.Y.Z
+```
+
+It must print `signature: ok`, and it exits non-zero when the signature is not ok.
+Do not promote until this passes.
+
+Then try the release on a test node. Run a real request through it and check
+`bitllm --version`. On v0.5.0 or later, this installs it:
 
 ```sh
 bitllm update --tag vX.Y.Z
 ```
 
-It must print `signature: ok`. Restart the node, then check `bitllm --version`
-and a real request.
-
-`bitllm update --tag` is new in v0.4.7, and older binaries do not have it. So the
+`bitllm update --tag` is new in v0.5.0, and older binaries do not have it, so for
+v0.5.0 itself start the test node from the downloaded binary. It also means the
 first signed release's own background update path, an older node finding it and
 replacing itself, can only be observed by promoting it. Keep a v0.4.6 test node
 running to watch that happen.
 
 ### 5. Promote
+
+Every seed must run with `--auto-update=false` first, or it replaces itself as
+soon as the release is promoted. For `seed1` and v0.5.0, see
+[seed-handoff.md](seed-handoff.md).
 
 ```sh
 gh release edit vX.Y.Z --prerelease=false --latest
@@ -122,5 +142,8 @@ public key.
   shared password store.
 - Add the public key to `TrustedKeys` in `internal/update/keys.go` through a PR.
   `go run ./scripts/sign check-keys` must pass before a tag can build.
-- A new key only counts on nodes that run a release containing it. Add it at least
-  one release before you rely on it.
+- A new key only counts on nodes that run a release containing it, and those nodes
+  refuse a release signed by any other key. Add it at least one release before you
+  sign with it.
+
+The list has one key so far. Add the second admin's key before the v0.5.0 tag.

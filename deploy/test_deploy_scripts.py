@@ -89,25 +89,25 @@ class SeedSettingsTest(TempDirTest):
         self.assertEqual(self.settings(), "latest||")
 
     def test_a_rerun_with_no_arguments_keeps_everything(self):
-        first = self.settings("v0.4.7", "seed1.example.org", "/dns4/boot.example.org/tcp/443/wss/p2p/12D3KooWX")
+        first = self.settings("v0.5.0", "seed1.example.org", "/dns4/boot.example.org/tcp/443/wss/p2p/12D3KooWX")
         self.assertEqual(self.settings(), first)
-        self.assertEqual(first, "v0.4.7|seed1.example.org|/dns4/boot.example.org/tcp/443/wss/p2p/12D3KooWX")
+        self.assertEqual(first, "v0.5.0|seed1.example.org|/dns4/boot.example.org/tcp/443/wss/p2p/12D3KooWX")
 
     def test_an_argument_overrides_only_itself(self):
-        self.settings("v0.4.7", "seed1.example.org", "/dnsaddr/seeds.example.org")
-        self.assertEqual(self.settings("v0.4.8"), "v0.4.8|seed1.example.org|/dnsaddr/seeds.example.org")
-        self.assertEqual(self.settings(), "v0.4.8|seed1.example.org|/dnsaddr/seeds.example.org")
+        self.settings("v0.5.0", "seed1.example.org", "/dnsaddr/seeds.example.org")
+        self.assertEqual(self.settings("v0.5.1"), "v0.5.1|seed1.example.org|/dnsaddr/seeds.example.org")
+        self.assertEqual(self.settings(), "v0.5.1|seed1.example.org|/dnsaddr/seeds.example.org")
 
     def test_an_empty_argument_clears_a_value(self):
-        self.settings("v0.4.7", "seed1.example.org", "/dnsaddr/seeds.example.org")
+        self.settings("v0.5.0", "seed1.example.org", "/dnsaddr/seeds.example.org")
         self.assertEqual(self.settings("latest", "", ""), "latest||")
         self.assertEqual(self.settings(), "latest||")
 
     def test_a_hand_edit_survives(self):
-        self.settings("v0.4.7", "seed1.example.org", "/dnsaddr/old.example.org")
+        self.settings("v0.5.0", "seed1.example.org", "/dnsaddr/old.example.org")
         text = self.file.read_text().replace("old.example.org", "new.example.org")
         self.file.write_text(text)
-        self.assertEqual(self.settings(), "v0.4.7|seed1.example.org|/dnsaddr/new.example.org")
+        self.assertEqual(self.settings(), "v0.5.0|seed1.example.org|/dnsaddr/new.example.org")
 
     def test_the_saved_file_is_private_and_nothing_is_left_beside_it(self):
         self.settings("latest", "seed1.example.org")
@@ -125,14 +125,14 @@ class SeedSettingsTest(TempDirTest):
 
     def test_an_older_install_must_pass_all_three(self):
         self.unit.write_text("[Service]\nExecStart=/bin/bitllm --bootstrap /dnsaddr/x\n")
-        for args in [(), ("v0.4.7",), ("v0.4.7", "seed1.example.org")]:
+        for args in [(), ("v0.5.0",), ("v0.5.0", "seed1.example.org")]:
             result = self.run_settings(*args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn("Pass all three", result.stderr)
             self.assertIn("ExecStart=/bin/bitllm --bootstrap /dnsaddr/x", result.stderr)
             self.assertFalse(self.file.exists())
-        self.assertEqual(self.settings("v0.4.7", "seed1.example.org", "/dnsaddr/x"), "v0.4.7|seed1.example.org|/dnsaddr/x")
-        self.assertEqual(self.settings(), "v0.4.7|seed1.example.org|/dnsaddr/x")
+        self.assertEqual(self.settings("v0.5.0", "seed1.example.org", "/dnsaddr/x"), "v0.5.0|seed1.example.org|/dnsaddr/x")
+        self.assertEqual(self.settings(), "v0.5.0|seed1.example.org|/dnsaddr/x")
 
     def test_bad_values_are_refused(self):
         for args in [
@@ -270,9 +270,9 @@ class HostSettingsTest(TempDirTest):
         self.assertEqual(result.stdout.strip(), "[]")
 
     def test_a_tag_is_a_real_pin_and_latest_is_not(self):
-        self.assertTrue(self.opts("v0.4.7").endswith(" --auto-update=false"))
+        self.assertTrue(self.opts("v0.5.0").endswith(" --auto-update=false"))
         self.assertTrue(self.opts().endswith(" --auto-update=false"))
-        self.assertIn("BITLLM_VERSION=v0.4.7\n", self.file.read_text())
+        self.assertIn("BITLLM_VERSION=v0.5.0\n", self.file.read_text())
         self.assertNotIn("--auto-update", self.opts("latest"))
         self.assertIn("BITLLM_VERSION=latest\n", self.file.read_text())
         self.assertEqual(self.extra_opts(), "")

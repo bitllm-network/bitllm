@@ -84,8 +84,9 @@ serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
 - **`SHA256SUMS.sig` is part of that contract.** Each line is a base64 ed25519 signature over
   `bitllm release v1\n<tag>\n` followed by the exact bytes of `SHA256SUMS`, made by a key listed in
   `internal/update/keys.go`. An admin adds this asset by hand, offline. CI never holds a signing key.
-  `go run ./scripts/sign verify` makes the same check a node makes. Changing the message or the
-  format is a change to a signed format, and old nodes would stop trusting new releases.
+  `go run ./scripts/sign verify` makes the same check a node makes. From v0.5.0 a node refuses a
+  release without a good signature, so changing the message or the format would leave those nodes
+  unable to update.
 - **No personal data in commits or binaries.** Commit as the repo-local noreply identity; release builds
   use `-trimpath`.
 - **User-facing copy** (README, README.zh.md, docs/JOIN.zh.md, and `public/` in bitllm-org/landing-page):

@@ -66,13 +66,13 @@ Get the script from a release tag, not from `main`. Use the newest tag on the
 
 ```sh
 curl -fsSL -o gpu-host.sh \
-  https://raw.githubusercontent.com/bitllm-org/bitllm/v0.4.7/deploy/gpu-host.sh
+  https://raw.githubusercontent.com/bitllm-org/bitllm/v0.5.0/deploy/gpu-host.sh
 sudo bash gpu-host.sh latest http://127.0.0.1:8000/v1 deepseek-v4.1-flash-1017
 ```
 
 The three arguments are version, the upstream base URL, and an optional model
 name (`local-name=public-name` if they differ). With `latest` the node keeps
-itself up to date. A tag such as `v0.4.7` adds `--auto-update=false`, so the host
+itself up to date. A tag such as `v0.5.0` adds `--auto-update=false`, so the host
 stays on that version until you rerun the script. Without a model name, every
 model the server lists is shared under exactly the id it reports, and the node
 re-reads the list while it runs.
