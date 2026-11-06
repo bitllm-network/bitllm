@@ -194,6 +194,7 @@ func (n *Node) complete(path string) http.HandlerFunc {
 				}
 				started, err := n.infer(r.Context(), p, path, body, req.Stream, w, wait)
 				if err == nil {
+					n.peerMem.answered(p, req.Model, time.Now())
 					if n.audits != nil {
 						n.audits.observe(p, req.Model, body)
 					}
@@ -209,17 +210,20 @@ func (n *Node) complete(path string) http.HandlerFunc {
 					// Part of an answer went out as a 200. Only dropping the
 					// connection tells the client that it did not end.
 					log.Printf("peer %s broke mid-response: %s", p, cleanPeerText(err.Error(), maxPeerText))
+					n.peerMem.failed(p, req.Model, time.Now())
 					panic(http.ErrAbortHandler)
 				}
 				var pe *peerError
 				if errors.As(err, &pe) && notAllowed(pe.status, pe.msg) {
 					// Skip it, here and in the retries; another server may answer.
 					refused[p], denied = true, err
+					n.peerMem.failed(p, req.Model, time.Now())
 					continue
 				}
 				tried++
 				if !errors.As(err, &pe) || !isBusy(pe.status, pe.msg) {
 					log.Printf("peer %s: %s", p, cleanPeerText(err.Error(), maxPeerText))
+					n.peerMem.failed(p, req.Model, time.Now())
 					busy = false
 					// The time spent on a failure is no reason to skip the next
 					// peer: this round is bounded by its three tries.

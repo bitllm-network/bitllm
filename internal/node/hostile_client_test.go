@@ -471,7 +471,7 @@ func TestClientHangUpIsNotPeerFailure(t *testing.T) {
 	logs := captureLogs(t)
 	client := clientNode(t)
 	gw := gatewayOf(t, client)
-	addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
+	sp := addScriptedPeer(t, client, "m", 1, func(s network.Stream, _ inferReq) {
 		sayHdr(s, inferHdr{Status: 200})
 		io.WriteString(s, eventDelta)
 		holdOpen(s)
@@ -491,6 +491,9 @@ func TestClientHangUpIsNotPeerFailure(t *testing.T) {
 	eventually(t, 5*time.Second, "the request did not end", func() bool { return client.gatewayLive.Load() == 0 })
 	if out := logs.String(); strings.Contains(out, "broke mid-response") {
 		t.Fatalf("logged as a peer failure: %q", out)
+	}
+	if cooling, _ := client.peerMem.rank(sp.id, "m", time.Now()); cooling {
+		t.Fatal("the peer went into cooldown because the local client left")
 	}
 }
 
@@ -766,5 +769,173 @@ func TestDialBounded(t *testing.T) {
 	}
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("took %v with a %v limit", took, dialTimeout)
+	}
+}
+
+// Three peers refuse the first request and use up its three tries. They cool
+// down, and the next request reaches the honest peer behind them.
+func TestRefusersCoolDown(t *testing.T) {
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	var refusers []*scriptedPeer
+	for range 3 {
+		refusers = append(refusers, addScriptedPeer(t, client, "m", 8, refuseWith(500, "no")))
+	}
+	honest := addScriptedPeer(t, client, "m", 0, honestAnswer)
+
+	got, _, body, _ := ask(t, gw, chatPath, chatBody)
+	if got != 500 {
+		t.Fatalf("first request: %d %q", got, body)
+	}
+	if honest.streams.Load() != 0 {
+		t.Fatal("the honest peer was asked before the three refusers; the setup needs them first")
+	}
+	for i, r := range refusers {
+		if r.streams.Load() != 1 {
+			t.Fatalf("refuser %d saw %d streams", i, r.streams.Load())
+		}
+	}
+
+	got, hdr, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 || hdr.Get("X-Bitllm-Peer") != honest.id.String() {
+		t.Fatalf("second request: %d %q %s, %v", got, body, hdr.Get("X-Bitllm-Peer"), err)
+	}
+	for i, r := range refusers {
+		if r.streams.Load() != 1 {
+			t.Fatalf("refuser %d was asked again during its cooldown", i)
+		}
+	}
+}
+
+// A sole server in cooldown is still asked, and its answer ends the cooldown.
+func TestSoleServerRetried(t *testing.T) {
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	var healthy atomic.Bool
+	sp := addScriptedPeer(t, client, "m", 1, func(s network.Stream, req inferReq) {
+		if !healthy.Load() {
+			sayHdr(s, inferHdr{Status: 503, Error: "not yet"})
+			return
+		}
+		honestAnswer(s, req)
+	})
+	if got, _, body, _ := ask(t, gw, chatPath, chatBody); got != 503 {
+		t.Fatalf("got %d %q", got, body)
+	}
+	if cooling, _ := client.peerMem.rank(sp.id, "m", time.Now()); !cooling {
+		t.Fatal("no cooldown after a refusal")
+	}
+	healthy.Store(true)
+	if got, _, body, _ := ask(t, gw, chatPath, chatBody); got != 200 {
+		t.Fatalf("got %d %q", got, body)
+	}
+	if cooling, recent := client.peerMem.rank(sp.id, "m", time.Now()); cooling || !recent {
+		t.Fatalf("after an answer: cooling=%v recent=%v", cooling, recent)
+	}
+}
+
+// A busy refusal is not a failure.
+func TestBusyDoesNotCool(t *testing.T) {
+	setVar(t, &busyWait, 200*time.Millisecond)
+	setVar(t, &busyBackoff, 10*time.Millisecond)
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	sp := addScriptedPeer(t, client, "m", 1, refuseWith(429, msgBusy))
+	got, hdr, body, _ := ask(t, gw, chatPath, chatBody)
+	if got != 429 {
+		t.Fatalf("got %d %q %v", got, body, hdr)
+	}
+	if cooling, _ := client.peerMem.rank(sp.id, "m", time.Now()); cooling {
+		t.Fatal("a busy peer went into cooldown")
+	}
+}
+
+func TestPeerMemoryCooldown(t *testing.T) {
+	var pm peerMemory
+	p := randomPeer(t)
+	now := time.Now()
+	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 15 * time.Minute, 15 * time.Minute}
+	for i, d := range want {
+		pm.failed(p, "m", now)
+		pm.failed(p, "m", now.Add(time.Second)) // during the cooldown: the same incident
+		if cooling, _ := pm.rank(p, "m", now.Add(d-time.Millisecond)); !cooling {
+			t.Fatalf("failure %d: over before %v", i, d)
+		}
+		if cooling, _ := pm.rank(p, "m", now.Add(d)); cooling {
+			t.Fatalf("failure %d: still cooling after %v", i, d)
+		}
+		now = now.Add(d)
+	}
+	if cooling, _ := pm.rank(p, "other", time.Now()); cooling {
+		t.Fatal("a cooldown for one model reached another")
+	}
+	pm.failed(p, "m", now)
+	pm.answered(p, "m", now.Add(time.Second))
+	if cooling, recent := pm.rank(p, "m", now.Add(time.Second)); cooling || !recent {
+		t.Fatalf("after an answer: cooling=%v recent=%v", cooling, recent)
+	}
+	pm.failed(p, "m", now.Add(time.Hour))
+	if cooling, _ := pm.rank(p, "m", now.Add(time.Hour+time.Minute)); cooling {
+		t.Fatal("an answer did not reset the cooldown to its shortest")
+	}
+}
+
+func TestPeerMemoryCapped(t *testing.T) {
+	var pm peerMemory
+	first := randomPeer(t)
+	now := time.Now()
+	pm.failed(first, "m", now)
+	for i := range maxPeerMemory + 10 {
+		pm.failed(first, fmt.Sprint("model", i), now.Add(time.Duration(i+1)*time.Millisecond))
+	}
+	if len(pm.m) != maxPeerMemory {
+		t.Fatalf("%d entries, want %d", len(pm.m), maxPeerMemory)
+	}
+	if cooling, _ := pm.rank(first, "m", now.Add(time.Second)); cooling {
+		t.Fatal("the oldest entry was not the one evicted")
+	}
+}
+
+// Ranking: cooldown behind everything, then audit suspects and free slots as
+// before, then peers that answered recently, and random order among equals.
+func TestCandidateRanking(t *testing.T) {
+	ctx := t.Context()
+	n := testNode(t, ctx, Config{Audit: true})
+	add := func(free int) peer.ID {
+		p := randomPeer(t)
+		n.remember(p, protocol.Announce{Version: "test", Models: []string{"m"}, Free: free, Max: 8})
+		return p
+	}
+	cooling, suspect := add(8), add(8)
+	busyAnswered, busy := add(0), add(0)
+	n.peerMem.failed(cooling, "m", time.Now())
+	n.audits.peers[auditKey{suspect, "m"}] = &peerAudit{State: "suspect"}
+	n.peerMem.answered(busyAnswered, "m", time.Now())
+	var free []peer.ID
+	for range 8 {
+		free = append(free, add(1))
+	}
+	answered := free[3]
+	n.peerMem.answered(answered, "m", time.Now())
+
+	firsts := map[peer.ID]bool{}
+	for range 40 {
+		got := n.candidates("m")
+		if len(got) != 12 {
+			t.Fatalf("%d candidates, want 12", len(got))
+		}
+		if got[0] != answered {
+			t.Fatalf("a free peer that answered is not first: %v", got[0])
+		}
+		firsts[got[1]] = true
+		if got[8] != busyAnswered || got[9] != busy {
+			t.Fatalf("busy peers out of order: %v", got[8:10])
+		}
+		if got[10] != suspect || got[11] != cooling {
+			t.Fatalf("tail: %v, want the suspect, then the peer in cooldown", got[10:])
+		}
+	}
+	if len(firsts) < 2 {
+		t.Fatal("equal peers always come in the same order")
 	}
 }
