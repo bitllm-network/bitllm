@@ -1,9 +1,9 @@
 # Handoff: the first public seed
 
 This is the deployment record for the first seed that does not depend on the
-Mac mini. The seed and its DNS list are live. What remains is an always-on
-host for the map uploader, the domain move after 2026-11-10, and the release
-that drops the old `boot` seed.
+Mac mini. The seed and its DNS list are live. What remains is SSH to the seed,
+promoting `v0.5.0`, an always-on host for the map uploader, a second seed, the
+domain move after 2026-11-10, and the release that drops the old `boot` seed.
 
 ## Status (2026-11-05, Pacific)
 
@@ -33,23 +33,36 @@ Done:
 
 What is left, in order:
 
-1. **Run the map uploader on an always-on host.** It currently runs on this
+1. **Restore SSH to `seed1`.** `~/.ssh/bitllm-seed` is not accepted for `ubuntu`
+   or `opc` on `141.148.22.236`. Add the key through the Oracle console. Without
+   SSH the only DNS seed has no way back from a bad update.
+2. **Back up the seed's identity.** Copy the whole `/var/lib/bitllm` directory off
+   the machine. `identity.key` in it is the peer id that the DNS records name, so
+   losing it means new records and a new peer id. Do this for every seed.
+3. **Promote `v0.5.0` only after `seed1` runs with `--auto-update=false`.** This
+   needs SSH. `v0.5.0` requires signed releases and carries the new deploy scripts,
+   and it keeps `boot`. `seed1`'s current unit does not have that flag, so it would
+   replace itself as soon as the release is promoted to `latest`. See "Update
+   `seed1` to the new script" below and [releasing.md](releasing.md).
+4. **Run the map uploader on an always-on host.** It currently runs on this
    laptop as `bitllm-network-kv.service`, so the map freezes when the laptop
-   sleeps. The natural host is `seed1`. The blocker is SSH: `~/.ssh/bitllm-seed`
-   is not accepted for `ubuntu` or `opc` on `141.148.22.236`. Add the key
-   through the Oracle console, or run the uploader on another always-on node.
-   The uploader needs a Cloudflare API token with **Workers KV Storage:Edit**
-   for the account that owns the namespace. See "The network map uploader"
-   below.
-2. **Prepare and move the domain.** The current zone is active in `Zjj1993`
+   sleeps. The natural host is `seed1`, once SSH works; another always-on node
+   also works. The uploader needs a Cloudflare API token with **Workers KV
+   Storage:Edit** for the account that owns the namespace. See "The network map
+   uploader" below.
+5. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
+   failure for new joins. See "Second public relay, and a second seed" below. Back
+   up its identity too.
+6. **Prepare and move the domain.** The current zone is active in `Zjj1993`
    (`beau.ns.cloudflare.com`, `gloria.ns.cloudflare.com`). The BitLLM account
    (`ddf432595b4de0a26d81f3ca7fa43619`) does not have `bitllm.org` yet. The
    earliest transfer request is **2026-11-10**.
-3. **Cut `v0.4.7` after the move.** Remove the `boot.bitllm.org` literal from
-   `DefaultBootstrap`, update the `--bootstrap` help text, and remove the old
-   tunnel section from `docs/bootstrap.md`. Do this only after `_dnsaddr`
-   answers from the new zone. No `v0.4.7` branch exists yet.
-4. **Optional: enable the CI deploy.** The `landing-page` repository's
+7. **Drop `boot` in the first release after both the move and a live second
+   seed.** Remove the `boot.bitllm.org` literal from `DefaultBootstrap`, update
+   the `--bootstrap` help text, and remove the old tunnel section from
+   `docs/bootstrap.md`. Do this only after `_dnsaddr` answers from the new zone.
+   Stop the tunnel only after clients install that release.
+8. **Optional: enable the CI deploy.** The `landing-page` repository's
    `check` job runs on every PR, but its `deploy` job skips because the
    repository has no `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`
    secrets. Until they are added, deploy by hand from `landing-page` with
@@ -77,8 +90,9 @@ What is left, in order:
 - `_dnsaddr.bootstrap.bitllm.org` carries two TXT records (TCP and QUIC) for
   the seed's peer id `12D3KooWGU5ZQ8aBeqFsSFXJDPYjuDNdBnf9Cw92kuUwxkLG4RCM`.
   Only `seed1` is published.
-- The old `boot` tunnel is still up in `Zjj1993`; keep it until the new zone
-  and `v0.4.7` are live.
+- The old `boot` tunnel is still up in `Zjj1993`; keep it until the new zone and
+  a second seed are live and the release that drops `boot` is what clients
+  install.
 
 ## How the seed was built (repeatable)
 
@@ -119,24 +133,49 @@ that `boot.bitllm.org` runs. Pass `boot` as the third argument so the new seed
 joins it, then `_dnsaddr` clients see the same network.
 
 The install used `latest`, which is now `v0.4.6`.
-The seed takes part in auto-update. It has no jobs, so `Idle()` is true and it
-restarts as soon as a new binary is installed. A stream already relayed through
-it is cut, and clients redial within 15 seconds. If you want a controlled
-restart instead, add `--auto-update=false` to the unit and update it by hand.
+A seed updates by hand. The script gives its unit `--auto-update=false`, so
+promoting a release does not restart it and does not cut the streams relayed
+through it. Update it after a release has had 48 hours on `latest`.
 
-On the instance:
+On the instance, with the script from the release you are installing:
 
 ```sh
 curl -fsSL -o bootstrap-vps.sh \
-  https://raw.githubusercontent.com/bitllm-org/bitllm/main/deploy/bootstrap-vps.sh
+  https://raw.githubusercontent.com/bitllm-org/bitllm/v0.5.0/deploy/bootstrap-vps.sh
 sudo bash bootstrap-vps.sh latest seed1.bitllm.org \
   /dns4/boot.bitllm.org/tcp/443/wss/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib
 ```
 
-The script installs the newest release, creates the `bitllm` user and the
-`bitllm-boot` unit, opens the host firewall, and prints the `dnsaddr=` lines.
-Keep `/var/lib/bitllm/identity.key`: the peer id in the DNS records belongs to
-it.
+The script installs the release, creates the `bitllm` user and the `bitllm-boot`
+unit, opens the host firewall, and prints the `dnsaddr=` lines. Back up the whole
+`/var/lib/bitllm` directory: `identity.key` in it is the peer id in the DNS
+records.
+
+A rerun is safe. The script saves its three arguments in `/etc/bitllm/seed.env`
+and reuses them for any argument you leave out, so a rerun keeps the hostname and
+the seed it joins. Pass an argument to change it, or `""` to clear it.
+
+### Update `seed1` to the new script
+
+`seed1` was installed by an older script. Its unit has no `--auto-update=false`,
+and it has no `/etc/bitllm/seed.env`. The new script will not guess, and stops
+unless it gets all three arguments the first time. This must happen before
+`v0.5.0` is promoted, so the seed stays on `v0.4.6` when the release goes out:
+
+```sh
+curl -fsSL -o bootstrap-vps.sh \
+  https://raw.githubusercontent.com/bitllm-org/bitllm/v0.5.0/deploy/bootstrap-vps.sh
+sudo bash bootstrap-vps.sh v0.4.6 seed1.bitllm.org \
+  /dns4/boot.bitllm.org/tcp/443/wss/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib
+```
+
+The new unit also adds systemd sandboxing and a memory limit, which have not yet
+run on a real host. Try the script on a spare VM or on the second seed first if
+you can, keep an SSH session open, and read `journalctl -u bitllm-boot -n 50`
+afterwards. If the node fails to start, remove the line it trips on from the unit,
+then `systemctl daemon-reload` and `systemctl restart bitllm-boot`.
+
+After 48 hours on `latest`, move it with `sudo bash bootstrap-vps.sh v0.5.0`.
 
 Check locally:
 
@@ -164,8 +203,11 @@ printf '%s\n' \
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... deploy/seed-dns.py seeds.txt
 ```
 
-`seed-dns.py` replaces every TXT record at `_dnsaddr.bootstrap.bitllm.org`, so
-rerunning is safe. TTL is 300 s.
+`seed-dns.py` makes the TXT records at `_dnsaddr.bootstrap.bitllm.org` match the
+file. It checks every line first, creates what is missing, and deletes old records
+only after every create has worked and the new list reads back. A rerun is safe:
+if a run stops, the old records are still there, and the next run picks up from
+what it finds. `--dry-run` prints the changes and makes none. TTL is 300 s.
 
 ### 5. Verify from outside
 
@@ -205,6 +247,10 @@ Right now the uploader runs on this laptop:
 
 It uses Wrangler's stored OAuth login, so no API token is on disk. The
 snapshot was fresh at 03:32 UTC, but it stops when the laptop sleeps.
+
+`scripts/network-kv.sh` writes the key with a ten minute expiry, so when it stops,
+the site shows an empty network instead of an old one. The laptop's wrapper does
+not do this until it is moved to that script.
 
 To move it to `seed1` or another always-on node:
 
@@ -289,19 +335,27 @@ changes traffic:
    `_dnsaddr` returns the seed, and `seed1.bitllm.org:4001` answers.
 9. Make sure the new Worker's routes for `bitllm.org/*` and
    `www.bitllm.org/*` are active, repoint the map uploader at the new account
-   and namespace, and confirm `/network.json` is fresh. Then stop the old
-   tunnel and any Mac-hosted site. Keep the old Worker and KV for a rollback
-   until the new map has been fresh for a few days.
-10. Cut `v0.4.7` with `boot` removed from `DefaultBootstrap`.
+   and namespace, and confirm `/network.json` is fresh. Keep the old Worker and
+   KV for a rollback until the new map has been fresh for a few days. Keep the
+   `boot` tunnel running.
+10. Once a second seed is live as well, cut the first release with `boot` removed
+    from `DefaultBootstrap`. `seed1` joins through `boot`, so point it at the
+    other seed by rerunning `bootstrap-vps.sh` with the new third argument.
+11. After clients install that release, stop the old tunnel and any Mac-hosted
+    site.
 
-`v0.4.7` is the last step, not a prerequisite for the move. The move
-transfer-locks the registration for 30 days; that does not affect DNS or
-renewals. DNSSEC can be enabled again on the new zone.
+The release that drops `boot` comes after the move, and it is not a prerequisite
+for it. The move transfer-locks the registration for 30 days; that does not affect
+DNS or renewals. DNSSEC can be enabled again on the new zone.
 
 ## Second public relay, and a second seed
 
-The first way to add capacity is a **public relay**, not another DNS seed. Any
-host with inbound TCP and UDP 4001 joins through `seed1` and needs no record:
+The first way to add capacity is a **public relay**, not another DNS seed. A GPU
+host that serves a model and has inbound TCP and UDP 4001 joins through `seed1`
+and needs no record. Use `deploy/gpu-host.sh` with `PUBLIC=1`. Its announce
+carries `relay=true`, and NATed nodes use it alongside `seed1`.
+
+A bare relay that serves no model does not work this way yet:
 
 ```sh
 bitllm --public --port 4001 \
@@ -309,8 +363,9 @@ bitllm --public --port 4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-Its announce carries `relay=true`, and NATed nodes use it alongside `seed1`.
-A GPU host can do this with `deploy/gpu-host.sh` and `PUBLIC=1`.
+This node answers DHT queries, but it sends no announce, so NATed nodes never pick
+it as a relay. That needs a later release. Until then, use a host that serves a
+model, or add a second seed.
 
 A **second seed** is for new joins, and is a public relay that is always on and
 listed in DNS. It joins the first:
@@ -320,9 +375,10 @@ sudo bash bootstrap-vps.sh latest seed2.bitllm.org \
   /dns4/seed1.bitllm.org/tcp/4001/p2p/<peer id>
 ```
 
-Then add its lines to `seeds.txt` and rerun `seed-dns.py`. Keep both. Only
-`seed1` is in DNS as of 2026-11-05. One seed is enough to start; the second
-removes the single point of failure for a fresh install.
+Then add its lines to `seeds.txt` and rerun `seed-dns.py`. Keep both, and back up
+its `/var/lib/bitllm` directory. Only `seed1` is in DNS as of 2026-11-05. The
+second seed removes the single point of failure for a fresh install, and it has to
+be live before `boot` goes away.
 
 ## Do not
 
@@ -333,10 +389,10 @@ removes the single point of failure for a fresh install.
   `--bootstrap`.
 - Do not start the first seed without `boot` while `boot` still runs the
   network, and do not remove `boot` from `DefaultBootstrap` before `_dnsaddr`
-  answers from the new zone and a release with the change is the one clients
-  install.
+  answers from the new zone and a second seed is live.
+- Do not promote a release while `seed1`'s unit has no `--auto-update=false`.
 - Do not run two map uploaders against the same KV key for long. Each cycle is
   a write, and 1,440 writes a day is over the free tier limit of 1,000.
 - Do not stop the old `boot` tunnel until the new tunnel has the same
-  hostname, the new zone is authoritative, and `v0.4.7` is the release clients
-  install.
+  hostname, the new zone is authoritative, and the release that drops `boot` is
+  the release clients install.
