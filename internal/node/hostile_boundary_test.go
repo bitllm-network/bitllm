@@ -188,19 +188,19 @@ func TestPeerMedia(t *testing.T) {
 		"data url string": {"/chat/completions", `{"type":"input_image","image_url":"` + inline + `"}`, true},
 		"anthropic":       {"/messages", `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}`, true},
 		"in tool result":  {"/messages", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}`, true},
-		"http image":      {"/chat/completions", `{"type":"image_url","image_url":{"url":"http://evil.test/a"}}`, false},
-		"http input":      {"/chat/completions", `{"type":"input_image","image_url":"http://evil.test/a"}`, false},
-		"file url":        {"/chat/completions", `{"type":"image_url","image_url":{"url":"file:///etc/evil.test"}}`, false},
-		"anthropic url":   {"/messages", `{"type":"image","source":{"type":"url","url":"http://evil.test/a"}}`, false},
-		"video":           {"/chat/completions", `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,evil.test"}}`, false},
-		"audio":           {"/chat/completions", `{"type":"audio_url","audio_url":{"url":"http://evil.test/a"}}`, false},
-		"input audio":     {"/chat/completions", `{"type":"input_audio","input_audio":{"data":"evil.test","format":"wav"}}`, false},
-		"file":            {"/chat/completions", `{"type":"file","file":{"file_id":"evil.test"}}`, false},
-		"no type":         {"/chat/completions", `{"image_url":{"url":"http://evil.test/a"}}`, false},
-		"hidden in text":  {"/chat/completions", `{"type":"text","text":"hi","uuid":"x","image_url":{"url":"http://evil.test/a"}}`, false},
-		"unknown type":    {"/chat/completions", `{"type":"image_embeds","image_embeds":"evil.test"}`, false},
-		"tool result url": {"/messages", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"http://evil.test/a"}}]}`, false},
-		"nested array":    {"/chat/completions", `[{"type":"image_url","image_url":{"url":"http://evil.test/a"}}]`, false},
+		"http image":      {"/chat/completions", `{"type":"image_url","image_url":{"url":"http://remote.test/a"}}`, false},
+		"http input":      {"/chat/completions", `{"type":"input_image","image_url":"http://remote.test/a"}`, false},
+		"file url":        {"/chat/completions", `{"type":"image_url","image_url":{"url":"file:///etc/remote.test"}}`, false},
+		"anthropic url":   {"/messages", `{"type":"image","source":{"type":"url","url":"http://remote.test/a"}}`, false},
+		"video":           {"/chat/completions", `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,remote.test"}}`, false},
+		"audio":           {"/chat/completions", `{"type":"audio_url","audio_url":{"url":"http://remote.test/a"}}`, false},
+		"input audio":     {"/chat/completions", `{"type":"input_audio","input_audio":{"data":"remote.test","format":"wav"}}`, false},
+		"file":            {"/chat/completions", `{"type":"file","file":{"file_id":"remote.test"}}`, false},
+		"no type":         {"/chat/completions", `{"image_url":{"url":"http://remote.test/a"}}`, false},
+		"hidden in text":  {"/chat/completions", `{"type":"text","text":"hi","uuid":"x","image_url":{"url":"http://remote.test/a"}}`, false},
+		"unknown type":    {"/chat/completions", `{"type":"image_embeds","image_embeds":"remote.test"}`, false},
+		"tool result url": {"/messages", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"http://remote.test/a"}}]}`, false},
+		"nested array":    {"/chat/completions", `[{"type":"image_url","image_url":{"url":"http://remote.test/a"}}]`, false},
 	} {
 		logs := captureLog(t)
 		body := `{"model":"ds","max_tokens":4,"messages":[{"role":"user","content":[{"type":"text","text":"look"},` + c.part + `]}]}`
@@ -209,7 +209,7 @@ func TestPeerMedia(t *testing.T) {
 		}
 		b, _ := json.Marshal(last())
 		got := string(b)
-		if strings.Contains(got, "evil.test") {
+		if strings.Contains(got, "remote.test") {
 			t.Errorf("%s reached the server: %s", name, got)
 		}
 		if !strings.Contains(got, "look") {
@@ -227,10 +227,10 @@ func TestPeerMedia(t *testing.T) {
 		}
 	}
 	// A list of system blocks gets the same walk.
-	if hdr := askPeer(t, h, n, "/messages", `{"model":"ds","messages":[],"system":[{"type":"image","source":{"type":"url","url":"http://evil.test/a"}}]}`); hdr.Status != 200 {
+	if hdr := askPeer(t, h, n, "/messages", `{"model":"ds","messages":[],"system":[{"type":"image","source":{"type":"url","url":"http://remote.test/a"}}]}`); hdr.Status != 200 {
 		t.Fatalf("system: %+v", hdr)
 	}
-	if b, _ := json.Marshal(last()); strings.Contains(string(b), "evil.test") {
+	if b, _ := json.Marshal(last()); strings.Contains(string(b), "remote.test") {
 		t.Fatalf("system: %s", b)
 	}
 }

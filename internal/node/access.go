@@ -123,6 +123,11 @@ func (r *refusals) snapshot() map[string]int64 {
 	}
 }
 
+// notAllowedText is the refusal for a peer the owner did not list.
+func notAllowedText(remote peer.ID) string {
+	return fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote)
+}
+
 // admit takes a serving slot for remote, or queues it, or says why not. The
 // caller must call done when the job ends, and must watch a.w.ready when a
 // waiter is returned.
@@ -132,7 +137,7 @@ func (r *refusals) snapshot() map[string]int64 {
 func (n *Node) admit(remote peer.ID, model string, now time.Time, wait time.Duration, amount int64) (status int, msg string, a admission) {
 	if len(n.cfg.Allow) > 0 && !n.cfg.Allow[remote] {
 		n.refused.allow.Add(1)
-		return 403, fmt.Sprintf("%s. Your node is %s; send that id to the owner to be added", msgNotAllowed, remote), a
+		return 403, notAllowedText(remote), a
 	}
 	account := n.accountOf(remote)
 	member, contributor := true, false

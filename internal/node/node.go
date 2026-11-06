@@ -136,6 +136,7 @@ type Node struct {
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
 	timers       serveTimers
+	gate         requestGate
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
 	inflight     atomic.Int32
@@ -226,6 +227,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      upstreamClient(cfg.UpstreamTimeout),
 		timers:    newServeTimers(),
+		gate:      requestGate{budget: bodyBudget},
 		peers:     map[peer.ID]*peerInfo{},
 		peerSlots: map[peer.ID]int32{},
 		self:      self,

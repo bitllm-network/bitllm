@@ -6,15 +6,244 @@ package node
 // detail.
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"math"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+const (
+	maxReaders     = 16 // requests being read before admission, per server
+	maxPeerReaders = 2  // and per peer
+	maxJobID       = 64 // a longer job id is dropped: it would be a map key
+	firstReadBuf   = 4 << 10
+	maxWriteChunk  = 64 << 10 // the write deadline rolls at least this often
+	maxAfterLine   = 1 << 20  // bytes a peer may send after its request, discarded
+)
+
+// bodyBudget is the most bytes this server holds of requests being read and of
+// requests waiting in the queue. Read once, when a node starts.
+var bodyBudget int64 = 256 << 20
+
+var errBodyBudget = errors.New("over the request byte budget")
+
+// requestGate bounds requests from the moment a stream opens until the job
+// starts. A body being served is not counted: --concurrency bounds those.
+type requestGate struct {
+	mu      sync.Mutex
+	readers int
+	perPeer map[peer.ID]int
+	bytes   int64
+	budget  int64
+}
+
+// enter takes a reader's place, if one is free.
+func (g *requestGate) enter(p peer.ID) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.readers >= maxReaders || g.perPeer[p] >= maxPeerReaders {
+		return false
+	}
+	if g.perPeer == nil {
+		g.perPeer = map[peer.ID]int{}
+	}
+	g.readers++
+	g.perPeer[p]++
+	return true
+}
+
+func (g *requestGate) leave(p peer.ID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.readers--
+	if g.perPeer[p]--; g.perPeer[p] <= 0 {
+		delete(g.perPeer, p)
+	}
+}
+
+// bodyHold is one request's share of the byte budget. One goroutine owns it.
+type bodyHold struct {
+	gate *requestGate
+	n    int64
+}
+
+// resize changes the share, and reports false if a larger one does not fit.
+func (h *bodyHold) resize(to int64) bool {
+	h.gate.mu.Lock()
+	defer h.gate.mu.Unlock()
+	if to > h.n && h.gate.bytes+to-h.n > h.gate.budget {
+		return false
+	}
+	h.gate.bytes += to - h.n
+	h.n = to
+	return true
+}
+
+func (h *bodyHold) release() { h.resize(0) }
+
+// readLine reads up to one newline, at most maxRequest bytes. The buffer grows as
+// bytes arrive, so a peer pays for memory by sending, and each growth is charged
+// to the budget first.
+func (h *bodyHold) readLine(r io.Reader) ([]byte, error) {
+	if !h.resize(firstReadBuf) {
+		return nil, errBodyBudget
+	}
+	buf := make([]byte, 0, firstReadBuf)
+	for {
+		if len(buf) == cap(buf) {
+			size := min(2*cap(buf), maxRequest)
+			if !h.resize(int64(size)) {
+				return nil, errBodyBudget
+			}
+			buf = append(make([]byte, 0, size), buf...)
+		}
+		m, err := r.Read(buf[len(buf):cap(buf)])
+		fresh := buf[len(buf) : len(buf)+m]
+		if i := bytes.IndexByte(fresh, '\n'); i >= 0 {
+			return buf[:len(buf)+i+1], nil
+		}
+		buf = buf[:len(buf)+m]
+		if len(buf) >= maxRequest {
+			return nil, errors.New("request too long")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// readInferRequest reads and decodes one request line. Afterwards the hold
+// covers the body alone, which is all a request keeps while it waits.
+func readInferRequest(r io.Reader, h *bodyHold) (inferReq, error) {
+	var req inferReq
+	line, err := h.readLine(r)
+	if err != nil {
+		return req, err
+	}
+	if err := json.Unmarshal(line, &req); err != nil {
+		return req, err
+	}
+	if !inferPaths[req.Path] {
+		return req, errors.New("unknown path")
+	}
+	if len(req.Job) > maxJobID {
+		req.Job = ""
+	}
+	h.resize(int64(len(req.Body)))
+	return req, nil
+}
+
+// peerWriter is every write to a peer's stream. Each one gets its own deadline,
+// so a peer that stops reading loses its slot, and any failure resets the stream
+// and stops the job.
+type peerWriter struct {
+	s     network.Stream
+	stall time.Duration
+	lost  context.CancelFunc
+	mu    sync.Mutex
+}
+
+func (w *peerWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	total := 0
+	for len(b) > 0 { // a long answer is not one deadline: a slow reader still reads
+		w.s.SetWriteDeadline(time.Now().Add(w.stall))
+		m, err := w.s.Write(b[:min(len(b), maxWriteChunk)])
+		total += m
+		if err != nil {
+			w.s.Reset()
+			w.lost()
+			return total, err
+		}
+		b = b[m:]
+	}
+	return total, nil
+}
+
+func (w *peerWriter) reply(status int, msg string) {
+	b, _ := json.Marshal(inferHdr{Status: status, Error: msg})
+	w.Write(append(b, '\n'))
+}
+
+// progress writes a 202 line every so often until stop is called. Stop returns
+// only once no further line can be written.
+func (w *peerWriter) progress(every time.Duration) (stop func()) {
+	quit, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		line, _ := json.Marshal(inferHdr{Status: 202})
+		line = append(line, '\n')
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-quit:
+				return
+			case <-t.C:
+				if _, err := w.Write(line); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(quit)
+		<-done
+	}
+}
+
+// watch stops the job when the client goes away, without waiting for a write
+// to fail. A read error means the peer reset the stream. EOF is the normal
+// CloseWrite every client sends after its request, and it cancels nothing. After
+// EOF a read cannot see a reset any more, so watch looks now and then at what
+// still can: an empty write reports a client that stopped reading over QUIC, and
+// the connection reports a client that is gone altogether. Yamux shows a reset
+// after CloseWrite only to a write that carries bytes, which the next 202 line
+// or answer byte does.
+func (w *peerWriter) watch(ctx context.Context, every time.Duration) {
+	if _, err := io.Copy(io.Discard, io.LimitReader(w.s, maxAfterLine)); err != nil {
+		w.lost()
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if w.s.Conn().IsClosed() || !w.emptyWrite() {
+			w.lost()
+			return
+		}
+	}
+}
+
+// emptyWrite reports whether the stream still takes writes. It skips the check
+// while a real write runs, since that one finds out by itself.
+func (w *peerWriter) emptyWrite() bool {
+	if !w.mu.TryLock() {
+		return true
+	}
+	defer w.mu.Unlock()
+	w.s.SetWriteDeadline(time.Now().Add(w.stall)) // a passed deadline fails it too
+	_, err := w.s.Write(nil)
+	return err == nil
+}
 
 const (
 	msgOnePrompt   = "one prompt per request"
