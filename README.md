@@ -385,7 +385,8 @@ Invites set priority, not entry. Three rules:
 If you are not a member yet, you can still use the network: you are served whenever a server is
 idle, and a server started with `--open` serves you like a member. To become a member, ask a
 member to invite your Ethereum address, then link this node to that address in the dashboard
-("Link wallet" or `bitllm account link`). You do not need a wallet to use the network, only an
+("Link wallet" or `bitllm account link`). Linking is public, see [Accounts](#accounts). You do not
+need a wallet to use the network, only an
 address if you want an invite or a quota.
 
 A member is the root account or anyone a member invited. Once your nodes have served a job you
@@ -435,6 +436,9 @@ Credits are earned by nodes. To add up the credits of all your machines, link ea
 Ethereum address. It is only a signature (personal_sign): no transaction, no gas, no RPC, nothing
 on chain. A claim is signed by both the owner's wallet and the node's key, so nobody can claim
 your node, and the newest claim per node wins.
+
+**Linking is public.** It publishes this node's id with your wallet address and display name to
+every node on the network. Decide whether you want that before you run these steps:
 
 ```bash
 bitllm account new --name alice     # new 12-word account, links this node
