@@ -25,9 +25,9 @@ routing tables, where other nodes would try to dial them and fail. A NATed node
 is a DHT client; a public relay is a DHT server.
 
 Public relays are the nodes that can accept inbound. They are the part of the
-network that can grow without adding DNS entries: after first contact, a relay
-that serves a model announces `relay=true` and NATed nodes add it to their
-autorelay candidates. The seed remains the phone book entry, not the switchboard.
+network that can grow without adding DNS entries: after first contact, a public
+node announces `relay=true` and NATed nodes add it to their autorelay candidates.
+The seed remains the phone book entry, not the switchboard.
 
 Keep the first seed small and separate from the machines that serve models. A
 GPU that is training, rendering, or simply off must not take first contact with
@@ -71,8 +71,8 @@ seeds and, after it hears their announces, on public relays that say
 serving nodes as well.
 
 Adding or retiring a seed is a DNS change, not a release. Adding a public
-relay that serves a model is not even a DNS change: it joins through the seeds
-and becomes a candidate through its announce. A new node needs only one seed to
+relay is not even a DNS change: it joins through the seeds and becomes a
+candidate through its announce. A new node needs only one seed to
 join, and existing nodes keep their direct connections and their other relay
 reservations if one disappears.
 
@@ -150,15 +150,15 @@ It answers DHT queries like a seed, but it joins the default seeds instead of
 starting alone, and it needs no DNS record. The startup line is `--public:
 advertising this node as a public relay`.
 
-A node with `--public` and no model does not work as a relay for others yet. It
-sends no announce, so NATed nodes never pick it as a relay. That needs a later
-release.
+A node with `--public` and no model works as a relay for others from `v0.5.0`,
+once the seeds run `v0.5.0`. It announces `relay=true` with no models, and NATed
+nodes find its addresses in the DHT. Nodes older than `v0.5.0` refuse that announce
+and do not forward it, so update the seeds first.
 
-A serving node does announce. `deploy/gpu-host.sh` with `PUBLIC=1` adds `--public`
-and keeps the default seed list. Its announce carries `relay=true`, and a NATed
-node uses it as an autorelay candidate alongside the seeds. That is the way to add
-relay capacity today. It is also the safe choice for a second seed that has not
-been added to DNS yet.
+A serving node announces the same way. `deploy/gpu-host.sh` with `PUBLIC=1` adds
+`--public` and keeps the default seed list. Its announce carries `relay=true` and
+its models, and older nodes accept it, so this also works before the seeds update.
+It is also the safe choice for a second seed that has not been added to DNS yet.
 
 ## Publishing the DNS records
 

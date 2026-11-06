@@ -75,6 +75,18 @@ func TestValidAnnounce(t *testing.T) {
 	}
 }
 
+func TestRelayMayAnnounceNoModels(t *testing.T) {
+	if a := (Announce{Relay: true, Models: []string{}, Max: 1}); !ValidAnnounce(&a) {
+		t.Fatal("rejected a relay-only announce")
+	}
+	if a := (Announce{Relay: true, Models: []string{}}); ValidAnnounce(&a) {
+		t.Fatal("accepted a relay-only announce with no slots")
+	}
+	if a := (Announce{Models: []string{}, Max: 1}); ValidAnnounce(&a) {
+		t.Fatal("accepted an empty announce from a node that is not a relay")
+	}
+}
+
 func TestAnnounceLocLimit(t *testing.T) {
 	a := Announce{Models: []string{"m"}, Free: 1, Max: 1, Loc: strings.Repeat("u", MaxLocJSON)}
 	if !ValidAnnounce(&a) {

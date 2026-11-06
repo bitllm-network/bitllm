@@ -57,7 +57,7 @@ type Announce struct {
 	// Added in v0.3:
 	Q int `json:"q,omitempty"` // requests waiting for a slot right now
 	// Added in v0.4.5:
-	Relay bool `json:"relay,omitempty"` // publicly reachable and running the relay service
+	Relay bool `json:"relay,omitempty"` // publicly reachable and running the relay service; a relay may announce no models (from v0.5.0)
 }
 
 // modelNameMarks are the characters a model name may use besides letters and
@@ -84,9 +84,9 @@ func ValidModelName(s string) bool {
 
 // ValidAnnounce reports whether a is a well formed announce we would store.
 // Audit entries and weights keys must be announced models, so they pass the
-// same name check.
+// same name check. An announce with no models is valid only from a relay.
 func ValidAnnounce(a *Announce) bool {
-	if len(a.Models) == 0 || len(a.Models) > MaxAnnounceModels ||
+	if (len(a.Models) == 0 && !a.Relay) || len(a.Models) > MaxAnnounceModels ||
 		a.Free < 0 || a.Max < 1 || a.Free > a.Max || a.Max > MaxAnnounceSlots || len(a.Version) > 64 ||
 		len(a.Loc) > MaxLocJSON || a.Q < 0 || a.Q > MaxQueueDepth*64 {
 		return false

@@ -45,7 +45,8 @@ Four jobs, one binary:
   `--public`. It answers DHT queries and relays for NATed peers, but still
   joins the default seeds, so it needs no DNS record. Its announce carries
   `relay=true`; autorelay adds it as a candidate, so a NATed node reserves on
-  the seed and on public relays instead of only on the seed.
+  the seed and on public relays instead of only on the seed. A public relay with
+  no model needs seeds on v0.5.0 or later to pass its announce on.
 - **A seed** is a public relay that is also listed in
   `_dnsaddr.bootstrap.bitllm.org` and starts alone (`--dht-server`). It is the
   first contact for a fresh install. One seed is enough to join; public relays
@@ -450,8 +451,8 @@ bitllm --public --port 4001 \
 
 It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. Its
 announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
-capacity grows without adding DNS entries. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving
-node this way.
+capacity grows without adding DNS entries. A relay with no model needs seeds on v0.5.0 or later to
+pass its announce on. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving node this way.
 
 Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` installs the systemd unit
 and prints the DNS records to publish. A home host can be a public relay too, with a port forward

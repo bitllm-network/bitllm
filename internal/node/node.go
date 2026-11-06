@@ -101,7 +101,7 @@ type Config struct {
 type peerInfo struct {
 	protocol.Announce
 	seen  time.Time
-	addrs []ma.Multiaddr // last addresses we saw for this peer, for relay candidates
+	addrs []ma.Multiaddr // where we can dial this peer as a relay; see relayAddrs
 }
 
 // Node is a running node. Call New, then Gateway for the local API.
@@ -148,6 +148,9 @@ type Node struct {
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
 
+	ctx        context.Context // the node's lifetime, for work started outside any loop
+	relayFinds relayLookups    // DHT lookups of announced relays
+
 	// qmu guards the serving slots and the queue: inflight, openInflight,
 	// peerSlots and waiters are changed under it (queue.go).
 	qmu       sync.Mutex
@@ -178,6 +181,9 @@ func LoadKey(path string) (crypto.PrivKey, error) {
 func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.RedialEvery <= 0 {
 		cfg.RedialEvery = 15 * time.Second
+	}
+	if cfg.AnnounceEvery <= 0 {
+		cfg.AnnounceEvery = 10 * time.Second
 	}
 	if cfg.SyncStall <= 0 {
 		cfg.SyncStall = 30 * time.Second
@@ -222,6 +228,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		http:      &http.Client{},
 		peers:     map[peer.ID]*peerInfo{},
 		peerSlots: map[peer.ID]int32{},
+		ctx:       ctx,
 		self:      self,
 		relays:    bootstrap,
 		models:    cfg.Models,
@@ -407,6 +414,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	go n.redialLoop(ctx)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
+	}
+	if cfg.Upstream != "" || public {
 		go n.announceLoop(ctx)
 	}
 	return n, nil
@@ -574,7 +583,8 @@ func (n *Node) discoverLoop(ctx context.Context) {
 // announceLoop gossips our models while the upstream is up. A node whose
 // server is stopped (say, the GPU is busy with something else) goes quiet, so
 // clients stop routing to it within three announce periods, and comes back on
-// the first check that passes.
+// the first check that passes. A public node keeps announcing relay=true with
+// no models, with or without an upstream, so NATed nodes can use it as a relay.
 func (n *Node) announceLoop(ctx context.Context) {
 	var scorable []string
 	probed := false
@@ -583,7 +593,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
-		if n.inflight.Load() == 0 {
+		if n.cfg.Upstream != "" && n.inflight.Load() == 0 {
 			ok := n.checkUpstream(ctx)
 			if ok != n.upOK.Swap(ok) {
 				log.Printf("upstream %s: up=%v", n.cfg.Upstream, ok)
@@ -617,11 +627,14 @@ func (n *Node) announceLoop(ctx context.Context) {
 			a.Weights = announcedWeights(n.cfg.Weights, kept)
 			a.Loc = n.cfg.Location
 		}
+		if len(a.Models) == 0 {
+			a.Free, a.Max = 0, 1
+		}
 		n.lastAnn.Store(&a)
-		problems := announceProblems{omitted: omitted, clamped: clamped}
-		// With nothing to state there is no valid announce to send, and a
-		// stopped model server is not an announce problem.
-		if len(a.Models) > 0 {
+		problems := announceProblems{omitted: omitted, clamped: clamped && n.cfg.Upstream != ""}
+		// A node that serves nothing and is no relay has nothing valid to send,
+		// and a stopped model server is not an announce problem.
+		if len(a.Models) > 0 || a.Relay {
 			b, _ := json.Marshal(a)
 			if err := n.topic.Publish(ctx, b); err != nil && ctx.Err() == nil {
 				problems.publish = err.Error()
@@ -708,8 +721,13 @@ func (n *Node) readAnnounces(ctx context.Context, sub *pubsub.Subscription) {
 // remember stores what a peer announced, evicting the least recently seen
 // when the table is full.
 func (n *Node) remember(from peer.ID, a protocol.Announce) {
+	var addrs []ma.Multiaddr
+	if n.host != nil && a.Relay {
+		addrs = relayAddrs(n.host.Peerstore().Addrs(from), n.onLocalNetwork())
+	}
 	n.mu.Lock()
-	if _, ok := n.peers[from]; !ok && len(n.peers) >= maxPeers {
+	old, known := n.peers[from]
+	if !known && len(n.peers) >= maxPeers {
 		oldest, at := peer.ID(""), time.Now()
 		for p, pi := range n.peers {
 			if pi.seen.Before(at) {
@@ -718,12 +736,14 @@ func (n *Node) remember(from peer.ID, a protocol.Announce) {
 		}
 		delete(n.peers, oldest)
 	}
-	var addrs []ma.Multiaddr
-	if n.host != nil {
-		addrs = append(addrs, n.host.Peerstore().Addrs(from)...)
+	if len(addrs) == 0 && known && a.Relay {
+		addrs = old.addrs // what a lookup found outlives the peerstore entry
 	}
 	n.peers[from] = &peerInfo{Announce: a, seen: time.Now(), addrs: addrs}
 	n.mu.Unlock()
+	if a.Relay && len(addrs) == 0 {
+		n.lookupRelay(from) // gossip carries no addresses
+	}
 	// The peer just reached us, so whatever address we failed to dial
 	// before is worth trying again now. Without this, a relayed peer that
 	// re-reserved after a bootstrap restart keeps its old address in the
@@ -815,7 +835,7 @@ func (n *Node) hello(ctx context.Context, p peer.ID) {
 	if err := json.NewDecoder(io.LimitReader(s, 1<<14)).Decode(&a); err != nil {
 		return
 	}
-	if len(a.Models) > 0 && protocol.ValidAnnounce(&a) {
+	if protocol.ValidAnnounce(&a) {
 		n.remember(p, a)
 	}
 }

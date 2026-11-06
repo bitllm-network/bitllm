@@ -41,7 +41,13 @@ func TestHelloFillsCandidates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	boot := testNode(t, ctx, Config{})
-	server := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1]})
+	// Not a public node, so no announce loop replaces the announce stored below.
+	server, err := New(ctx, Config{Bootstrap: boot.Addrs()[:1], Listen: []string{"/ip4/127.0.0.1/tcp/0"},
+		DataDir: t.TempDir(), AnnounceEvery: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { server.host.Close() })
 	client := testNode(t, ctx, Config{Bootstrap: boot.Addrs()[:1]})
 
 	server.lastAnn.Store(&protocol.Announce{Version: Version, Models: []string{"m"}, Free: 1, Max: 1})
