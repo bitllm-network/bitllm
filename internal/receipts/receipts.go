@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -274,13 +276,42 @@ func Key(seed []byte, server peer.ID, t time.Time) (crypto.PrivKey, error) {
 
 // LoadSeed reads the receipt pseudonym seed, creating it on first run.
 // Deleting the file breaks the link to past pseudonyms without changing the peer id.
+// A file that exists but cannot be used is an error and is left as it is.
 func LoadSeed(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil && len(b) == 32 {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		if len(b) != 32 {
+			return nil, fmt.Errorf("receipt seed %s is %d bytes, not 32: restore it from a backup, or delete it to start a new one", path, len(b))
+		}
 		return b, nil
 	}
-	b := make([]byte, 32)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cannot read receipt seed %s: %w", path, err)
+	}
+	b = make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
-	return b, os.WriteFile(path, b, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	err = f.Chmod(0o600)
+	if err == nil {
+		_, err = f.Write(b)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }

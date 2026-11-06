@@ -5,10 +5,13 @@ package node
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"maps"
 	"math/rand/v2"
@@ -159,17 +162,57 @@ type Node struct {
 	started time.Time // when this node came up, shown by GET /status
 }
 
-// LoadKey reads the node key, creating it on first run.
+// LoadKey reads the node key, creating it only when the file does not exist.
+// The key is the node's identity, so a file that cannot be read or parsed is an
+// error for a person to look at, and is never replaced.
 func LoadKey(path string) (crypto.PrivKey, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		return crypto.UnmarshalPrivateKey(b)
+	b, err := os.ReadFile(path)
+	if err == nil {
+		k, err := crypto.UnmarshalPrivateKey(b)
+		if err != nil {
+			return nil, fmt.Errorf("identity file %s is damaged (%w): restore it from a backup, or move it away to start with a new peer id", path, err)
+		}
+		return k, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cannot read identity file %s (%w): fix the file or its permissions; it has not been replaced", path, err)
 	}
 	k, _, err := crypto.GenerateEd25519Key(nil)
 	if err != nil {
 		return nil, err
 	}
-	b, _ := crypto.MarshalPrivateKey(k)
-	return k, os.WriteFile(path, b, 0o600)
+	b, err = crypto.MarshalPrivateKey(k)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(path, b); err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+// writeFileAtomic writes a new private file in one step: a crash leaves either
+// no file or the whole file, never part of one.
+func writeFileAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	err = f.Chmod(0o600)
+	if err == nil {
+		_, err = f.Write(b)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // New starts a node: key, host, DHT, gossip, storage, then the loops. It does
@@ -312,7 +355,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	n.nodeKey = key
 	if n.receiptSeed, err = receipts.LoadSeed(filepath.Join(cfg.DataDir, "receipt.seed")); err != nil {
-		return nil, err
+		// Losing the seed only breaks the link to past pseudonyms, which is no
+		// reason to stay down. Use one for this run and leave the file alone.
+		log.Printf("WARNING: %v; using a temporary one until the next start", err)
+		n.receiptSeed = make([]byte, 32)
+		if _, err := crand.Read(n.receiptSeed); err != nil {
+			return nil, err
+		}
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
