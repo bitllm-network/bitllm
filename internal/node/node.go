@@ -36,6 +36,7 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -49,6 +50,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multihash"
+	"github.com/pbnjay/memory"
 )
 
 const (
@@ -58,6 +60,10 @@ const (
 	syncEvery = 10 * time.Minute
 	// maxModelList caps the upstream's answer to GET /models.
 	maxModelList = 4 << 20
+	// provideRetry is how soon to provide again after a failure.
+	provideRetry = 15 * time.Second
+	// findConcurrency is how many providers one lookup connects to at a time.
+	findConcurrency = 5
 )
 
 // Config is everything a node needs from its operator. Zero values are the
@@ -88,6 +94,7 @@ type Config struct {
 	MaxTokens        int                   // cap on new tokens per request we serve; 0 = none
 	AnnounceEvery    time.Duration         //
 	RedialEvery      time.Duration         // how often to reconnect a lost bootstrap; 0 = 15s
+	ProvideEvery     time.Duration         // how often to refresh provider records with no other reason to; 0 = 30m
 	SyncStall        time.Duration         // longest a seed may stay silent during a sync; 0 = 30s
 	SyncLimit        time.Duration         // longest one sync from a seed may run; 0 = 5m
 	ModelsTimeout    time.Duration         // longest one read of the upstream's model list may take; 0 = 10s
@@ -107,7 +114,7 @@ type Config struct {
 type peerInfo struct {
 	protocol.Announce
 	seen  time.Time
-	addrs []ma.Multiaddr // last addresses we saw for this peer, for relay candidates
+	addrs []ma.Multiaddr // where we can dial this peer as a relay; see relayAddrs
 }
 
 // Node is a running node. Call New, then Gateway for the local API.
@@ -137,7 +144,10 @@ type Node struct {
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
 	self         peer.ID
-	relays       []peer.AddrInfo // bootstrap nodes, which also relay
+	relayMu      sync.RWMutex
+	relays       []peer.AddrInfo                // bootstrap nodes, which also relay; replaced whole, read through seeds
+	seedStops    map[peer.ID]context.CancelFunc // what startSeed is running, per seed
+	seedValues   map[string][]peer.AddrInfo     // what each --bootstrap value last gave; only refreshSeeds changes it after New
 	http         *http.Client
 	modelMu      sync.RWMutex
 	models       map[string]string // public name -> upstream name; replaced whole, never mutated
@@ -145,6 +155,7 @@ type Node struct {
 	gatewayLive  atomic.Int32                      // completions the local gateway is answering, own model or proxied
 	upOK         atomic.Bool                       // upstream answered its last health check
 	lastAnn      atomic.Pointer[protocol.Announce] // what announceLoop last gossiped (GET /network counts us too)
+	announceErr  atomic.Pointer[string]            // why our announce is short or not going out, for GET /status
 	openInflight atomic.Int32                      // slots held by uninvited nodes on an open server
 	imgMu        sync.Mutex
 	imgLimit     map[string]int // upstream model -> most images its server takes, learned from a refusal
@@ -153,6 +164,13 @@ type Node struct {
 
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
+
+	provideKick chan struct{} // asks provideLoop for a pass now
+	provides    atomic.Int64  // provider records sent, for tests
+
+	limits     *publicLimits   // in force on a public node, nil on any other
+	ctx        context.Context // the node's lifetime, for work started outside any loop
+	relayFinds relayLookups    // DHT lookups of announced relays
 
 	// qmu guards the serving slots and the queue: inflight, openInflight,
 	// peerSlots and waiters are changed under it (queue.go).
@@ -233,6 +251,12 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.RedialEvery <= 0 {
 		cfg.RedialEvery = 15 * time.Second
 	}
+	if cfg.AnnounceEvery <= 0 {
+		cfg.AnnounceEvery = 10 * time.Second
+	}
+	if cfg.ProvideEvery <= 0 {
+		cfg.ProvideEvery = 30 * time.Minute
+	}
 	if cfg.SyncStall <= 0 {
 		cfg.SyncStall = 30 * time.Second
 	}
@@ -255,7 +279,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// Several addresses of one peer (tcp, quic...) must become one AddrInfo, or
 	// the same node is dialed, synced and used as a relay once per address.
-	bootstrap, err := ResolveBootstrap(ctx, cfg.Bootstrap)
+	seedValues, bootstrap, err := resolveSeeds(ctx, cfg.Bootstrap, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -275,38 +299,47 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	ctx, stopAll := context.WithCancel(ctx)
 	loops, stopLoops := context.WithCancel(ctx)
 	n := &Node{
-		stopAll:   stopAll,
-		stopLoops: stopLoops,
-		cfg:       cfg,
-		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
-		http:      &http.Client{},
-		peers:     map[peer.ID]*peerInfo{},
-		peerSlots: map[peer.ID]int32{},
-		self:      self,
-		relays:    bootstrap,
-		models:    cfg.Models,
-		started:   time.Now(),
+		stopAll:     stopAll,
+		stopLoops:   stopLoops,
+		cfg:         cfg,
+		ledger:      ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
+		http:        &http.Client{},
+		peers:       map[peer.ID]*peerInfo{},
+		peerSlots:   map[peer.ID]int32{},
+		ctx:         loops,
+		provideKick: make(chan struct{}, 1),
+		self:        self,
+		relays:      bootstrap,
+		seedValues:  seedValues,
+		models:      cfg.Models,
+		started:     time.Now(),
 	}
 	// A caller that supplied a map (--model, or a test) pinned it. Only a
 	// node that discovered its models keeps re-reading them from upstream.
 	n.cfg.ModelsFixed = n.cfg.ModelsFixed || len(cfg.Models) > 0
 	mode := dht.ModeAutoServer
+	reservations := defaultReservations
 	if public {
 		mode = dht.ModeServer
+		limits := limitsForMemory(memory.TotalMemory())
+		n.limits, reservations = &limits, limits.Reservations
 	}
 	opts := []libp2p.Option{
 		libp2p.Identity(key),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
 		// Public nodes relay for NATed ones until hole punching upgrades the link.
-		// Inference streams are long, so the relay must not cut them off.
-		libp2p.EnableRelayService(relay.WithResources(relayResources(cfg.RelayBehindProxy))),
+		// Inference streams are long, so the limits are far above one answer.
+		libp2p.EnableRelayService(relay.WithResources(relayResources(cfg.RelayBehindProxy, reservations))),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
 			n.dht, err = dht.New(h, dht.Mode(mode), dht.ProtocolPrefix("/bitllm"),
-				dht.BootstrapPeers(bootstrap...))
+				dht.BootstrapPeersFunc(n.seeds))
 			return n.dht, err
 		}),
+	}
+	if n.limits != nil {
+		opts = append(opts, n.limits.options()...)
 	}
 	if len(cfg.Listen) > 0 {
 		opts = append(opts, libp2p.ListenAddrStrings(cfg.Listen...))
@@ -472,8 +505,13 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.joinSeeds(loops)
 	go n.redialLoop(loops)
+	if len(cfg.Bootstrap) > 0 {
+		go n.reseedLoop(loops)
+	}
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
+	}
+	if cfg.Upstream != "" || public {
 		go n.announceLoop(loops)
 	}
 	return n, nil
@@ -532,16 +570,33 @@ func (n *Node) Link(owner, name string, t int64, ownerSig string) (*account.Clai
 	return c, nil
 }
 
-// relayResources: no per-circuit time or byte limit (inference streams are
-// long), but bounded slots so a public bootstrap is not an open-ended relay.
+// A relayed connection may run this long and carry this much in each direction.
+// Far above any one answer, so long answers finish, and a relay stays bounded.
+// Over the limit the relay resets it and the next request opens another.
+const (
+	relayCircuitDuration = 2 * time.Hour
+	relayCircuitData     = 1 << 30
+)
+
+// relayResources: bounded circuits and slots, so a public bootstrap is not an
+// open-ended relay.
+//
+// Any limit marks a relayed connection as limited on both ends, and libp2p then
+// opens a stream on it only if the caller allows that. Inference, receipts, sync
+// (in every release), hello, identify and hole punching do. Gossip and the DHT do
+// not, so they use direct connections: every node has one to its seed, and only
+// public nodes are DHT servers. A stream opened without the option waits for a
+// direct connection, which is what hello does on releases from v0.3.0 to v0.4.6;
+// those clients then wait for the next announce instead.
+//
 // The default cap of 8 reservations per source IP is the only sybil guard on a
 // public-IP relay, but behind a tunnel every peer arrives from 127.0.0.1, so
 // there it would let only 8 NATed nodes in the whole network be reachable.
-func relayResources(behindProxy bool) relay.Resources {
+func relayResources(behindProxy bool, reservations int) relay.Resources {
 	rc := relay.DefaultResources()
-	rc.Limit = nil
-	rc.MaxReservations = 1024 // NATed peers that can be reached through us
-	rc.MaxCircuits = 64       // open relayed connections per peer
+	rc.Limit = &relay.RelayLimit{Duration: relayCircuitDuration, Data: relayCircuitData}
+	rc.MaxReservations = reservations // NATed peers that can be reached through us
+	rc.MaxCircuits = 64               // open relayed connections per peer
 	if behindProxy {
 		rc.MaxReservationsPerIP = rc.MaxReservations
 	}
@@ -558,15 +613,8 @@ func relayResources(behindProxy bool) relay.Resources {
 // after that failure the rendezvous advertise sits out two minutes and
 // provideLoop 15 seconds.
 func (n *Node) joinSeeds(ctx context.Context) {
-	for _, ai := range n.relays {
-		go func() {
-			c, cancel := context.WithTimeout(ctx, seedConnectTimeout)
-			if err := n.host.Connect(c, ai); err != nil {
-				log.Printf("bootstrap %s: %v", ai.ID, err)
-			}
-			cancel()
-			n.syncLoop(ctx, ai.ID)
-		}()
+	for _, ai := range n.seeds() {
+		n.startSeed(ctx, ai)
 	}
 	for deadline := time.Now().Add(seedConnectTimeout); n.dht.RoutingTable().Size() == 0 && time.Now().Before(deadline); {
 		select {
@@ -641,16 +689,18 @@ func (n *Node) discoverLoop(ctx context.Context) {
 // announceLoop gossips our models while the upstream is up. A node whose
 // server is stopped (say, the GPU is busy with something else) goes quiet, so
 // clients stop routing to it within three announce periods, and comes back on
-// the first check that passes.
+// the first check that passes. A public node keeps announcing relay=true with
+// no models, with or without an upstream, so NATed nodes can use it as a relay.
 func (n *Node) announceLoop(ctx context.Context) {
 	var scorable []string
 	probed := false
 	lastModels := time.Time{}
-	capLogged := 0
+	var reported announceLog
+	omitted := 0 // kept while the upstream is down, when there is no list to count
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
-		if n.inflight.Load() == 0 {
+		if n.cfg.Upstream != "" && n.inflight.Load() == 0 {
 			ok := n.checkUpstream(ctx)
 			if ctx.Err() != nil {
 				return // stopping: a check cut short says nothing about the server
@@ -672,11 +722,10 @@ func (n *Node) announceLoop(ctx context.Context) {
 				lastModels = time.Now()
 			}
 		}
-		models := n.modelNames()
-		free := n.cfg.Concurrency - int(n.inflight.Load())
-		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
+		free, slots, clamped := announcedSlots(n.cfg.Concurrency, int(n.inflight.Load()))
+		a := protocol.Announce{Version: Version, Models: []string{}, Free: free, Max: slots, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
 		if n.upOK.Load() {
-			a.Models = models
+			a.Models = n.modelNames()
 			if n.cfg.AuditServe && !probed {
 				scorable, probed = n.probeScoring(ctx), true
 				if len(scorable) > 0 {
@@ -686,17 +735,26 @@ func (n *Node) announceLoop(ctx context.Context) {
 			a.Audit = scorable
 			a.Weights = n.cfg.Weights
 			a.Loc = n.cfg.Location
+			omitted = capAnnounce(&a)
 		}
-		if total := len(a.Models); total > protocol.MaxAnnounceModels {
-			capAnnounce(&a)
-			if total != capLogged {
-				log.Printf("sharing the first %d of %d models: peers reject a longer announce; pick which with --model", len(a.Models), total)
-				capLogged = total
-			}
+		if len(a.Models) == 0 {
+			a.Free, a.Max = 0, 1
+		}
+		if !slices.Equal(n.announced(), a.Models) || n.lastAnn.Load() == nil {
+			n.kickProvide()
 		}
 		n.lastAnn.Store(&a)
-		b, _ := json.Marshal(a)
-		n.topic.Publish(ctx, b)
+		problems := announceProblems{omitted: omitted, clamped: clamped && n.cfg.Upstream != ""}
+		// A node that serves nothing and is no relay has nothing valid to send,
+		// and a stopped model server is not an announce problem.
+		if len(a.Models) > 0 || a.Relay {
+			b, _ := json.Marshal(a)
+			if err := n.topic.Publish(ctx, b); err != nil && ctx.Err() == nil {
+				problems.publish = err.Error()
+			}
+		}
+		reported.report(problems, slots)
+		n.announceErr.Store(new(problems.String()))
 		select {
 		case <-ctx.Done():
 			return
@@ -705,12 +763,30 @@ func (n *Node) announceLoop(ctx context.Context) {
 	}
 }
 
-// capAnnounce trims a to the most models peers accept, in name order so the
-// choice is stable. Peers reject an announce whole if it lists too many, which
-// would hide the node entirely, or if it mentions a model it does not list.
-func capAnnounce(a *protocol.Announce) {
-	sorted := slices.Sorted(slices.Values(a.Models))
-	a.Models = sorted[:protocol.MaxAnnounceModels]
+// capAnnounce fits a to what peers accept and returns how many models it left
+// out. Peers reject an announce whole if it lists too many models, an invalid
+// name, or a model in Audit or Weights that it does not list, which would hide
+// the node entirely. It keeps valid names, canonical ones first and then sorted,
+// so the choice is stable. Only the announce is capped: a local client can still
+// ask its own gateway for any model.
+func capAnnounce(a *protocol.Announce) (omitted int) {
+	var canonical, other []string
+	for _, m := range a.Models {
+		if !protocol.ValidModelName(m) {
+			omitted++
+		} else if _, ok := models.Manifest[m]; ok {
+			canonical = append(canonical, m)
+		} else {
+			other = append(other, m)
+		}
+	}
+	slices.Sort(canonical)
+	slices.Sort(other)
+	a.Models = append(append([]string{}, canonical...), other...)
+	if len(a.Models) > protocol.MaxAnnounceModels {
+		omitted += len(a.Models) - protocol.MaxAnnounceModels
+		a.Models = a.Models[:protocol.MaxAnnounceModels]
+	}
 	kept := make(map[string]bool, len(a.Models))
 	for _, m := range a.Models {
 		kept[m] = true
@@ -719,12 +795,13 @@ func capAnnounce(a *protocol.Announce) {
 	if a.Weights != nil {
 		weights := make(map[string]string, len(a.Weights))
 		for m, h := range a.Weights {
-			if kept[m] {
+			if kept[m] && models.ValidHash(h) {
 				weights[m] = h
 			}
 		}
 		a.Weights = weights
 	}
+	return omitted
 }
 
 // checkUpstream reports whether the upstream answers GET /models.
@@ -798,8 +875,13 @@ func (n *Node) readAnnounces(ctx context.Context, sub *pubsub.Subscription) {
 // remember stores what a peer announced, evicting the least recently seen
 // when the table is full.
 func (n *Node) remember(from peer.ID, a protocol.Announce) {
+	var addrs []ma.Multiaddr
+	if n.host != nil && a.Relay {
+		addrs = relayAddrs(n.host.Peerstore().Addrs(from), n.onLocalNetwork())
+	}
 	n.mu.Lock()
-	if _, ok := n.peers[from]; !ok && len(n.peers) >= maxPeers {
+	old, known := n.peers[from]
+	if !known && len(n.peers) >= maxPeers {
 		oldest, at := peer.ID(""), time.Now()
 		for p, pi := range n.peers {
 			if pi.seen.Before(at) {
@@ -808,12 +890,14 @@ func (n *Node) remember(from peer.ID, a protocol.Announce) {
 		}
 		delete(n.peers, oldest)
 	}
-	var addrs []ma.Multiaddr
-	if n.host != nil {
-		addrs = append(addrs, n.host.Peerstore().Addrs(from)...)
+	if len(addrs) == 0 && known && a.Relay {
+		addrs = old.addrs // what a lookup found outlives the peerstore entry
 	}
 	n.peers[from] = &peerInfo{Announce: a, seen: time.Now(), addrs: addrs}
 	n.mu.Unlock()
+	if a.Relay && len(addrs) == 0 {
+		n.lookupRelay(from) // gossip carries no addresses
+	}
 	// The peer just reached us, so whatever address we failed to dial
 	// before is worth trying again now. Without this, a relayed peer that
 	// re-reserved after a bootstrap restart keeps its old address in the
@@ -841,30 +925,104 @@ func modelKey(model string) cid.Cid {
 	return cid.NewCidV1(cid.Raw, mh)
 }
 
-// provideLoop records this node as a provider of every model it serves, and
-// refreshes the records often: they expire after 24 h, a refresh repairs a
-// record lost when the DHT had no peers yet, and a bootstrap restart wipes
-// the DHT, so a two minute refresh keeps cold clients able to find us.
+// provideLoop records this node as a provider of every model it announces, so
+// a cold client can find it by model name. A record stays valid for 48 h and the
+// address in it for 24 h, so the periodic refresh is only a repair. What matters
+// is the moments a record goes missing or wrong: at start, when the announced
+// models change, when a seed connects, since a seed that restarted has lost its
+// records, and when our own addresses change, since a NATed node has none until
+// it holds a relay reservation and a record with no address is not kept. Nothing
+// is announced while the upstream is down, so that stops the records too, and
+// recovery brings them back.
 func (n *Node) provideLoop(ctx context.Context) {
-	every := 2 * time.Minute
+	go n.watchProvideTriggers(ctx)
 	for {
-		ok := true
-		for _, m := range n.modelNames() {
-			pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			if err := n.dht.Provide(pctx, modelKey(m), true); err != nil {
-				log.Printf("dht provide %s: %v", m, err)
-				ok = false
-			}
-			cancel()
+		// A request from before this point is covered by this pass.
+		select {
+		case <-n.provideKick:
+		default:
 		}
-		every = 2 * time.Minute
-		if !ok { // the DHT was not ready; try again soon
-			every = 15 * time.Second
+		wait := n.cfg.ProvideEvery
+		if !n.provideAll(ctx) { // the DHT was not ready; try again soon
+			wait = provideRetry
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(every):
+		case <-n.provideKick:
+		case <-time.After(wait):
+		}
+	}
+}
+
+// provideAll sends one provider record per announced model and reports whether
+// they all went out. With no address of our own yet, none would be kept.
+func (n *Node) provideAll(ctx context.Context) bool {
+	announced := n.announced()
+	if len(announced) > 0 && len(n.host.Addrs()) == 0 {
+		return false
+	}
+	ok := true
+	for _, m := range announced {
+		if !n.upOK.Load() {
+			break
+		}
+		pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := n.dht.Provide(pctx, modelKey(m), true); err != nil {
+			log.Printf("dht provide %s: %v", m, err)
+			ok = false
+		} else {
+			n.provides.Add(1)
+		}
+		cancel()
+	}
+	return ok
+}
+
+// kickProvide asks provideLoop for a pass as soon as it can.
+func (n *Node) kickProvide() {
+	select {
+	case n.provideKick <- struct{}{}:
+	default:
+	}
+}
+
+// watchProvideTriggers asks for a provide pass when our addresses change, and
+// when a seed connects, once the seed is in the routing table, where the pass
+// can reach it.
+func (n *Node) watchProvideTriggers(ctx context.Context) {
+	sub, err := n.host.EventBus().Subscribe([]any{new(event.EvtPeerConnectednessChanged), new(event.EvtLocalAddressesUpdated)})
+	if err != nil {
+		log.Printf("watching for provide triggers: %v", err)
+		return
+	}
+	defer sub.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e, ok := <-sub.Out():
+			if !ok {
+				return
+			}
+			switch ev := e.(type) {
+			case event.EvtLocalAddressesUpdated:
+				n.kickProvide()
+			case event.EvtPeerConnectednessChanged:
+				if ev.Connectedness != network.Connected || !n.isSeed(ev.Peer) {
+					continue
+				}
+				go func() {
+					for deadline := time.Now().Add(seedConnectTimeout); n.dht.RoutingTable().Find(ev.Peer) == "" && time.Now().Before(deadline); {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(50 * time.Millisecond):
+						}
+					}
+					n.kickProvide()
+				}()
+			}
 		}
 	}
 }
@@ -875,15 +1033,33 @@ func (n *Node) provideLoop(ctx context.Context) {
 func (n *Node) findModelPeers(ctx context.Context, model string) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	for ai := range n.dht.FindProvidersAsync(ctx, modelKey(model), 20) {
+	n.connectProviders(ctx, n.dht.FindProvidersAsync(ctx, modelKey(model), 20))
+}
+
+// connectProviders connects to the providers in found and asks each what it
+// serves, findConcurrency at a time, so a dead provider does not spend the whole
+// time budget of the ones behind it.
+func (n *Node) connectProviders(ctx context.Context, found <-chan peer.AddrInfo) {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	slots := make(chan struct{}, findConcurrency)
+	for ai := range found {
 		if ai.ID == n.host.ID() {
 			continue
 		}
-		n.addRelayPaths(ai.ID)
-		if err := n.host.Connect(ctx, ai); err != nil {
-			continue
+		select {
+		case <-ctx.Done():
+			return
+		case slots <- struct{}{}:
 		}
-		n.hello(ctx, ai.ID)
+		wg.Go(func() {
+			defer func() { <-slots }()
+			n.addRelayPaths(ai.ID)
+			if err := n.host.Connect(ctx, ai); err != nil {
+				return
+			}
+			n.hello(ctx, ai.ID)
+		})
 	}
 }
 
@@ -892,7 +1068,8 @@ func (n *Node) findModelPeers(ctx context.Context, model string) {
 func (n *Node) hello(ctx context.Context, p peer.ID) {
 	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	s, err := n.host.NewStream(hctx, p, protocol.HelloProto)
+	// The provider is often NATed, so this may be a limited relayed connection.
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(hctx, "hello"), p, protocol.HelloProto)
 	if err != nil {
 		return
 	}
@@ -905,7 +1082,7 @@ func (n *Node) hello(ctx context.Context, p peer.ID) {
 	if err := json.NewDecoder(io.LimitReader(s, 1<<14)).Decode(&a); err != nil {
 		return
 	}
-	if len(a.Models) > 0 && protocol.ValidAnnounce(&a) {
+	if protocol.ValidAnnounce(&a) {
 		n.remember(p, a)
 	}
 }
@@ -933,7 +1110,7 @@ func (n *Node) redialLoop(ctx context.Context) {
 			return
 		case <-time.After(n.cfg.RedialEvery):
 		}
-		for _, ai := range n.relays {
+		for _, ai := range n.seeds() {
 			if n.host.Network().Connectedness(ai.ID) == network.Connected {
 				continue
 			}
@@ -1070,15 +1247,16 @@ func (n *Node) relaySource(_ context.Context, num int) <-chan peer.AddrInfo {
 	}
 	pubs := n.publicRelays()
 	rand.Shuffle(len(pubs), func(i, j int) { pubs[i], pubs[j] = pubs[j], pubs[i] })
+	seeds := n.seeds()
 	var order []peer.AddrInfo
-	if len(n.relays) > 0 {
-		order = append(order, n.relays[0])
+	if len(seeds) > 0 {
+		order = append(order, seeds[0])
 	}
 	if len(pubs) > 0 {
 		order = append(order, pubs[0])
 	}
-	if len(n.relays) > 1 {
-		order = append(order, n.relays[1:]...)
+	if len(seeds) > 1 {
+		order = append(order, seeds[1:]...)
 	}
 	if len(pubs) > 1 {
 		order = append(order, pubs[1:]...)
@@ -1123,7 +1301,7 @@ func (n *Node) publicRelays() []peer.AddrInfo {
 // seeds first, then public peers, capped so one peer's address list does not
 // explode. Used for peers found through the DHT.
 func (n *Node) relayInfos(limit int) []peer.AddrInfo {
-	all := append([]peer.AddrInfo(nil), n.relays...)
+	all := append([]peer.AddrInfo(nil), n.seeds()...)
 	all = append(all, n.publicRelays()...)
 	if limit <= 0 || limit > len(all) {
 		limit = len(all)
@@ -1221,7 +1399,7 @@ func (n *Node) SeedConnected() bool {
 // empty when no --bootstrap was given or when the DNS seed list did not
 // resolve, which is what lets cmd/bitllm print a join code instead.
 func (n *Node) Seeds() []peer.AddrInfo {
-	return append([]peer.AddrInfo(nil), n.relays...)
+	return append([]peer.AddrInfo(nil), n.seeds()...)
 }
 
 // ListenAddrs is where the p2p host accepts connections: TCP and QUIC on every

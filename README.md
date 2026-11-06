@@ -42,12 +42,13 @@ Four jobs, one binary:
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
-- **A public relay** is a serving node with inbound TCP and UDP 4001: add
-  `--public`. It must serve a model, because only a serving node announces.
-  It answers DHT queries and relays for NATed peers, but still
+- **A public relay** is a node with inbound TCP and UDP 4001: start it with
+  `--public`. It answers DHT queries and relays for NATed peers, but still
   joins the default seeds, so it needs no DNS record. Its announce carries
   `relay=true`; autorelay adds it as a candidate, so a NATed node reserves on
-  the seed and on public relays instead of only on the seed.
+  the seed and on public relays instead of only on the seed. Before v0.5.0 it
+  must serve a model, because only a serving node announces. From v0.5.0 it needs
+  no model, once the seeds run v0.5.0 and can pass its announce on.
 - **A seed** is a public relay that is also listed in
   `_dnsaddr.bootstrap.bitllm.org` and starts alone (`--dht-server`). It is the
   first contact for a fresh install. One seed is enough to join; public relays
@@ -504,10 +505,11 @@ bitllm --public --port 4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. It must
-serve a model, because only a serving node announces. Its announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
-capacity grows without adding DNS entries. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving
-node this way.
+It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. Its
+announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
+capacity grows without adding DNS entries. Before v0.5.0 it must serve a model, because only a
+serving node announces. From v0.5.0 it needs no model, once the seeds run v0.5.0 and can pass its
+announce on. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving node this way.
 
 Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` installs the systemd unit
 and prints the DNS records to publish. A home host can be a public relay too, with a port forward

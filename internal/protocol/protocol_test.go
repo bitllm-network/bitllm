@@ -3,7 +3,50 @@ package protocol
 import (
 	"strings"
 	"testing"
+
+	"github.com/bitllm-org/bitllm/internal/models"
 )
+
+func TestValidModelName(t *testing.T) {
+	for _, s := range []string{
+		"Qwen/Qwen3.8-Flash-Next", "my-lab/new-model", "llama3:8b", "phi@v2", "a+b=c", "m",
+		strings.Repeat("x", MaxModelName),
+	} {
+		if !ValidModelName(s) {
+			t.Fatalf("rejected %q", s)
+		}
+	}
+	for name := range models.Manifest {
+		if !ValidModelName(name) {
+			t.Fatalf("rejected the canonical name %q", name)
+		}
+	}
+	for _, s := range []string{
+		"", "-m", "a b", "a;b", "a'b", "a\"b", "a`b", "$m", "$(m)", "a\nb", "a\tb", "a|b", "a&b", "a>b", "a\\b", "a%b", "模型",
+		strings.Repeat("x", MaxModelName+1),
+	} {
+		if ValidModelName(s) {
+			t.Fatalf("accepted %q", s)
+		}
+	}
+}
+
+func TestValidAnnounceChecksEveryName(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	ok := Announce{Models: []string{"org/m:1"}, Audit: []string{"org/m:1"}, Weights: map[string]string{"org/m:1": hash}, Max: 1}
+	if !ValidAnnounce(&ok) {
+		t.Fatal("rejected a normal announce")
+	}
+	for name, a := range map[string]Announce{
+		"model":   {Models: []string{"m", "a b"}, Max: 1},
+		"audit":   {Models: []string{"m"}, Audit: []string{"a b"}, Max: 1},
+		"weights": {Models: []string{"m"}, Weights: map[string]string{"a b": hash}, Max: 1},
+	} {
+		if ValidAnnounce(&a) {
+			t.Fatalf("accepted a bad name in %s", name)
+		}
+	}
+}
 
 func TestValidAnnounce(t *testing.T) {
 	ok := Announce{Models: []string{"m"}, Free: 1, Max: 2, Q: 3}
@@ -29,6 +72,18 @@ func TestValidAnnounce(t *testing.T) {
 		if ValidAnnounce(&a) {
 			t.Fatalf("accepted %s", name)
 		}
+	}
+}
+
+func TestRelayMayAnnounceNoModels(t *testing.T) {
+	if a := (Announce{Relay: true, Models: []string{}, Max: 1}); !ValidAnnounce(&a) {
+		t.Fatal("rejected a relay-only announce")
+	}
+	if a := (Announce{Relay: true, Models: []string{}}); ValidAnnounce(&a) {
+		t.Fatal("accepted a relay-only announce with no slots")
+	}
+	if a := (Announce{Models: []string{}, Max: 1}); ValidAnnounce(&a) {
+		t.Fatal("accepted an empty announce from a node that is not a relay")
 	}
 }
 
