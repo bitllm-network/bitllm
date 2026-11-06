@@ -24,11 +24,16 @@ jobs:
         run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
       - name: nothing points at the old GitHub org
         run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md go.mod deploy docs scripts cmd internal'
-      - name: deploy scripts parse
+      - name: scripts parse
         run: |
           bash -n deploy/bootstrap-vps.sh
           bash -n deploy/gpu-host.sh
+          bash -n scripts/release.sh
+          bash -n scripts/compat.sh
+          sh -n scripts/network-kv.sh
           python3 -m py_compile deploy/seed-dns.py
+      - name: deploy script tests
+        run: python3 -m unittest discover -s deploy -p 'test_*.py'
       - run: go vet ./...
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff

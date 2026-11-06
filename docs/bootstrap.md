@@ -26,8 +26,8 @@ is a DHT client; a public relay is a DHT server.
 
 Public relays are the nodes that can accept inbound. They are the part of the
 network that can grow without adding DNS entries: after first contact, a relay
-announces `relay=true` and NATed nodes add it to their autorelay candidates.
-The seed remains the phone book entry, not the switchboard.
+that serves a model announces `relay=true` and NATed nodes add it to their
+autorelay candidates. The seed remains the phone book entry, not the switchboard.
 
 Keep the first seed small and separate from the machines that serve models. A
 GPU that is training, rendering, or simply off must not take first contact with
@@ -52,8 +52,9 @@ var DefaultBootstrap = []string{
 ```
 
 The second entry is the old tunnel. The TXT records now answer, so it is a
-fallback for a node that cannot resolve the DNS seed list; the next release can
-drop it. See [The old tunnel seed](#the-old-tunnel-seed).
+fallback for a node that cannot resolve the DNS seed list. It goes away in the
+first release after both the domain move and a live second seed. See
+[The old tunnel seed](#the-old-tunnel-seed).
 
 A `/dnsaddr/` name is resolved through the TXT records at
 `_dnsaddr.bootstrap.bitllm.org`. Every record is one address of one seed:
@@ -70,9 +71,9 @@ seeds and, after it hears their announces, on public relays that say
 serving nodes as well.
 
 Adding or retiring a seed is a DNS change, not a release. Adding a public
-relay is not even a DNS change: it joins through the seeds and becomes a
-candidate through its announce. A new node needs only one seed to join, and
-existing nodes keep their direct connections and their other relay
+relay that serves a model is not even a DNS change: it joins through the seeds
+and becomes a candidate through its announce. A new node needs only one seed to
+join, and existing nodes keep their direct connections and their other relay
 reservations if one disappears.
 
 When no seed resolves at all, the node does not fail. It starts its own
@@ -101,8 +102,12 @@ bitllm --dht-server --port 4001 \
 `deploy/bootstrap-vps.sh` installs that as a systemd unit on a fresh Ubuntu VM
 and prints the DNS records to publish. The deployment handoff, including the
 Oracle instance and the move of the domain, is
-[seed-handoff.md](seed-handoff.md). Rerunning it updates the binary and
-keeps the identity.
+[seed-handoff.md](seed-handoff.md). Rerunning it keeps the identity and reuses
+the version, hostname and seed saved in `/etc/bitllm/seed.env`; pass an argument
+to change one. A seed installed before that file existed must be given all three
+arguments once. The unit has `--auto-update=false`, so a seed updates only when
+you rerun the script. Back up the whole `/var/lib/bitllm` directory, which holds
+the identity.
 
 Open TCP and UDP 4001. `--dht-server` forces reachability to public, so turn
 it on only when inbound actually works; otherwise the node advertises
@@ -141,25 +146,35 @@ bitllm --public --port 4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-It does the same DHT and relay work as a seed, but it joins the default seeds
-instead of starting alone, and it needs no DNS record. Its announce carries
-`relay=true`; a NATed node uses it as an autorelay candidate alongside the
-seeds. The startup line is `--public: advertising this node as a public relay`.
+It answers DHT queries like a seed, but it joins the default seeds instead of
+starting alone, and it needs no DNS record. The startup line is `--public:
+advertising this node as a public relay`.
 
-A serving node can do this too: `deploy/gpu-host.sh` with `PUBLIC=1` adds
-`--public` and keeps the default seed list. That is the usual way to add relay
-capacity from a GPU host. It is also the safe choice for a second seed that
-has not been added to DNS yet.
+A node with `--public` and no model does not work as a relay for others yet. It
+sends no announce, so NATed nodes never pick it as a relay. That needs a later
+release.
+
+A serving node does announce. `deploy/gpu-host.sh` with `PUBLIC=1` adds `--public`
+and keeps the default seed list. Its announce carries `relay=true`, and a NATed
+node uses it as an autorelay candidate alongside the seeds. That is the way to add
+relay capacity today. It is also the safe choice for a second seed that has not
+been added to DNS yet.
 
 ## Publishing the DNS records
 
-`deploy/seed-dns.py` replaces the TXT records at
-`_dnsaddr.bootstrap.bitllm.org` with the lines from a file:
+`deploy/seed-dns.py` makes the TXT records at `_dnsaddr.bootstrap.bitllm.org`
+match the lines in a file:
 
 ```sh
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... \
+  deploy/seed-dns.py --dry-run seeds.txt   # print the changes
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... \
   deploy/seed-dns.py seeds.txt
 ```
+
+It checks every line before any request, creates what is missing, and deletes old
+records only after every create has worked and the new list reads back. If a run
+stops, the list still has its old records, and a rerun picks up from there.
 
 The token needs Zone:DNS:Edit on the `bitllm.org` zone. This is the only
 Cloudflare dependency in the network path, and it is only discovery. A client
@@ -199,9 +214,9 @@ can be small VPS instances, or any other always-on public hosts.
 ## The old tunnel seed
 
 `boot.bitllm.org` is the first seed: a Mac mini behind a Cloudflare Tunnel.
-`DefaultBootstrap` still lists it as a fallback. Keep it there until
-`_dnsaddr.bootstrap.bitllm.org` resolves to a live seed, then remove the
-literal and stop the tunnel.
+`DefaultBootstrap` still lists it as a fallback. Keep it there until the first
+release after both the domain move and a live second seed, which removes the
+literal. Keep the tunnel running until clients install that release, then stop it.
 
 Releases before the DNS list have that address compiled in and do not resolve
 `/dnsaddr/`, so those nodes keep working while the tunnel runs, and need

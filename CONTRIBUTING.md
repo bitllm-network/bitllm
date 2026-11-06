@@ -67,7 +67,9 @@ These change what every node on the network does, or who may use it, so the owne
   addresses, what a node serves and to whom.
 - New network model names in the model table.
 - New dependencies beyond the Go standard library and what is already in `go.mod`.
-- Releases. Merging is not a release; binaries come only from `scripts/release.sh`.
+- Releases. Merging is not a release. Binaries come only from the `release` workflow, which runs
+  `scripts/release.sh`, and an admin signs and publishes them. See
+  [docs/releasing.md](docs/releasing.md).
 
 ## Issues
 

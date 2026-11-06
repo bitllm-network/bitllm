@@ -31,7 +31,8 @@ answer is missing, or if neither a busy refusal nor a queued request was seen, w
 two requests did not actually overlap.
 
 It never touches the public network (mDNS, UPnP and the default bootstrap are off) and takes about
-25 seconds. Run it yourself:
+25 seconds. Any binary that has `--auto-update` runs with `--auto-update=false`, so an old node
+cannot replace itself during the run. Run it yourself:
 
 ```sh
 go build -o /tmp/bitllm-new ./cmd/bitllm

@@ -66,8 +66,9 @@ CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
 
 The Worker behind bitllm.org answers `/network.json` from the `network` key in that namespace.
 The uploader never accepts inbound requests, and the token only needs Workers KV Storage:Edit.
-Two minutes is 720 writes a day, under the free tier limit of 1,000. The landing page fetches the
-snapshot once a minute; if the key is empty it shows an empty network instead of failing.
+Two minutes is 720 writes a day, under the free tier limit of 1,000. The key expires ten minutes
+after the last write. The landing page fetches the snapshot once a minute; if the key is empty it
+shows an empty network instead of failing, so a stopped uploader does not leave an old map up.
 
 The landing page source is
 [bitllm-org/landing-page](https://github.com/bitllm-org/landing-page).
