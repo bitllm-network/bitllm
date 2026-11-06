@@ -16,8 +16,9 @@ answers from whichever peer serves the model you ask for. There is no coordinato
 each other through a Kademlia DHT and gossip, connect directly when they can, and go through a
 relay plus hole punching when both sides are behind NAT.
 
-Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org), and the
-[access rules](#how-access-works) decide who gets a slot. Using it needs no account and no wallet.
+Beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org). Invites set your
+priority, not whether you can join: the [access rules](#how-access-works) decide who gets a slot
+first, and uninvited nodes can still get idle slots. Using it needs no account and no wallet.
 
 ![The dashboard a running node serves: a terminal-style editor with a model list, a copyable setup snippet, and a test console](docs/images/dashboard.png)
 
@@ -375,11 +376,11 @@ will not count.
 
 ## How access works
 
-Invite-only beta. Three rules:
+Invites set priority, not entry. Three rules:
 
 1. An invite gets you served on any free slot. Uninvited nodes are served only when a server is idle, unless its owner opens it to everyone.
 2. There is no daily quota by default. A server owner can set one.
-3. Sharing makes you a contributor: never limited by quota, and 10 invites instead of 3 once your nodes have served.
+3. Sharing makes you a contributor: 10 invites instead of 3 once your nodes have served, and no quota on a server that asked your node for a job in the last 7 days.
 
 If you are not a member yet, you can still use the network: you are served whenever a server is
 idle, and a server started with `--open` serves you like a member. To become a member, ask a
@@ -388,11 +389,18 @@ member to invite your Ethereum address, then link this node to that address in t
 address if you want an invite or a quota.
 
 A member is the root account or anyone a member invited. Once your nodes have served a job you
-have 10 invites for good. Owners can set a daily quota per member (`--free-daily`); contributors
-(nodes served in the last 7 days) are exempt. A root can revoke an account, which also removes
-everyone it invited (they can be invited again by someone else). Invites are signed with an
-Ethereum account and gossiped; every node computes the same member set, so there is no
-membership server. Servers look up the requesting node's account through its claim (below).
+have 10 invites for good. That limit reads public receipts, which are self-reported. Owners can set
+a daily quota per member (`--free-daily`). Quota exemption does not read public receipts. It comes
+from what a server has seen itself: your node did a job that server asked for within the last 7
+days. A server that never asks peers for jobs exempts nobody.
+
+A root can revoke an account (`bitllm invite --revoke`). That account and everyone it invited drop
+to the uninvited tier, so they can still get idle slots. Everyone it invited can be invited again
+by someone else.
+
+Invites are signed with an Ethereum account and gossiped, so there is no membership server. Members
+converge as signed items spread, and nodes can disagree for a while. Servers look up the requesting
+node's account through its claim (below).
 
 ```bash
 bitllm invite 0xADDRESS           # invite with a recovery-words account
