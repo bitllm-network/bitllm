@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,9 @@ func TestClaudeCodeSnippetIsSafeInAShell(t *testing.T) {
 
 // The curl snippet hands curl valid JSON holding the name as it is.
 func TestCurlSnippetIsSafeInAShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the sh there rereads backslashes in its own command line, before the script runs")
+	}
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")

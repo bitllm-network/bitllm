@@ -46,6 +46,7 @@ func openStore(t *testing.T, path string) *Receipts {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(rs.Close)
 	return rs
 }
 
@@ -668,6 +669,7 @@ func TestProvenNeedsOurSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(rs.Close)
 	s := newParty(t)
 	sid, _ := peer.Decode(s.id)
 	now := time.Now()
@@ -706,6 +708,7 @@ func TestProvenNeedsOurSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(again.Close)
 	if !again.Proven(since)[s.id] {
 		t.Fatal("lost across a restart")
 	}
@@ -714,6 +717,7 @@ func TestProvenNeedsOurSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(blind.Close)
 	if len(blind.Proven(since)) != 0 {
 		t.Fatal("proof without a seed")
 	}
@@ -779,6 +783,7 @@ func TestServedAndCountersign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(rs.Close)
 	ck, cid := newKey(t)
 	from, _ := peer.Decode(cid)
 	r := Receipt{Job: "j", Model: "m", Client: cid, Server: sid, Prompt: 4, Completion: 1, Credits: 2, Output: "o", TS: time.Now().Unix()}
@@ -810,6 +815,29 @@ func TestServedAndCountersign(t *testing.T) {
 		t.Fatal("countersigned a bad client signature")
 	}
 	if err := rs.Flush(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// After Close the file is released, which Windows needs before it can be removed
+// or replaced, and the store still works from memory.
+func TestCloseReleasesTheFile(t *testing.T) {
+	path := storePath(t)
+	k, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, _ := peer.IDFromPrivateKey(k)
+	rs, err := Open(path, k, self, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs.Close()
+	rs.Close() // twice is fine
+	if err := rs.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 }

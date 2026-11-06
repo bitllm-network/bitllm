@@ -428,6 +428,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID(), n.receiptSeed); err != nil {
 		return nil, err
 	}
+	context.AfterFunc(ctx, n.receipts.Close)
 	// After receipts and claims: replaying saved invites needs to know who served.
 	n.members = members.Open(filepath.Join(cfg.DataDir, "members.json"), cfg.Roots, n.servedSets)
 	n.wireState()

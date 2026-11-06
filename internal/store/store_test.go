@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,7 +27,7 @@ func TestWriteFileReplacesAtomically(t *testing.T) {
 		t.Fatalf("temporary file left behind: %v", err)
 	}
 	fi, _ := os.Stat(path)
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 { // Windows has no such bits
 		t.Fatalf("mode %v", fi.Mode())
 	}
 }

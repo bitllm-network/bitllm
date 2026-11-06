@@ -492,7 +492,9 @@ func (rs *Receipts) Add(sr SignedReceipt) bool {
 	}
 	rs.seen[k] = struct{}{}
 	off, size := rs.size, int64(len(line))
-	if n, err := rs.f.Write(line); err != nil {
+	if rs.f == nil {
+		size = 0
+	} else if n, err := rs.f.Write(line); err != nil {
 		log.Printf("write %s: %v", rs.path, err)
 		rs.size += int64(n)
 		size = 0
@@ -511,6 +513,17 @@ func (rs *Receipts) AddSynced(sr SignedReceipt) bool {
 		return false
 	}
 	return rs.Add(sr)
+}
+
+// Close closes the file. What is already held stays readable. A receipt added
+// after this is kept in memory only, and the next start syncs it again.
+func (rs *Receipts) Close() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.f != nil {
+		rs.f.Close()
+		rs.f = nil
+	}
 }
 
 // Flush asks the disk to hold what was appended.
