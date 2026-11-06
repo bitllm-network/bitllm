@@ -39,6 +39,7 @@ package per domain. Tests live with the package they test.
 | `internal/receipts/` | signed job receipts, gossip limits, pending jobs, per-server pseudonyms |
 | `internal/quota/` | daily credit quotas, reservations and rollover |
 | `internal/ledger/` | per-peer exchange record (data only) |
+| `internal/store/` | atomic file writes and the debounced writer the state files use |
 | `internal/netmap/` | `--location` geohash cells and the aggregate behind `GET /network` ([docs/network-map.md](docs/network-map.md)) |
 | `internal/models/`, `internal/assets/` | canonical model records and `models.json`; the embedded dashboard and canary prompts |
 | `internal/tui/` | `bitllm top`: live terminal view over the local HTTP API |
