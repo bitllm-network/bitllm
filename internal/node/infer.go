@@ -295,12 +295,43 @@ func pipe(dst io.Writer, flush func(), src io.Reader, stream bool, m *meter) err
 	}
 }
 
-// callUpstream sends an OpenAI or Anthropic request for a public model name to our own server.
+// callUpstream sends a request written on this machine (the local gateway, an
+// audit probe) to our own server, and any failure comes back in full.
 func (n *Node) callUpstream(ctx context.Context, path string, raw []byte) (*http.Response, bool, error) {
-	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return nil, false, &peerError{400, "bad json"}
+	body, pe := decodeRequest(raw)
+	if pe != nil {
+		return nil, false, pe
 	}
+	return n.sendUpstream(ctx, path, body)
+}
+
+// callUpstreamForPeer is callUpstream for a request a stranger wrote: it passes
+// the boundary in boundary_request.go on the way in and on the way out.
+func (n *Node) callUpstreamForPeer(ctx context.Context, path string, raw []byte, from peer.ID) (*http.Response, bool, *peerError) {
+	body, pe := decodeRequest(raw)
+	if pe != nil {
+		return nil, false, pe
+	}
+	if pe := n.limitPeerRequest(path, body); pe != nil {
+		return nil, false, pe
+	}
+	resp, stream, err := n.sendUpstream(ctx, path, body)
+	if err != nil {
+		return nil, false, peerFacing(path, from, err.(*peerError))
+	}
+	return resp, stream, nil
+}
+
+func decodeRequest(raw []byte) (map[string]any, *peerError) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil || body == nil {
+		return nil, &peerError{400, "bad json"}
+	}
+	return body, nil
+}
+
+// sendUpstream sends an OpenAI or Anthropic request for a public model name to our own server.
+func (n *Node) sendUpstream(ctx context.Context, path string, body map[string]any) (*http.Response, bool, error) {
 	model, _ := body["model"].(string)
 	up, ok := n.upstreamModel(model)
 	if !ok {
@@ -586,9 +617,8 @@ func (n *Node) handleInfer(s network.Stream) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // a failed write to the peer stops the upstream generation too
-	resp, stream, err := n.callUpstream(ctx, req.Path, req.Body)
-	if err != nil {
-		pe := err.(*peerError)
+	resp, stream, pe := n.callUpstreamForPeer(ctx, req.Path, req.Body, remote)
+	if pe != nil {
 		reply(pe.status, pe.msg)
 		return
 	}
