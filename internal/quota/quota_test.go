@@ -1,6 +1,7 @@
 package quota
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -28,6 +29,9 @@ func TestReserveSettleAndReload(t *testing.T) {
 	}
 
 	// Only served credits are on disk; a restart starts with no reservations.
+	if err := q.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	again := Open(path)
 	if got := again.Used("alice", now); got != 10 {
 		t.Fatalf("after reload: used = %d, want 10", got)
@@ -50,5 +54,33 @@ func TestDayRollover(t *testing.T) {
 	}
 	if got := q.Room("alice", 100, tomorrow); got != 100 {
 		t.Fatalf("room tomorrow = %d, want 100", got)
+	}
+}
+
+func TestManySettlesAreOneWrite(t *testing.T) {
+	path := t.TempDir() + "/quota.json"
+	q := Open(path)
+	now := time.Now()
+	for range 1000 {
+		q.Add("alice", 1, now)
+	}
+	if got := q.save.Writes(); got != 0 {
+		t.Fatalf("%d writes before the flush", got)
+	}
+	if err := q.Close(); err != nil || q.save.Writes() != 1 {
+		t.Fatalf("close: %v, %d writes", err, q.save.Writes())
+	}
+	if got := Open(path).Used("alice", now); got != 1000 {
+		t.Fatalf("after reload: used = %d", got)
+	}
+}
+
+func TestBadFileDoesNotStopTheNode(t *testing.T) {
+	path := t.TempDir() + "/quota.json"
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := Open(path).Used("alice", time.Now()); got != 0 {
+		t.Fatalf("used = %d", got)
 	}
 }

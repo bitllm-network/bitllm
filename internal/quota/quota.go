@@ -5,9 +5,12 @@ package quota
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/bitllm-org/bitllm/internal/store"
 )
 
 // Store is the per-day record. reserved is the part of a job that has been
@@ -15,7 +18,7 @@ import (
 // slot and settles the real cost when it ends.
 type Store struct {
 	mu       sync.Mutex
-	path     string
+	save     *store.Debounced
 	day      int64
 	used     map[string]int64
 	reserved map[string]int64
@@ -29,17 +32,37 @@ type fileQuota struct {
 
 func utcDay(t time.Time) int64 { return t.Unix() / 86400 }
 
-// Open loads the store for the current day, dropping an older day's counts.
+// Open loads the store for the current day, dropping an older day's counts. A
+// file that does not parse is logged and treated as empty.
 func Open(path string) *Store {
-	q := &Store{path: path, day: utcDay(time.Now()), used: map[string]int64{}, reserved: map[string]int64{}}
-	if b, err := os.ReadFile(path); err == nil {
-		var f fileQuota
-		if json.Unmarshal(b, &f) == nil && f.Day == q.day && f.Used != nil {
-			q.used = f.Used
-		}
+	q := &Store{day: utcDay(time.Now()), used: map[string]int64{}, reserved: map[string]int64{}}
+	q.save = store.NewDebounced(path, 0o600, 0, q.snapshot)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return q
+	}
+	var f fileQuota
+	if err := json.Unmarshal(b, &f); err != nil {
+		log.Printf("quota file %s: %v (starting empty)", path, err)
+		return q
+	}
+	if f.Day == q.day && f.Used != nil {
+		q.used = f.Used
 	}
 	return q
 }
+
+func (q *Store) snapshot() ([]byte, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return json.Marshal(fileQuota{Day: q.day, Used: q.used})
+}
+
+// Flush writes pending changes now.
+func (q *Store) Flush() error { return q.save.Flush() }
+
+// Close flushes and stops scheduling writes.
+func (q *Store) Close() error { return q.save.Close() }
 
 func (q *Store) roll(now time.Time) {
 	if d := utcDay(now); d != q.day {
@@ -113,9 +136,5 @@ func (q *Store) Settle(key string, reserved, credits int64, now time.Time) {
 	q.roll(now)
 	q.reserved[key] = max(q.reserved[key]-reserved, 0)
 	q.used[key] += credits
-	b, _ := json.Marshal(fileQuota{Day: q.day, Used: q.used})
-	tmp := q.path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		os.Rename(tmp, q.path)
-	}
+	q.save.Mark()
 }
