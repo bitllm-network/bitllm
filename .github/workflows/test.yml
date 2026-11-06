@@ -22,8 +22,8 @@ jobs:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "run gofmt -w on:"; gofmt -l .; exit 1; }
-      - name: public links use the current GitHub org
-        run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md deploy docs'
+      - name: nothing points at the old GitHub org
+        run: '! git grep -nE "github\.com/bitllm-network|bitllm-network/" -- README.md go.mod deploy docs scripts cmd internal'
       - name: deploy scripts parse
         run: |
           bash -n deploy/bootstrap-vps.sh

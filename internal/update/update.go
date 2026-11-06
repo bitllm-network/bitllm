@@ -35,7 +35,7 @@ import (
 // ends at .../releases/download/vX.Y.Z/SHA256SUMS, which is how the tag is
 // read without the rate-limited API and without a token.
 const (
-	repo         = "bitllm-network/bitllm"
+	repo         = "bitllm-org/bitllm"
 	DefaultSums  = "https://github.com/" + repo + "/releases/latest/download/SHA256SUMS"
 	DefaultAsset = "https://github.com/" + repo + "/releases/download/%s/%s"
 

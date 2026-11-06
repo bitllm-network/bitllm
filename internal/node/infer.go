@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/protocol"
-	"github.com/bitllm-network/bitllm/internal/receipts"
+	"github.com/bitllm-org/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/receipts"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	p2pproto "github.com/libp2p/go-libp2p/core/protocol"

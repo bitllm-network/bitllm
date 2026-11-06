@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/models"
-	"github.com/bitllm-network/bitllm/internal/netmap"
-	"github.com/bitllm-network/bitllm/internal/node"
-	"github.com/bitllm-network/bitllm/internal/tui"
-	"github.com/bitllm-network/bitllm/internal/update"
+	"github.com/bitllm-org/bitllm/internal/models"
+	"github.com/bitllm-org/bitllm/internal/netmap"
+	"github.com/bitllm-org/bitllm/internal/node"
+	"github.com/bitllm-org/bitllm/internal/tui"
+	"github.com/bitllm-org/bitllm/internal/update"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )

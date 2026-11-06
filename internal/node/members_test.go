@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
-	"github.com/bitllm-network/bitllm/internal/receipts"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/receipts"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"

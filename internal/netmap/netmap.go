@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 )
 
 // LocCells is the geohash length we announce: about 156 km cells.

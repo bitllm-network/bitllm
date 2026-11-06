@@ -35,9 +35,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/assets"
-	"github.com/bitllm-network/bitllm/internal/models"
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/assets"
+	"github.com/bitllm-org/bitllm/internal/models"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"

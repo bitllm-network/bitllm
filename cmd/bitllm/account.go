@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
-	"github.com/bitllm-network/bitllm/internal/node"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/node"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/tyler-smith/go-bip39"

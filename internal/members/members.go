@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/account"
 )
 
 // Membership is an invite tree of Ethereum accounts, private-tracker style.

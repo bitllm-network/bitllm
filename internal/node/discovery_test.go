@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/protocol"
+	"github.com/bitllm-org/bitllm/internal/protocol"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"

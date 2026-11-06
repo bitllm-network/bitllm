@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/node"
-	"github.com/bitllm-network/bitllm/internal/update"
+	"github.com/bitllm-org/bitllm/internal/node"
+	"github.com/bitllm-org/bitllm/internal/update"
 )
 
 // executable is the real path of the running binary, following the symlink a

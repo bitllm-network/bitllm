@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )

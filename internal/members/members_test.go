@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/members"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/members"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 

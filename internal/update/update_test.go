@@ -80,7 +80,7 @@ func TestIsRelease(t *testing.T) {
 func TestTagFromPath(t *testing.T) {
 	for _, tc := range []struct{ path, want string }{
 		{"/bitllm-org/bitllm/releases/download/v0.3.0/SHA256SUMS", "v0.3.0"},
-		{"/bitllm-network/bitllm/releases/download/v1.2.3/bitllm-linux-amd64", "v1.2.3"},
+		{"/bitllm-org/bitllm/releases/download/v1.2.3/bitllm-linux-amd64", "v1.2.3"},
 		{"/bitllm-org/bitllm/releases/latest/download/SHA256SUMS", ""},
 		{"/bitllm-org/bitllm/releases/download/main/SHA256SUMS", ""},
 		{"/nothing/here", ""},

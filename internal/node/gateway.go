@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
-	"github.com/bitllm-network/bitllm/internal/assets"
+	"github.com/bitllm-org/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/assets"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 

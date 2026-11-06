@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bitllm-network/bitllm/internal/models"
+	"github.com/bitllm-org/bitllm/internal/models"
 )
 
 // hashModelCmd is `bitllm hash-model DIR`.

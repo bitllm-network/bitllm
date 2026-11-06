@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bitllm-network/bitllm/internal/account"
+	"github.com/bitllm-org/bitllm/internal/account"
 )
 
 // mockUpstream is an OpenAI-compatible server with one model; every reply
