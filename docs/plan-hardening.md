@@ -36,7 +36,8 @@ These change what live nodes do, so the owner decided them
 - **Hosts forward known request fields only.** Standard OpenAI and Anthropic
   fields and the audit fields pass, `data:` images only, one prompt per
   `/completions` request. An operator can add a field with `--peer-field`.
-- **Release signing keys:** one per admin, kept offline. Either can sign.
+- **Release signing key:** one key, the owner's, kept offline. A later release
+  signed with it can add another.
 
 ## What v0.5.0 contains
 

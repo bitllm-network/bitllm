@@ -1,4 +1,4 @@
-// Command sign makes and checks BitLLM release signatures. Each admin holds one
+// Command sign makes and checks BitLLM release signatures. Each signer holds one
 // private key, offline; the public halves are embedded in
 // internal/update/keys.go. See update.Message for what a signature covers.
 //
@@ -145,7 +145,7 @@ func checkKeys(args []string, stdout io.Writer) error {
 		return errUsage
 	}
 	if len(update.TrustedKeys) == 0 {
-		return errors.New("update.TrustedKeys is empty: add the admins' public keys to internal/update/keys.go before a tag")
+		return errors.New("update.TrustedKeys is empty: add a public key to internal/update/keys.go before a tag")
 	}
 	for i, s := range update.TrustedKeys {
 		if _, err := update.ParseKey(s); err != nil {

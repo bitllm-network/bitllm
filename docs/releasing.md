@@ -129,7 +129,7 @@ Do not delete a published release or move a tag. Nodes read assets by tag.
 
 ## Signing keys
 
-Each admin has one key, and a signature from any one of them is enough.
+A release is signed if one signature verifies under any key in the list. The list holds the owner's key.
 
 ```sh
 go run ./scripts/sign keygen /path/to/key
@@ -146,4 +146,4 @@ public key.
   refuse a release signed by any other key. Add it at least one release before you
   sign with it.
 
-The list has one key so far. Add the second admin's key before the v0.5.0 tag.
+The list has one key. A key added in a release takes effect for the releases after it, so the release that adds one is still signed with a key already in the list. If the only key is lost, nodes cannot take a signed update, and each one has to be reinstalled by hand.
