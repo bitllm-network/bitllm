@@ -29,6 +29,10 @@ import (
 	"github.com/multiformats/go-multistream"
 )
 
+// The rest of the package's tests ask for models nobody serves right after a
+// start, and expect the answer at once. TestStartupWait turns the wait back on.
+func init() { startupWait = 0 }
+
 // scriptedPeer is a real libp2p host that answers inference streams from a
 // script instead of a model server, and counts what reaches it.
 type scriptedPeer struct {
@@ -938,4 +942,54 @@ func TestCandidateRanking(t *testing.T) {
 	if len(firsts) < 2 {
 		t.Fatal("equal peers always come in the same order")
 	}
+}
+
+// A request right after a start waits for the first announce instead of
+// getting a 503.
+func TestStartupWait(t *testing.T) {
+	if startupWindow != 30*time.Second || startupPoll != 250*time.Millisecond {
+		t.Fatalf("window %v, poll %v", startupWindow, startupPoll)
+	}
+	setVar(t, &startupWait, 15*time.Second)
+	setVar(t, &startupPoll, 20*time.Millisecond)
+	client := clientNode(t)
+	gw := gatewayOf(t, client)
+	time.AfterFunc(300*time.Millisecond, func() { addScriptedPeer(t, client, "m", 1, honestAnswer) })
+	got, _, body, err := ask(t, gw, chatPath, chatBody)
+	if err != nil || got != 200 {
+		t.Fatalf("got %d %q, %v", got, body, err)
+	}
+}
+
+func TestStartupWaitEnds(t *testing.T) {
+	setVar(t, &startupPoll, 20*time.Millisecond)
+	t.Run("runs out", func(t *testing.T) {
+		setVar(t, &startupWait, 200*time.Millisecond)
+		gw := gatewayOf(t, clientNode(t))
+		start := time.Now()
+		got, _, body, _ := ask(t, gw, chatPath, chatBody)
+		if got != 503 || time.Since(start) < 200*time.Millisecond {
+			t.Fatalf("got %d %q after %v", got, body, time.Since(start))
+		}
+	})
+	t.Run("not long after a start", func(t *testing.T) {
+		setVar(t, &startupWait, time.Minute)
+		setVar(t, &startupWindow, 0)
+		gw := gatewayOf(t, clientNode(t))
+		if got, _, body, _ := ask(t, gw, chatPath, chatBody); got != 503 {
+			t.Fatalf("got %d %q", got, body)
+		}
+	})
+	t.Run("request goes away", func(t *testing.T) {
+		setVar(t, &startupWait, time.Minute)
+		client := clientNode(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		defer cancel()
+		if c := client.awaitCandidates(ctx, "m"); c != nil {
+			t.Fatalf("candidates %v", c)
+		}
+		if ctx.Err() == nil {
+			t.Fatal("returned before the request went away")
+		}
+	})
 }

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +31,16 @@ var busyBackoff = time.Second
 // candidate is still untried. Without it a deep queue on the first peer
 // hides an idle second one for the whole busyWait.
 var peerWait = 15 * time.Second
+
+// New does not wait for the network, so right after a start the gateway may
+// not have heard of any peer yet. A request for a peer model made within
+// startupWindow of the start waits up to startupWait for a first candidate,
+// looking again every startupPoll.
+var (
+	startupWindow = 30 * time.Second
+	startupWait   = 15 * time.Second
+	startupPoll   = 250 * time.Millisecond
+)
 
 // Gateway is the local OpenAI-compatible endpoint. Point any agent at it; it
 // answers from our own upstream when we serve the model, otherwise from a peer.
@@ -159,6 +170,9 @@ func (n *Node) complete(path string) http.HandlerFunc {
 		}
 
 		cands := n.candidates(req.Model)
+		if len(cands) == 0 && time.Since(n.started) < startupWindow {
+			cands = n.awaitCandidates(r.Context(), req.Model)
+		}
 		if len(cands) == 0 {
 			// Gossip may not have reached us yet. Ask the DHT for providers
 			// of this model, which is what a node that just started sees.
@@ -254,6 +268,27 @@ func (n *Node) complete(path string) http.HandlerFunc {
 			jsonErr(w, peerStatus(pe.status), "all peers refused: "+cleanPeerText(pe.msg, maxPeerText))
 		} else {
 			jsonErr(w, 502, "all peers failed: "+cleanPeerText(last.Error(), maxPeerText))
+		}
+	}
+}
+
+// awaitCandidates looks for candidates until one shows up, startupWait runs
+// out or the request goes away.
+func (n *Node) awaitCandidates(ctx context.Context, model string) []peer.ID {
+	limit := time.NewTimer(startupWait)
+	defer limit.Stop()
+	poll := time.NewTicker(startupPoll)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-limit.C:
+			return nil
+		case <-poll.C:
+			if c := n.candidates(model); len(c) > 0 {
+				return c
+			}
 		}
 	}
 }
