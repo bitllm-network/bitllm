@@ -47,6 +47,15 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
+const (
+	// seedConnectTimeout bounds the first attempt to reach one seed.
+	seedConnectTimeout = 10 * time.Second
+	// syncEvery is how often a node syncs from a seed it already synced from.
+	syncEvery = 10 * time.Minute
+	// maxModelList caps the upstream's answer to GET /models.
+	maxModelList = 4 << 20
+)
+
 // Config is everything a node needs from its operator. Zero values are the
 // defaults described here, and New fills in the rest.
 type Config struct {
@@ -74,6 +83,9 @@ type Config struct {
 	MaxTokens        int                   // cap on new tokens per request we serve; 0 = none
 	AnnounceEvery    time.Duration         //
 	RedialEvery      time.Duration         // how often to reconnect a lost bootstrap; 0 = 15s
+	SyncStall        time.Duration         // longest a seed may stay silent during a sync; 0 = 30s
+	SyncLimit        time.Duration         // longest one sync from a seed may run; 0 = 5m
+	ModelsTimeout    time.Duration         // longest one read of the upstream's model list may take; 0 = 10s
 	Weights          map[string]string     // public name -> bitllm hash-model of the files our server loads (announced, not proven)
 	Audit            bool                  // spot-check the peers that answer us (audit.go)
 	AuditEvery       int                   // real requests to a peer between its spot checks
@@ -159,10 +171,21 @@ func LoadKey(path string) (crypto.PrivKey, error) {
 	return k, os.WriteFile(path, b, 0o600)
 }
 
-// New starts a node: key, host, DHT, gossip, storage, then the loops.
+// New starts a node: key, host, DHT, gossip, storage, then the loops. It does
+// not wait for the network: the seeds are contacted in the background, so a
+// seed that does not answer holds up neither the gateway nor the updater.
 func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.RedialEvery <= 0 {
 		cfg.RedialEvery = 15 * time.Second
+	}
+	if cfg.SyncStall <= 0 {
+		cfg.SyncStall = 30 * time.Second
+	}
+	if cfg.SyncLimit <= 0 {
+		cfg.SyncLimit = 5 * time.Minute
+	}
+	if cfg.ModelsTimeout <= 0 {
+		cfg.ModelsTimeout = 10 * time.Second
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
@@ -370,17 +393,6 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	go n.readAnnounces(ctx, sub)
 
-	for _, ai := range bootstrap {
-		if err := n.host.Connect(ctx, ai); err != nil {
-			log.Printf("bootstrap %s: %v", ai.ID, err)
-			continue
-		}
-		if added, err := n.syncReceipts(ctx, ai.ID); err != nil {
-			log.Printf("receipt sync from %s: %v", ai.ID, err)
-		} else if added > 0 {
-			log.Printf("synced %d receipts from %s", added, ai.ID)
-		}
-	}
 	if err := n.dht.Bootstrap(ctx); err != nil {
 		return nil, err
 	}
@@ -390,13 +402,11 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.Audit {
 		n.audits = newAudits(n, cfg.AuditEvery, cfg.Auditors)
 	}
-	go n.discoverLoop(ctx)
-	go n.syncLoop(ctx)
+	go n.joinSeeds(ctx)
 	go n.redialLoop(ctx)
 	if cfg.Upstream != "" {
 		n.upOK.Store(n.checkUpstream(ctx))
 		go n.announceLoop(ctx)
-		go n.provideLoop(ctx)
 	}
 	return n, nil
 }
@@ -470,22 +480,66 @@ func relayResources(behindProxy bool) relay.Resources {
 	return rc
 }
 
-// syncLoop re-syncs receipts, claims and invites from the bootstrap nodes
-// now and then, so anything a node missed on gossip arrives eventually.
-func (n *Node) syncLoop(ctx context.Context) {
+// joinSeeds makes first contact with the network. Each seed gets its own
+// goroutine that connects and then syncs, so a seed that does not answer delays
+// neither the other seeds' connects nor their syncs. redialLoop retries the
+// ones that fail here.
+//
+// The DHT loops start once the routing table has a peer, which happens a round
+// trip after the first connect. A lookup on an empty table fails at once, and
+// after that failure the rendezvous advertise sits out two minutes and
+// provideLoop 15 seconds.
+func (n *Node) joinSeeds(ctx context.Context) {
+	for _, ai := range n.relays {
+		go func() {
+			c, cancel := context.WithTimeout(ctx, seedConnectTimeout)
+			if err := n.host.Connect(c, ai); err != nil {
+				log.Printf("bootstrap %s: %v", ai.ID, err)
+			}
+			cancel()
+			n.syncLoop(ctx, ai.ID)
+		}()
+	}
+	for deadline := time.Now().Add(seedConnectTimeout); n.dht.RoutingTable().Size() == 0 && time.Now().Before(deadline); {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	go n.discoverLoop(ctx)
+	if n.cfg.Upstream != "" {
+		go n.provideLoop(ctx)
+	}
+}
+
+// syncLoop re-syncs receipts, claims and invites from one seed now and then,
+// so anything a node missed on gossip arrives eventually. While the seed is
+// not connected it looks again every RedialEvery, so a node that started while
+// the seed was unreachable catches up as soon as the connect lands, not ten
+// minutes later. A failed sync is retried with a growing wait: the seed may
+// still be starting, but a seed that keeps failing must not be asked for its
+// whole history over and over.
+func (n *Node) syncLoop(ctx context.Context, seed peer.ID) {
+	retry := n.cfg.RedialEvery
 	for {
-		// Sync first, then wait, so a node that started while the network
-		// was unreachable catches up as soon as the connect lands, not ten
-		// minutes later.
-		for _, ai := range n.relays {
-			if n.host.Network().Connectedness(ai.ID) == network.Connected {
-				n.syncReceipts(ctx, ai.ID)
+		wait := n.cfg.RedialEvery
+		if n.host.Network().Connectedness(seed) == network.Connected {
+			added, err := n.syncReceipts(ctx, seed)
+			if err != nil {
+				log.Printf("receipt sync from %s: %v", seed, err)
+				wait, retry = retry, min(retry*2, syncEvery)
+			} else {
+				if added > 0 {
+					log.Printf("synced %d receipts from %s", added, seed)
+				}
+				wait, retry = syncEvery, n.cfg.RedialEvery
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Minute):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -972,7 +1026,11 @@ func (n *Node) relayInfos(limit int) []peer.AddrInfo {
 	return out
 }
 
+// discoverModels reads the upstream's model list. A server that hangs must not
+// hold up the caller, which is New at startup and announceLoop after that.
 func (n *Node) discoverModels(ctx context.Context) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, n.cfg.ModelsTimeout)
+	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", n.cfg.Upstream+"/models", nil)
 	n.upstreamAuth(req)
 	resp, err := n.http.Do(req)
@@ -986,7 +1044,7 @@ func (n *Node) discoverModels(ctx context.Context) (map[string]string, error) {
 	var body struct {
 		Data []struct{ ID string } `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelList)).Decode(&body); err != nil {
 		return nil, err
 	}
 	out := map[string]string{}

@@ -2,9 +2,12 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestDiscoverModelsKeepsExactIDs: the upstream id is the network name. A
@@ -17,7 +20,7 @@ func TestDiscoverModelsKeepsExactIDs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	n := &Node{cfg: Config{Upstream: srv.URL}, http: srv.Client()}
+	n := &Node{cfg: Config{Upstream: srv.URL, ModelsTimeout: 5 * time.Second}, http: srv.Client()}
 	got, err := n.discoverModels(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +32,20 @@ func TestDiscoverModelsKeepsExactIDs(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("discovered %d models, want 2", len(got))
+	}
+}
+
+// TestDiscoverModelsCapsTheRead: an answer past the cap is an error, not memory
+// spent on it, even when it is valid JSON.
+func TestDiscoverModelsCapsTheRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"data":[{"id":"m"}],"pad":"%s"}`, strings.Repeat("x", maxModelList))
+	}))
+	defer srv.Close()
+
+	n := &Node{cfg: Config{Upstream: srv.URL, ModelsTimeout: 5 * time.Second}, http: srv.Client()}
+	if got, err := n.discoverModels(context.Background()); err == nil {
+		t.Fatalf("read an answer past the cap: %v", got)
 	}
 }
 
