@@ -315,7 +315,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	n.claims = account.OpenClaims(filepath.Join(cfg.DataDir, "claims.json"))
 	n.quota = quota.Open(filepath.Join(cfg.DataDir, "quota.json"))
-	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID()); err != nil {
+	if n.receipts, err = receipts.Open(filepath.Join(cfg.DataDir, "receipts.jsonl"), key, n.host.ID(), n.receiptSeed); err != nil {
 		return nil, err
 	}
 	// After receipts and claims: replaying saved invites needs to know who served.
