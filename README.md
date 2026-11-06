@@ -243,7 +243,8 @@ curl localhost:7778/queue              # slots, running jobs and the wait list
 ```
 
 No account is needed to use the network. `/v1/models` lists what is online right now, with the
-number of nodes serving each one.
+number of nodes serving each one. Slot totals on the [network map](docs/network-map.md) count a node
+once per model it serves, so adding up the models overstates capacity.
 
 Open `http://127.0.0.1:7778` for a dashboard with copy-paste setup for your agent and a
 connection test. The gateway speaks both OpenAI (`/v1/chat/completions`, `/v1/completions`) and

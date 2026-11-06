@@ -164,7 +164,7 @@ curl localhost:7778/status             # 节点 ID、连接、账本
 curl localhost:7778/queue              # 名额、正在跑的活和等待队列
 ```
 
-用网络不需要账号。`/v1/models` 列出此刻在线的模型，以及每个模型有几个节点在服务。
+用网络不需要账号。`/v1/models` 列出此刻在线的模型，以及每个模型有几个节点在服务。[网络地图](docs/network-map.md)上的名额总数按模型计算：一个节点分享几个模型就被算几次，所以把各模型加起来会高估容量。
 
 打开 `http://127.0.0.1:7778` 有控制台：给你的 agent 的现成配置、连接测试。网关同时说 OpenAI（`/v1/chat/completions`、`/v1/completions`）和 Anthropic（`/v1/messages`），Claude Code 直接能用：
 
