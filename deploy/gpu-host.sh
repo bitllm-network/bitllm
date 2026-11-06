@@ -4,7 +4,7 @@
 #
 #   sudo bash gpu-host.sh [VERSION] [UPSTREAM] [MODEL]
 #
-#   VERSION   latest (default) or a tag such as v0.3.2
+#   VERSION   latest (default) or a tag such as v0.4.5
 #   UPSTREAM  OpenAI-compatible base URL (default http://127.0.0.1:8000/v1)
 #   MODEL     optional, local-name or local-name=public-name
 #
@@ -12,8 +12,9 @@
 #   CONCURRENCY=2          requests served at once (default 1)
 #   PORT=4001              p2p port, TCP and UDP
 #   BOOTSTRAP=addr         seed to join; default is the DNS seed list
-#   PUBLIC=1               add --dht-server: advertise this host as public.
-#                          Only when inbound TCP and UDP 4001 work.
+#   PUBLIC=1               add --public: this host is a public DHT server and
+#                          relay, and still joins the default seeds. Only when
+#                          inbound TCP and UDP 4001 work.
 #   ANNOUNCE="a b"         public multiaddrs; with PUBLIC=1 and no ANNOUNCE,
 #                          the script looks the public IPv4 up itself.
 #
@@ -96,7 +97,7 @@ OPTS="--port $PORT --upstream $UPSTREAM --concurrency $CONCURRENCY"
 [ -n "$MODEL" ] && OPTS="$OPTS --model $MODEL"
 [ -n "$BOOTSTRAP" ] && OPTS="$OPTS --bootstrap $BOOTSTRAP"
 if [ "$PUBLIC" = 1 ]; then
-  OPTS="$OPTS --dht-server"
+  OPTS="$OPTS --public"
   for a in $ANNOUNCE; do OPTS="$OPTS --announce $a"; done
 fi
 

@@ -1,34 +1,44 @@
-# Bootstrap seeds
+# Seeds and public relays
 
 BitLLM has no coordinator. A new node still needs one reachable peer to learn
 about the rest, and NATed nodes need a public relay until hole punching opens a
-direct path. That first peer is a bootstrap seed.
+direct path. Two roles provide that:
 
-A seed does three things:
+- **A seed** is a public relay listed in `_dnsaddr.bootstrap.bitllm.org`. It
+  is the first contact for a fresh install, and the very first seed starts
+  alone.
+- **A public relay** is any node with inbound TCP and UDP 4001, started with
+  `--public`. It joins the default seeds and needs no DNS record.
 
-- answers DHT queries, so a node can find the servers of a model;
-- relays for nodes that cannot accept inbound connections;
-- serves the receipt history a node syncs on join.
+Both answer DHT queries, relay for nodes that cannot accept inbound
+connections, and serve the receipt history a node syncs on join. A seed is just
+a public relay that is also in DNS. Neither answers inference requests,
+decides membership, or stores the model list.
 
-A seed does not answer inference requests, decide membership, or store the
-model list. It is a meeting point, not a service the network runs through.
+## Why not every node?
 
-## Seeds are public hosts
+Most nodes are behind NAT or CGNAT. A fresh node cannot dial them, so they
+cannot be the first contact, and putting them in the DNS list only adds dial
+timeouts. They still serve models and take part in gossip and DHT lookups.
+Forcing every node into DHT server mode would also put unreachable peers into
+routing tables, where other nodes would try to dial them and fail. A NATed node
+is a DHT client; a public relay is a DHT server.
 
-Keep the seed separate from the machines that serve models. A seed is a small
-always-on host with a public address: a cheap VPS, or a friend's server. It
-answers DHT queries and relays; it never answers inference.
+Public relays are the nodes that can accept inbound. They are the part of the
+network that can grow without adding DNS entries: after first contact, a relay
+announces `relay=true` and NATed nodes add it to their autorelay candidates.
+The seed remains the phone book entry, not the switchboard.
 
-The GPU hosts are ordinary nodes. They join through a seed and are reached by
-relay or hole punching, so a GPU that is training, rendering, or simply off
-does not take the network with it. A GPU host can be a seed too, but only if it
-is always on, accepts inbound, and its operator is fine publishing that
-address.
+Keep the first seed small and separate from the machines that serve models. A
+GPU that is training, rendering, or simply off must not take first contact with
+it. A GPU host with inbound can still be a public relay, which adds capacity
+without making it a seed.
 
 One seed is enough for a new node to join, but one is also a single point of
-failure. Two seeds on different providers are the minimum for reliability.
-A network with no reachable host still works between peers that already know
-each other, but a fresh install has nothing to dial.
+failure for *new joins*. A second public relay, in DNS or not, keeps relay
+capacity up when the first is busy. A network with no reachable host still
+works between peers that already know each other, but a fresh install has
+nothing to dial.
 
 ## The default list
 
@@ -53,13 +63,16 @@ dnsaddr=/ip4/203.0.113.10/udp/4001/quic-v1/p2p/12D3KooW...
 dnsaddr=/ip4/198.51.100.20/tcp/4001/p2p/12D3KooX...
 ```
 
-The node dials every peer it finds. Autorelay keeps a reservation on each
-static relay, so a client stays reachable when one seed is down. The DHT
-replicates its records across the seeds as well.
+The node dials every peer it finds. A NATed node keeps a reservation on the
+seeds and, after it hears their announces, on public relays that say
+`relay=true`. The DHT replicates its records across the seeds and public
+serving nodes as well.
 
-Adding or retiring a seed is a DNS change, not a release. A new node needs
-only one of them to join, and existing nodes keep their direct connections
-and their other relay reservations if one disappears.
+Adding or retiring a seed is a DNS change, not a release. Adding a public
+relay is not even a DNS change: it joins through the seeds and becomes a
+candidate through its announce. A new node needs only one seed to join, and
+existing nodes keep their direct connections and their other relay
+reservations if one disappears.
 
 When no seed resolves at all, the node does not fail. It starts its own
 network, logs that it has no peers, and prints a join code:
@@ -93,7 +106,7 @@ keeps the identity.
 Open TCP and UDP 4001. `--dht-server` forces reachability to public, so turn
 it on only when inbound actually works; otherwise the node advertises
 addresses nobody can dial. The startup line `--dht-server: advertising this
-node as public` is the reminder.
+node as a public seed` is the reminder.
 
 A seed at home needs inbound without a static IP:
 
@@ -104,8 +117,9 @@ A seed at home needs inbound without a static IP:
   through another seed and is reached through a relay or hole punching.
 
 A GPU host that should also be a seed uses `deploy/gpu-host.sh` with
-`PUBLIC=1`; [host-a-gpu.md](host-a-gpu.md) is the step-by-step handoff. Most
-networks do not need that: keep the seed small and separate.
+`PUBLIC=1` and a `_dnsaddr` record; [host-a-gpu.md](host-a-gpu.md) is the
+step-by-step handoff. Most networks do not need that: keep the first seed
+small and separate.
 
 A `--dht-server` node does not fall back to the default seeds, so a second
 seed has to be pointed at a live one:
@@ -115,6 +129,26 @@ bitllm --dht-server --bootstrap /dnsaddr/bootstrap.bitllm.org
 ```
 
 Only the very first seed in a new network starts alone.
+
+## Running a public relay
+
+A public host that should help without being a first contact uses `--public`:
+
+```sh
+bitllm --public --port 4001 \
+  --announce /ip4/203.0.113.11/tcp/4001 \
+  --announce /ip4/203.0.113.11/udp/4001/quic-v1
+```
+
+It does the same DHT and relay work as a seed, but it joins the default seeds
+instead of starting alone, and it needs no DNS record. Its announce carries
+`relay=true`; a NATed node uses it as an autorelay candidate alongside the
+seeds. The startup line is `--public: advertising this node as a public relay`.
+
+A serving node can do this too: `deploy/gpu-host.sh` with `PUBLIC=1` adds
+`--public` and keeps the default seed list. That is the usual way to add relay
+capacity from a GPU host. It is also the safe choice for a second seed that
+has not been added to DNS yet.
 
 ## Publishing the DNS records
 

@@ -96,6 +96,18 @@ func resolveDNSAddr(ctx context.Context, m ma.Multiaddr, depth int) ([]ma.Multia
 	return res, nil
 }
 
+// withoutPeer drops id from the bootstrap list. A seed that is also published
+// in _dnsaddr would otherwise dial and reserve on itself.
+func withoutPeer(in []peer.AddrInfo, id peer.ID) []peer.AddrInfo {
+	out := in[:0]
+	for _, ai := range in {
+		if ai.ID != id {
+			out = append(out, ai)
+		}
+	}
+	return out
+}
+
 // mergeAddrInfos keeps one AddrInfo per peer and every distinct address, so
 // tcp and quic addresses of one seed become one relay, not two.
 func mergeAddrInfos(in []peer.AddrInfo) []peer.AddrInfo {

@@ -157,6 +157,15 @@ func TestHasDNSAddr(t *testing.T) {
 // TestClientReservesOnEveryBootstrap: a client with two seeds must keep a
 // relay reservation on both, not just the first one. That is what makes a
 // seed list resilient: losing one seed leaves the other reservation.
+func TestWithoutPeerDropsSelf(t *testing.T) {
+	a := peer.AddrInfo{ID: mustPeerID(t, testSeedA), Addrs: []ma.Multiaddr{ma.StringCast("/ip4/192.0.2.10/tcp/4001")}}
+	b := peer.AddrInfo{ID: mustPeerID(t, testSeedB), Addrs: []ma.Multiaddr{ma.StringCast("/ip4/192.0.2.11/tcp/4001")}}
+	out := withoutPeer([]peer.AddrInfo{a, b}, a.ID)
+	if len(out) != 1 || out[0].ID != b.ID {
+		t.Fatalf("withoutPeer = %+v, want only %s", out, b.ID)
+	}
+}
+
 func TestClientReservesOnEveryBootstrap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()

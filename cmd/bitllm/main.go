@@ -209,7 +209,8 @@ func main() {
 	flag.Var(&roots, "roots", "root account of the invite tree (repeatable; default: the BitLLM root). For private networks and tests")
 	flag.Var(&announce, "announce", "public multiaddr to advertise, e.g. /dns4/boot.example.com/tcp/443/wss (repeatable)")
 	flag.StringVar(&cfg.DataDir, "data", filepath.Join(home, ".bitllm"), "identity and ledger directory")
-	flag.BoolVar(&cfg.DHTServer, "dht-server", false, "always act as a DHT server (for bootstrap nodes with a public address)")
+	flag.BoolVar(&cfg.DHTServer, "dht-server", false, "act as a seed: public DHT server and relay, and do not fall back to the default seeds (for the first bootstrap node)")
+	flag.BoolVar(&cfg.Public, "public", false, "act as a public DHT server and relay, but still join the default seeds (for a host with inbound TCP and UDP)")
 	flag.BoolVar(&cfg.MDNS, "mdns", true, "find peers on the local network")
 	flag.BoolVar(&ipv6, "ipv6", true, "accept p2p connections over IPv6 too; --ipv6=false listens on IPv4 only, so a public IPv6 address does not expose the p2p port")
 	flag.BoolVar(&cfg.UPnP, "upnp", true, "ask the router (UPnP/NAT-PMP) to forward the p2p port so peers can reach us directly")
@@ -246,7 +247,7 @@ func main() {
 	if len(boot) == 0 && !cfg.DHTServer {
 		cfg.Bootstrap = DefaultBootstrap
 	}
-	cfg.Private = !cfg.DHTServer
+	cfg.Private = !(cfg.DHTServer || cfg.Public)
 	cfg.AnnounceEvery = 10 * time.Second
 	cfg.Listen = node.ListenAddrs(port, ipv6)
 	if len(allow) > 0 {
@@ -326,7 +327,9 @@ func main() {
 		log.Printf("listening %s", a)
 	}
 	if cfg.DHTServer {
-		log.Printf("--dht-server: advertising this node as public; inbound TCP and UDP %d must work", port)
+		log.Printf("--dht-server: advertising this node as a public seed; inbound TCP and UDP %d must work", port)
+	} else if cfg.Public {
+		log.Printf("--public: advertising this node as a public relay; inbound TCP and UDP %d must work", port)
 	}
 	if len(n.Seeds()) == 0 {
 		log.Printf("no seed peers: this node is alone on its own network")

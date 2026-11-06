@@ -23,16 +23,16 @@ Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitl
 
 ## How the network fits together
 
-Three roles, one binary:
+Four jobs, one binary:
 
 ```
-   your node                    seed                     GPU host
-  127.0.0.1:7778          DHT, relay, receipts        vLLM / Ollama
-        │                        ▲                         ▲
-        │  first contact         │                         │
-        └────────────────────────┘                         │
-        │                                                  │
-        └──────── direct, or relay + hole punch ───────────┘
+   your node                 public relay / seed           GPU host
+  127.0.0.1:7778            DHT, relay, receipts          vLLM / Ollama
+        │                          ▲                          ▲
+        │  first contact           │                          │
+        └──────────────────────────┘                          │
+        │                                                     │
+        └──────── direct, or relay + hole punch ──────────────┘
 ```
 
 - **Your node** runs the same binary as everyone else. Its gateway listens on
@@ -41,17 +41,22 @@ Three roles, one binary:
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
-- **A seed** is a small always-on public host. It answers DHT queries,
-  relays for NATed peers, and serves the receipt history a new node syncs on
-  join. It serves no model. A new node needs one reachable seed, or a join
-  code, to learn about the rest; the seed is not in the inference path unless
-  it is relaying.
+- **A public relay** is a node with inbound TCP and UDP 4001: start it with
+  `--public`. It answers DHT queries and relays for NATed peers, but still
+  joins the default seeds, so it needs no DNS record. Its announce carries
+  `relay=true`; autorelay adds it as a candidate, so a NATed node reserves on
+  the seed and on public relays instead of only on the seed.
+- **A seed** is a public relay that is also listed in
+  `_dnsaddr.bootstrap.bitllm.org` and starts alone (`--dht-server`). It is the
+  first contact for a fresh install. One seed is enough to join; public relays
+  are what make relay capacity grow with the network.
 
 Discovery has two steps. The binary resolves `_dnsaddr.bootstrap.bitllm.org`
 to get seed addresses, then the DHT and gossip carry everything else: which
-peer serves which model, and how to reach it. If the name does not resolve,
-it tries the `boot.bitllm.org` fallback; if that fails too, the node starts
-alone and prints a join code that another machine can pass to `--bootstrap`.
+peer serves which model, how to reach it, and which public nodes can relay. If
+the name does not resolve, it tries the `boot.bitllm.org` fallback; if that
+fails too, the node starts alone and prints a join code that another machine
+can pass to `--bootstrap`.
 
 Only these pieces are centrally hosted, and none of them carries inference
 traffic:
@@ -62,11 +67,12 @@ traffic:
 | site and installers | Cloudflare Worker, bitllm.org | the page, `install.sh`, `llms.txt` | installed nodes keep running; install by hand from GitHub |
 | release binaries | GitHub | downloads, checksums, self-update | no new installs or updates |
 
-Everything else is peer to peer: no coordinator, no database, no KV store, and
-no live map. Cloudflare serves DNS and the static site, not inference; the one
-exception is traffic relayed through the temporary `boot` tunnel. DNS is used
-only to find the first peer; an inference request goes from your gateway to the
-serving peer, directly or through a relay. The Mac mini that runs
+Everything else is peer to peer: no coordinator, no database, no KV store.
+Cloudflare serves DNS and the static site, not inference; the one exception is
+traffic relayed through the temporary `boot` tunnel. DNS is used only to find
+the first peer; an inference request goes from your gateway to the serving
+peer, directly or through a relay. Public relays are not centrally hosted:
+any operator with a public address can run one. The Mac mini that runs
 `boot.bitllm.org` today is a transition fallback, not part of the design.
 
 ### What each piece depends on
@@ -75,15 +81,18 @@ serving peer, directly or through a relay. The Mac mini that runs
 |---|---|---|
 | node and gateway | outbound internet; a seed or a join code to meet others | inbound ports, an account, a wallet |
 | serving node | a local OpenAI-compatible server (vLLM, SGLang, llama.cpp, Ollama, LM Studio, MLX) | a public IP, a port forward, a seed role |
-| seed | an always-on host with a public address; inbound TCP and UDP 4001 | a GPU, a model, a database |
+| public relay | a public address; inbound TCP and UDP 4001 | a DNS record, a GPU, a model |
+| seed | a public relay listed in DNS; always on | a GPU, a model, a database |
 | DNS seed list | a DNS zone for bitllm.org (Cloudflare here) and TXT records | a Worker or any runtime |
 | site and installers | a Cloudflare Worker with static assets | KV, a database, the Mac mini |
 | self-update | GitHub releases and `SHA256SUMS` | a package manager |
 
-The seed is deliberately separate from the GPUs: a GPU that trains, renders or
-switches off must not take discovery with it. One seed is enough for a new
-node to join; two on different providers are the minimum for reliability.
-[docs/bootstrap.md](docs/bootstrap.md) explains the model and
+The seed is deliberately small and separate from the GPUs: a GPU that trains,
+renders or switches off must not take first contact with it. A GPU host with
+inbound can still be a public relay (`PUBLIC=1`), which adds relay capacity
+without adding a DNS record. One seed is enough for a new node to join; a
+second public relay, in DNS or not, keeps the network reachable when the seed
+is busy. [docs/bootstrap.md](docs/bootstrap.md) explains the model and
 [docs/seed-handoff.md](docs/seed-handoff.md) is the deployment checklist.
 
 Contents: [How it works](#how-the-network-fits-together) · [Install](#install-and-run) · [Share a model](#share-a-model) ·
@@ -388,13 +397,13 @@ Separately, each node keeps a private ledger of work exchanged with each peer
 ## Run a seed
 
 A seed is the first peer a new node dials. It answers DHT queries, relays for NATed peers until
-they hole-punch a direct connection, and serves the receipt history a node syncs on join. It does
-not answer inference requests or decide membership.
+they hole-punch a direct connection, and serves the receipt history a node syncs on join. It is a
+public relay that is also listed in `_dnsaddr`; it does not answer inference requests or decide
+membership.
 
-Keep the seed separate from the GPUs. A small always-on VPS, or any machine with a public address,
-is the usual choice, so a GPU that is training, rendering or switched off cannot take the network
-with it. One seed is enough for a new node to join; two on different providers are the minimum for
-reliability.
+Keep the first seed separate from the GPUs. A small always-on VPS, or any machine with a public
+address, is the usual choice, so a GPU that is training, rendering or switched off cannot take
+first contact with it. One seed is enough for a new node to join.
 
 ```bash
 bitllm --dht-server --port 4001 \
@@ -402,19 +411,33 @@ bitllm --dht-server --port 4001 \
   --announce /ip4/203.0.113.10/udp/4001/quic-v1
 ```
 
-Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` installs the systemd unit
-and prints the DNS records to publish. A home host can be a seed too, with a port forward or UPnP,
-but most home hosts are ordinary serving nodes: they join through a seed and peers reach them by
-relay or hole punching.
+A public host that should help but does not need to be a first contact runs as a **public relay**:
 
-`--dht-server` forces public reachability, so turn it on only when inbound actually works.
-Otherwise the node advertises addresses nobody can dial. A `--dht-server` node also does not
-fall back to the default seeds, so a second seed needs a live one:
-`--bootstrap /dnsaddr/bootstrap.bitllm.org`.
+```bash
+bitllm --public --port 4001 \
+  --announce /ip4/203.0.113.11/tcp/4001 \
+  --announce /ip4/203.0.113.11/udp/4001/quic-v1
+```
+
+It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. Its
+announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
+capacity grows without adding DNS entries. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving
+node this way.
+
+Open TCP and UDP 4001. On a fresh Ubuntu VM, `deploy/bootstrap-vps.sh` installs the systemd unit
+and prints the DNS records to publish. A home host can be a public relay too, with a port forward
+or UPnP, but most home hosts are ordinary serving nodes: they join through a seed and peers reach
+them by relay or hole punching.
+
+Both `--dht-server` and `--public` force public reachability, so turn them on only when inbound
+actually works. Otherwise the node advertises addresses nobody can dial. Only the first seed uses
+`--dht-server`, because it has to start without the DNS list it is about to be published in; every
+later public host uses `--public`, which joins the default seeds. A second seed needs a live one:
+`bitllm --dht-server --bootstrap /dnsaddr/bootstrap.bitllm.org`.
 
 [docs/host-a-gpu.md](docs/host-a-gpu.md) is the step-by-step for a machine that serves a model,
-including the check that decides whether it can also be a seed. `deploy/gpu-host.sh` installs the
-service next to the model server.
+including the check that decides whether it can also be a public relay. `deploy/gpu-host.sh`
+installs the service next to the model server.
 
 The default list is a DNS seed list at `_dnsaddr.bootstrap.bitllm.org`. Publish it with
 `deploy/seed-dns.py`, and a new node joins through any of the records. Adding or retiring a seed is

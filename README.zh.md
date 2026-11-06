@@ -18,10 +18,10 @@
 
 ## 网络如何运作
 
-三个角色，同一个二进制：
+四个角色，同一个二进制：
 
 ```
-   你的节点                     seed                      GPU 主机
+   你的节点                  公网中继 / seed               GPU 主机
   127.0.0.1:7778           DHT、中继、收据              vLLM / Ollama
         │                        ▲                         ▲
         │  首次接触              │                         │
@@ -32,9 +32,10 @@
 
 - **你的节点**和其他人跑同一个二进制。网关监听 `127.0.0.1:7778`，同时支持 OpenAI 和 Anthropic 格式，agent 把它当成普通 API 用就行。互联网上的机器连不到这个网关。
 - **服务节点**就是你的节点加 `--upstream`，指向你本机已经在跑的模型服务。它可以躲在 NAT 后面：其他节点通过中继加打洞找到它，不需要做端口转发。
-- **seed** 是一台一直开着的公网小主机。它回答 DHT 查询、给 NAT 后面的节点做中继，并把收据历史提供给刚加入的节点同步；自己不跑模型。新节点只要能连上一个 seed（或者拿到 join code），就能认识整个网络；除非在当中继，seed 不在推理链路上。
+- **公网中继**是有入站 TCP/UDP 4001 的节点，用 `--public` 启动。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
+- **seed** 既是公网中继，又列在 `_dnsaddr.bootstrap.bitllm.org` 里，并且用 `--dht-server` 独立启动。它是新节点的首次接触点。一个 seed 就够加入；公网中继让中继容量随网络增长。
 
-发现分两步。二进制先解析 `_dnsaddr.bootstrap.bitllm.org` 拿到 seed 地址，之后模型在哪个节点上、怎么连过去，都由 DHT 和 gossip 负责。域名解析不到时，它会再试 `boot.bitllm.org` 后备；两个都不通，节点会自己起一个网络，并打印 join code，另一台机器用 `--bootstrap` 接上就行。
+发现分两步。二进制先解析 `_dnsaddr.bootstrap.bitllm.org` 拿到 seed 地址，之后模型在哪个节点上、怎么连过去、哪些公网节点能做中继，都由 DHT、gossip 和 relay announce 负责。域名解析不到时，它会再试 `boot.bitllm.org` 后备；两个都不通，节点会自己起一个网络，并打印 join code，另一台机器用 `--bootstrap` 接上就行。
 
 只有下面这些部分是集中托管的，而且都不在推理链路上：
 
@@ -44,7 +45,7 @@
 | 网站和安装脚本 | Cloudflare Worker，bitllm.org | 页面、`install.sh`、`llms.txt` | 已安装的节点照常运行；可以从 GitHub 手动安装 |
 | 发布二进制 | GitHub | 下载、校验和、自动更新 | 新安装和更新暂停 |
 
-其余全是点对点：没有协调者、没有数据库、没有 KV、没有实时地图。Cloudflare 只提供 DNS 和静态网站，不转发推理；唯一的例外是通过过渡期 `boot` 隧道中继的流量。DNS 只用来找第一个节点；推理请求从你的网关直接到服务节点，或者经过中继。现在跑 `boot.bitllm.org` 的 Mac mini 只是过渡期的后备，不属于设计的一部分。
+其余全是点对点：没有协调者、没有数据库、没有 KV；地图是从 announce 算出来的快照。Cloudflare 只提供 DNS 和静态网站，不转发推理；唯一的例外是通过过渡期 `boot` 隧道中继的流量。DNS 只用来找第一个节点；推理请求从你的网关直接到服务节点，或者经过中继。公网中继不是集中托管的：任何有公网地址的运营者都能跑一台。现在跑 `boot.bitllm.org` 的 Mac mini 只是过渡期的后备，不属于设计的一部分。
 
 ### 每个部分依赖什么
 
@@ -52,12 +53,13 @@
 |---|---|---|
 | 节点和网关 | 出站网络；一个 seed 或 join code 来认识其他节点 | 入站端口、账号、钱包 |
 | 服务节点 | 本机已经跑着的 OpenAI 兼容服务 | 公网 IP、端口转发、seed 角色 |
-| seed | 一台有公网地址、一直开着的机器；入站 TCP 和 UDP 4001 | GPU、模型、数据库 |
+| 公网中继 | 一个公网地址；入站 TCP 和 UDP 4001 | DNS 记录、GPU、模型 |
+| seed | 一个列在 DNS 里的公网中继；一直开着 | GPU、模型、数据库 |
 | DNS 种子列表 | bitllm.org 的 DNS zone（这里是 Cloudflare）和 TXT 记录 | Worker 或任何运行时 |
 | 网站和安装脚本 | 一个带静态资源的 Cloudflare Worker | KV、数据库、Mac mini |
 | 自动更新 | GitHub Releases 和 `SHA256SUMS` | 包管理器 |
 
-seed 故意和 GPU 分开：一台在训练、渲染或者干脆关机的 GPU，不能把网络发现也一起带走。新节点有一个 seed 就能加入；要可靠，至少两个不同服务商的 seed。模型细节见 [docs/bootstrap.md](docs/bootstrap.md)，部署清单见 [docs/seed-handoff.md](docs/seed-handoff.md)。
+seed 故意做得小而独立：一台在训练、渲染或者干脆关机的 GPU，不能把首次接触也一起带走。有入站的 GPU 主机仍然可以用 `PUBLIC=1` 做公网中继，增加中继容量而不增加 DNS 记录。新节点有一个 seed 就能加入；第二台公网中继（不管在不在 DNS 里）能在 seed 忙时继续接住流量。模型细节见 [docs/bootstrap.md](docs/bootstrap.md)，部署清单见 [docs/seed-handoff.md](docs/seed-handoff.md)。
 
 目录：[网络如何运作](#网络如何运作) · [安装](#安装并运行) · [分享模型](#分享模型) ·
 [使用网络](#使用网络) · [管理节点](#观察和管理节点) · [积分](#服务积分) ·
@@ -278,9 +280,9 @@ bitllm account                      # 看这台机器归谁
 
 ## 运行 seed
 
-seed 是新节点第一个连的节点。它回答 DHT 查询，给 NAT 后面的节点做中继直到两边打洞直连，并把收据历史提供给刚加入的节点同步。它不回答推理请求，也不决定会员资格。
+seed 是新节点第一个连的节点。它回答 DHT 查询，给 NAT 后面的节点做中继直到两边打洞直连，并把收据历史提供给刚加入的节点同步。它是一台列在 `_dnsaddr` 里的公网中继；不回答推理请求，也不决定会员资格。
 
-seed 要和 GPU 分开。一台一直开着的便宜 VPS，或者任何有公网地址的机器，是常见选择；这样一台在训练、渲染或者关机的 GPU 不会把网络一起带走。新节点有一个 seed 就能加入；要可靠，至少两个不同服务商的 seed。
+第一台 seed 要和 GPU 分开。一台一直开着的便宜 VPS，或者任何有公网地址的机器，是常见选择；这样一台在训练、渲染或者关机的 GPU 不会把首次接触也一起带走。新节点有一个 seed 就能加入。
 
 ```bash
 bitllm --dht-server --port 4001 \
@@ -288,12 +290,22 @@ bitllm --dht-server --port 4001 \
   --announce /ip4/203.0.113.10/udp/4001/quic-v1
 ```
 
-开放 TCP 和 UDP 4001。在一台全新的 Ubuntu VM 上，`deploy/bootstrap-vps.sh` 会装好 systemd 单元并打印要发布的 DNS 记录。家里的机器也能做 seed，用端口转发或者 UPnP；但大多数家用机器只是普通的服务节点：通过 seed 加入，别人通过中继或者打洞找到它。
+有公网地址、但不需要做“第一个节点”的机器，跑成**公网中继**：
 
-`--dht-server` 强制自己对外可达，所以只有入站真的通了才开。否则节点会广播别人连不上的地址。`--dht-server` 节点也不会自动回退到默认 seed，所以第二个 seed 要指向一个活着的：
-`--bootstrap /dnsaddr/bootstrap.bitllm.org`。
+```bash
+bitllm --public --port 4001 \
+  --announce /ip4/203.0.113.11/tcp/4001 \
+  --announce /ip4/203.0.113.11/udp/4001/quic-v1
+```
 
-[docs/host-a-gpu.md](docs/host-a-gpu.md) 是一台要分享模型的机器的逐步清单，包括判断它能不能同时做 seed 的检查。`deploy/gpu-host.sh` 把服务装在模型服务旁边。
+它从默认 seed 加入，回答 DHT 查询、给 NAT 节点做中继，但不需要 `_dnsaddr` 记录。它的 announce 带 `relay=true`，NAT 节点会把它当中继候选；中继容量就这样随公网节点增长。`deploy/gpu-host.sh` 加 `PUBLIC=1` 就是这种装法。
+
+开放 TCP 和 UDP 4001。在一台全新的 Ubuntu VM 上，`deploy/bootstrap-vps.sh` 会装好 systemd 单元并打印要发布的 DNS 记录。家里的机器也能做公网中继，用端口转发或者 UPnP；但大多数家用机器只是普通的服务节点：通过 seed 加入，别人通过中继或者打洞找到它。
+
+`--dht-server` 和 `--public` 都会强制自己对外可达，所以只有入站真的通了才开。否则节点会广播别人连不上的地址。只有第一台 seed 用 `--dht-server`，因为它要在自己即将发布的 DNS 列表还不存在时先启动；之后所有公网主机都用 `--public`，它会从默认 seed 加入。第二台 seed 要指向一个活着的：
+`bitllm --dht-server --bootstrap /dnsaddr/bootstrap.bitllm.org`。
+
+[docs/host-a-gpu.md](docs/host-a-gpu.md) 是一台要分享模型的机器的逐步清单，包括判断它能不能同时做公网中继的检查。`deploy/gpu-host.sh` 把服务装在模型服务旁边。
 
 默认列表是 `_dnsaddr.bootstrap.bitllm.org` 的 DNS 种子列表。用 `deploy/seed-dns.py` 发布，新节点通过其中任意一条记录加入。加或撤 seed 是改 DNS，不是发版。DNS 列表和过渡期的 `boot.bitllm.org` 后备都连不上时，节点会自己起一个网络并打印 join code，不会失败。失败行为见 [docs/bootstrap.md](docs/bootstrap.md)，部署清单见 [docs/seed-handoff.md](docs/seed-handoff.md)。
 

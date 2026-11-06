@@ -54,6 +54,8 @@ type Announce struct {
 	Loc string `json:"loc,omitempty"` // geohash cell (~156 km) for the node map, only if the operator set --location
 	// Added in v0.3:
 	Q int `json:"q,omitempty"` // requests waiting for a slot right now
+	// Added in v0.4.5:
+	Relay bool `json:"relay,omitempty"` // publicly reachable and running the relay service
 }
 
 // ValidAnnounce reports whether a is a well formed announce we would store.

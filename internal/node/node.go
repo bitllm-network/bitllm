@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,7 +56,8 @@ type Config struct {
 	Listen           []string              // libp2p listen multiaddrs
 	Bootstrap        []string              // multiaddrs with /p2p/ID
 	DataDir          string                //
-	DHTServer        bool                  // force DHT server mode (bootstrap nodes, tests)
+	DHTServer        bool                  // force DHT server mode (bootstrap seeds, tests)
+	Public           bool                  // publicly reachable relay/DHT server that still joins the default seeds
 	MDNS             bool                  //
 	UPnP             bool                  // ask the router to forward our port (exposes the node publicly)
 	Private          bool                  // assume we are behind NAT: reserve a slot on the bootstrap relays
@@ -84,7 +86,8 @@ type Config struct {
 // contract in one place.
 type peerInfo struct {
 	protocol.Announce
-	seen time.Time
+	seen  time.Time
+	addrs []ma.Multiaddr // last addresses we saw for this peer, for relay candidates
 }
 
 // Node is a running node. Call New, then Gateway for the local API.
@@ -113,6 +116,7 @@ type Node struct {
 	annRate      originRate // announce gossip, per origin
 	claimRate    originRate // claim gossip, per origin
 	receiptSeed  []byte
+	self         peer.ID
 	relays       []peer.AddrInfo // bootstrap nodes, which also relay
 	http         *http.Client
 	inflight     atomic.Int32
@@ -162,24 +166,39 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	self, err := peer.IDFromPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
 	// Several addresses of one peer (tcp, quic...) must become one AddrInfo, or
 	// the same node is dialed, synced and used as a relay once per address.
 	bootstrap, err := ResolveBootstrap(ctx, cfg.Bootstrap)
 	if err != nil {
 		return nil, err
 	}
+	// A seed published in its own _dnsaddr list would dial itself. It resolves
+	// to this identity, so drop it before it becomes a relay or a DHT peer.
+	if clean := withoutPeer(bootstrap, self); len(clean) != len(bootstrap) {
+		log.Printf("bootstrap: ignoring our own address")
+		bootstrap = clean
+	}
 
+	// Both flags mean a public DHT server and relay. The difference is only
+	// the first contact: --dht-server is a seed and may start alone, while
+	// --public keeps the default seed list.
+	public := cfg.DHTServer || cfg.Public
 	n := &Node{
 		cfg:       cfg,
 		ledger:    ledger.Open(filepath.Join(cfg.DataDir, "ledger.json")),
 		http:      &http.Client{},
 		peers:     map[peer.ID]*peerInfo{},
 		peerSlots: map[peer.ID]int32{},
+		self:      self,
 		relays:    bootstrap,
 		started:   time.Now(),
 	}
 	mode := dht.ModeAutoServer
-	if cfg.DHTServer {
+	if public {
 		mode = dht.ModeServer
 	}
 	opts := []libp2p.Option{
@@ -203,12 +222,12 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	// AutoNAT needs several peers to vouch before it calls us private, which a
 	// small network may never have; without that we would never take a relay
-	// slot and nobody could reach us. So non-bootstrap nodes just assume NAT.
-	// Bootstrap nodes are public by definition, and the relay service only
-	// starts once we know we are public.
+	// slot and nobody could reach us. So non-public nodes just assume NAT.
+	// Public nodes (a seed or a public relay) are public by definition, and the
+	// relay service only starts once we know we are public.
 	if cfg.Private {
 		opts = append(opts, libp2p.ForceReachabilityPrivate())
-	} else if cfg.DHTServer {
+	} else if public {
 		opts = append(opts, libp2p.ForceReachabilityPublic())
 	}
 	if len(cfg.Announce) > 0 {
@@ -227,12 +246,14 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if cfg.UPnP {
 		opts = append(opts, libp2p.NATPortMap())
 	}
-	if len(bootstrap) > 0 {
-		// Static relays are cheap to reconsider, and a bootstrap that
-		// restarts takes its reservation with it: look again soon, not
-		// after autorelay's default 30 seconds, and do not sit out its
-		// one hour backoff after a failed attempt during the restart.
-		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(bootstrap,
+	if cfg.Private {
+		// The source returns the seeds plus public peers that announced
+		// relay=true, so a NATed node is not pinned to the seed's relay.
+		// Seeds are cheap to reconsider, and a bootstrap that restarts takes
+		// its reservation with it: look again soon, not after autorelay's
+		// default 30 seconds, and do not sit out its one hour backoff after a
+		// failed attempt during the restart.
+		opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(n.relaySource,
 			autorelay.WithMinCandidates(1), autorelay.WithBootDelay(0),
 			autorelay.WithMinInterval(5*time.Second), autorelay.WithBackoff(time.Minute)))
 	}
@@ -502,7 +523,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 			}
 		}
 		free := n.cfg.Concurrency - int(n.inflight.Load())
-		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth()}
+		a := protocol.Announce{Version: Version, Models: []string{}, Free: max(free, 0), Max: n.cfg.Concurrency, Q: n.queueDepth(), Relay: n.cfg.DHTServer || n.cfg.Public}
 		if n.upOK.Load() {
 			a.Models = models
 			if n.cfg.AuditServe && !probed {
@@ -578,7 +599,11 @@ func (n *Node) remember(from peer.ID, a protocol.Announce) {
 		}
 		delete(n.peers, oldest)
 	}
-	n.peers[from] = &peerInfo{Announce: a, seen: time.Now()}
+	var addrs []ma.Multiaddr
+	if n.host != nil {
+		addrs = append(addrs, n.host.Peerstore().Addrs(from)...)
+	}
+	n.peers[from] = &peerInfo{Announce: a, seen: time.Now(), addrs: addrs}
 	n.mu.Unlock()
 	// The peer just reached us, so whatever address we failed to dial
 	// before is worth trying again now. Without this, a relayed peer that
@@ -791,13 +816,13 @@ func (n *Node) candidates(model string) []peer.ID {
 	return out
 }
 
-// addRelayPaths records a route to p through every bootstrap relay. autorelay
+// addRelayPaths records a route to p through the relays we know. autorelay
 // only advertises circuit addresses built from a relay's public addresses, and
 // a peer we only heard of over gossip may have no address at all, so we build
 // the routes ourselves. Direct addresses, when known, are still dialed first,
 // and hole punching upgrades a relayed connection when it can.
 func (n *Node) addRelayPaths(p peer.ID) {
-	for _, r := range n.relays {
+	for _, r := range n.relayInfos(4) {
 		if r.ID == p {
 			continue
 		}
@@ -806,6 +831,91 @@ func (n *Node) addRelayPaths(p peer.ID) {
 			n.host.Peerstore().AddAddr(p, a.Encapsulate(circuit), peerstore.TempAddrTTL)
 		}
 	}
+}
+
+// relaySource is autorelay's candidate source: the seeds plus public peers
+// that announced relay=true. One seed is always included so a fresh node can
+// join; public candidates are shuffled so reservations spread over them
+// instead of all landing on the seed.
+func (n *Node) relaySource(_ context.Context, num int) <-chan peer.AddrInfo {
+	if num <= 0 {
+		ch := make(chan peer.AddrInfo)
+		close(ch)
+		return ch
+	}
+	pubs := n.publicRelays()
+	rand.Shuffle(len(pubs), func(i, j int) { pubs[i], pubs[j] = pubs[j], pubs[i] })
+	var order []peer.AddrInfo
+	if len(n.relays) > 0 {
+		order = append(order, n.relays[0])
+	}
+	if len(pubs) > 0 {
+		order = append(order, pubs[0])
+	}
+	if len(n.relays) > 1 {
+		order = append(order, n.relays[1:]...)
+	}
+	if len(pubs) > 1 {
+		order = append(order, pubs[1:]...)
+	}
+	ch := make(chan peer.AddrInfo, min(num, len(order)))
+	seen := map[peer.ID]bool{}
+	for _, ai := range order {
+		if len(ch) == cap(ch) {
+			break
+		}
+		if ai.ID == n.self || seen[ai.ID] || len(ai.Addrs) == 0 {
+			continue
+		}
+		seen[ai.ID] = true
+		ch <- ai
+	}
+	close(ch)
+	return ch
+}
+
+// publicRelays returns recently seen peers that announced relay=true and whose
+// addresses we know. Stale entries are pruned here too, like alive().
+func (n *Node) publicRelays() []peer.AddrInfo {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	ttl := 3*n.cfg.AnnounceEvery + 5*time.Second
+	var out []peer.AddrInfo
+	for p, pi := range n.peers {
+		if time.Since(pi.seen) >= ttl {
+			delete(n.peers, p)
+			continue
+		}
+		if !pi.Relay || len(pi.addrs) == 0 {
+			continue
+		}
+		out = append(out, peer.AddrInfo{ID: p, Addrs: append([]ma.Multiaddr(nil), pi.addrs...)})
+	}
+	return out
+}
+
+// relayInfos lists the relays we can build circuit addresses through: the
+// seeds first, then public peers, capped so one peer's address list does not
+// explode. Used for peers found through the DHT.
+func (n *Node) relayInfos(limit int) []peer.AddrInfo {
+	all := append([]peer.AddrInfo(nil), n.relays...)
+	all = append(all, n.publicRelays()...)
+	if limit <= 0 || limit > len(all) {
+		limit = len(all)
+	}
+	out := all[:0]
+	seen := map[peer.ID]bool{}
+	for _, ai := range all {
+		if ai.ID == n.self || seen[ai.ID] || len(ai.Addrs) == 0 {
+			continue
+		}
+		seen[ai.ID] = true
+		out = append(out, ai)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
 }
 
 func (n *Node) discoverModels(ctx context.Context) (map[string]string, error) {

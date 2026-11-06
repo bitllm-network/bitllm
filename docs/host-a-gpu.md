@@ -8,11 +8,12 @@ A GPU host is a **serving node**: it shares its model and joins through a seed.
 It does not need to accept inbound connections; peers reach it through a relay
 or hole punching.
 
-It can also be a **seed**, the first peer a new node dials, but that is
-optional. The usual seed is a small always-on VPS, so a GPU that trains, renders
-or switches off cannot take the network with it. Make a GPU host a seed only if
-it is always on, accepts inbound on the p2p port, and you are fine publishing
-its address.
+It can also be a **public relay**, which adds DHT and relay capacity without a
+DNS record. That is optional, and requires inbound TCP and UDP 4001. A **seed**
+is a public relay that is also listed in `_dnsaddr`; the usual seed is a small
+always-on VPS, so a GPU that trains, renders or switches off cannot take first
+contact with it. Make a GPU host a seed only if it is always on, accepts
+inbound, and you are fine publishing its address.
 
 ## Before you start
 
@@ -23,10 +24,11 @@ its address.
   nobody will find the model.
 - You can run commands as root (sudo).
 
-## Step 1 (only if this host should be a seed): can it accept inbound?
+## Step 1 (only if this host should be a public relay): can it accept inbound?
 
 Skip to Step 3 if the host is just a serving node. Run these on the host and
-keep the output. This decides whether it can be a seed.
+keep the output. This decides whether it can be a public relay (and therefore
+possibly a seed).
 
 ```sh
 curl -4 -s https://ifconfig.me/ip; echo
@@ -48,7 +50,7 @@ reliable command for it from inside.
 
 ## Step 2: open the p2p port
 
-Only needed for a seed. Port `4001`, both TCP and UDP.
+Only needed for a public relay. Port `4001`, both TCP and UDP.
 
 - **Router port forward:** forward 4001 TCP and UDP to the host's LAN address.
 - **UPnP:** if the router supports it, the node asks for the mapping itself
@@ -70,7 +72,7 @@ name, every model the server lists is shared under its own name. To share more
 than one, add another `--model` to `/etc/bitllm/host.env` and
 `systemctl restart bitllm-host`.
 
-For a host that should also be the seed, and can accept inbound:
+For a host that can accept inbound and should help as a **public relay**:
 
 ```sh
 sudo PUBLIC=1 ANNOUNCE="/ip4/203.0.113.10/tcp/4001 /ip4/203.0.113.10/udp/4001/quic-v1" \
@@ -78,13 +80,19 @@ sudo PUBLIC=1 ANNOUNCE="/ip4/203.0.113.10/tcp/4001 /ip4/203.0.113.10/udp/4001/qu
 ```
 
 `ANNOUNCE` can be omitted when the machine has a public IPv4: the script looks
-it up. `PUBLIC=1` adds `--dht-server`, which tells the node to advertise
-itself as public. Use it only after Step 1 says inbound works.
+it up. `PUBLIC=1` adds `--public`, which tells the node to advertise itself as
+a public relay. It still joins the default seeds, so no `BOOTSTRAP` is needed;
+this is the usual way to add relay capacity without a DNS record. Use it only
+after Step 1 says inbound works.
 
-A second seed, joining the existing network:
+To make this host a **seed** as well, keep `PUBLIC=1` and publish its peer id
+and address in `_dnsaddr` (see [bootstrap.md](bootstrap.md)). A dedicated seed
+that starts alone uses `deploy/bootstrap-vps.sh` with `--dht-server` instead.
+
+For a custom network, point the host at another seed:
 
 ```sh
-sudo PUBLIC=1 BOOTSTRAP=/dnsaddr/bootstrap.bitllm.org \
+sudo PUBLIC=1 BOOTSTRAP=/ip4/203.0.113.20/tcp/4001/p2p/12D3KooW... \
   bash gpu-host.sh latest http://127.0.0.1:8000/v1 deepseek-v4.1-flash-1017
 ```
 
@@ -114,7 +122,7 @@ curl -s localhost:7778/v1/chat/completions \
 If the host shares the model itself, its own node answers without leaving the
 machine.
 
-## Step 5 (seed only): verify from outside
+## Step 5 (public relay only): verify from outside
 
 From another machine that has `bitllm`:
 
@@ -122,15 +130,16 @@ From another machine that has `bitllm`:
 bitllm --bootstrap /ip4/203.0.113.10/tcp/4001/p2p/<peer id>
 ```
 
-or, through the DNS list once the address is published:
+or, through the DNS list once the address is published as a seed:
 
 ```sh
 bitllm --bootstrap /dnsaddr/bootstrap.bitllm.org
 ```
 
 `curl -s 127.0.0.1:7778/status` on the second machine should show a
-connection to the seed. A request to `/v1/chat/completions` should be answered
-by the GPU host.
+connection to the host. A request to `/v1/chat/completions` should be answered
+by the GPU host. A public relay that is not in DNS still becomes a relay
+candidate after first contact; it does not need this direct check to work.
 
 If the connection never leaves `relayed`, the inbound rule is not working.
 Check the cloud firewall, then the host firewall (`iptables -L INPUT -n | grep
@@ -144,11 +153,12 @@ Check the cloud firewall, then the host firewall (`iptables -L INPUT -n | grep
 - `curl -s http://127.0.0.1:7778/status | python3 -m json.tool | head -40`
 
 That is enough to publish this host as a seed at
-`_dnsaddr.bootstrap.bitllm.org`, if it is one.
+`_dnsaddr.bootstrap.bitllm.org`, if it should be one. A public relay that is
+not a seed needs no DNS entry.
 
 ## Troubleshooting
 
-- **`--dht-server: advertising this node as public` but nobody connects.**
+- **`--public: advertising this node as a public relay` but nobody connects.**
   Inbound is closed. Remove `PUBLIC=1` until it works; the node still serves
   through a relay.
 - **`bind: address already in use`.** Something else holds 4001. Pick another
