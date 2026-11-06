@@ -16,8 +16,9 @@ answers from whichever peer serves the model you ask for. There is no coordinato
 each other through a Kademlia DHT and gossip, connect directly when they can, and go through a
 relay plus hole punching when both sides are behind NAT.
 
-Invite-only beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org), and the
-[access rules](#how-access-works) decide who gets a slot. Using it needs no account and no wallet.
+Beta, MIT licensed. The network is live at [bitllm.org](https://bitllm.org). Invites set your
+priority, not whether you can join: the [access rules](#how-access-works) decide who gets a slot
+first, and uninvited nodes can still get idle slots. Using it needs no account and no wallet.
 
 ![The dashboard a running node serves: a terminal-style editor with a model list, a copyable setup snippet, and a test console](docs/images/dashboard.png)
 
@@ -37,7 +38,7 @@ Four jobs, one binary:
 
 - **Your node** runs the same binary as everyone else. Its gateway listens on
   `127.0.0.1:7778` and speaks OpenAI and Anthropic, so an agent points at it
-  like any API. Nothing on the internet can call the gateway.
+  like any API. By default nothing on the internet can call the gateway.
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
@@ -155,6 +156,9 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
   A full queue answers at once, so nobody waits on a place that does not exist.
 - `--max-tokens` (default 32768): the most new tokens one peer request may ask for. Peers also get one
   choice per request (`n` is dropped).
+- Requests from peers are narrowed: your node forwards known fields only, `data:` images only, and
+  one prompt per `/completions` request. `--peer-field NAME` adds a field. Your own requests to your
+  own server are not narrowed.
 - Images: if your server caps images per prompt (vLLM's `--limit-mm-per-prompt`), the node learns the
   cap from the server's first refusal and from then on sends only the newest images, with a short note
   in place of each older one. Agents send every screenshot of a session again on each turn, so this
@@ -164,7 +168,23 @@ bitllm --upstream http://localhost:8000/v1 --concurrency 2
   point. The map at bitllm.org shows only nodes that opted in. Without it your node is counted as
   "no location". Details: [docs/network-map.md](docs/network-map.md).
 
-Every flag is listed by `bitllm --help`.
+### More flags
+
+`bitllm --help` lists every flag. These are less common:
+
+- `--upstream-key KEY`: API key for your model server. Also `BITLLM_UPSTREAM_KEY`, which keeps it out of the process list.
+- `--upstream-timeout DURATION`: how long the node waits on your model server for one request. Default 10 minutes.
+- `--peer-field NAME`: forward one more request field from peers. Repeatable.
+- `--peer-fallback`: when your own server is down, answer a model you share from peers. Those peers can read the prompts.
+- `--open-slots N`: with `--open`, the most slots uninvited nodes may hold at once. Default half of `--concurrency`, at least 1.
+- `--open-daily N`: with `--open`, the credits all uninvited nodes together may use per UTC day, then they wait for idle slots. Default 0, no limit.
+- `--audit-every N`: with `--audit`, real requests to a peer between its spot checks. Default 50.
+- `--audit-serve`: offer to score answers for other nodes' `--audit`, if your server returns prompt logprobs (vLLM).
+- `--gateway ADDR`: the gateway's address. Default `127.0.0.1:7778`.
+- `--gateway-key KEY`: key clients must send as their API key. Also `BITLLM_GATEWAY_KEY`. Needed when the gateway is on a non-loopback address; without it the node warns and the gateway is open.
+- `--mdns`: find peers on the local network. On by default; `--mdns=false` turns it off.
+- `--roots ADDR`: root account of the invite tree. Repeatable. Default the BitLLM root. For private networks and tests.
+- `bitllm invite --revoke 0xADDRESS`: revoke an account. Roots only.
 
 ### Model names
 
@@ -224,7 +244,8 @@ curl localhost:7778/queue              # slots, running jobs and the wait list
 ```
 
 No account is needed to use the network. `/v1/models` lists what is online right now, with the
-number of nodes serving each one.
+number of nodes serving each one. Slot totals on the [network map](docs/network-map.md) count a node
+once per model it serves, so adding up the models overstates capacity.
 
 Open `http://127.0.0.1:7778` for a dashboard with copy-paste setup for your agent and a
 connection test. The gateway speaks both OpenAI (`/v1/chat/completions`, `/v1/completions`) and
@@ -238,9 +259,15 @@ CLAUDE_CODE_SUBAGENT_MODEL=$M claude
 ```
 
 OpenAI clients (Cline, Continue, OpenCode, Aider...): base URL `http://127.0.0.1:7778/v1`, any API key.
-Anthropic requests need the serving peer's upstream to support `/v1/messages` (vLLM does). If you share
-a model yourself, your gateway answers it from your own server (free, never leaves your machine).
+Anthropic requests need the serving peer's upstream to support `/v1/messages` (vLLM does).
 The response header `X-Bitllm-Peer` says which peer answered.
+
+A model you share stays on your machine: your gateway answers it from your own server, for free. If
+your server is down, the gateway answers 503. `--peer-fallback` opts in to using peers instead, and
+those peers can read the prompts.
+
+Hosts narrow what they take from peers: known fields only, `data:` images only, one prompt per
+`/completions` request. If a client sends an unusual field, the host may need `--peer-field` for it.
 
 ## Watch and manage your node
 
@@ -348,13 +375,21 @@ directory to start over with a new identity.
 
 ## Credits for serving
 
-Every job you serve earns credits (prompt tokens / 4 + completion tokens), proven by a receipt:
+Every job you serve earns credits (prompt tokens / 4 + completion tokens), recorded in a receipt:
 the client signs what it received (model, token counts, SHA-256 of the exact response bytes),
 your node checks it against what it sent and countersigns, and the receipt is gossiped to the
-whole network. The client signs with a pseudonym, one key per server rotated every 30 days, so a receipt shows which
-server did the work but not who asked for it. That server can link one client's jobs to each other. Credits must equal the token formula, and each node accepts at
-most 120 receipts a minute per server (600 overall) from gossip. Any node can verify both
-signatures and recompute everyone's credits:
+whole network.
+
+Receipts are self-reported. Both sides sign, but two keys can belong to one person, so a receipt
+does not prove the work happened.
+
+The client signs with one key per server, rotated every 30 days. That server can link your jobs to
+each other, but other nodes cannot link you across servers. A receipt shows which server did the
+work, not who asked for it.
+
+Credits must equal the token formula, and each node accepts at most 120 receipts a minute per
+server (600 overall) from gossip. Any node can verify both signatures and add up the credits from
+the receipts it has heard, so totals can differ between nodes:
 
 ```bash
 curl localhost:7778/credits      # credits per serving peer, from every receipt this node has seen
@@ -367,24 +402,32 @@ will not count.
 
 ## How access works
 
-Invite-only beta. Three rules:
+Invites set priority, not entry. Three rules:
 
 1. An invite gets you served on any free slot. Uninvited nodes are served only when a server is idle, unless its owner opens it to everyone.
 2. There is no daily quota by default. A server owner can set one.
-3. Sharing makes you a contributor: never limited by quota, and 10 invites instead of 3 once your nodes have served.
+3. Sharing makes you a contributor: 10 invites instead of 3 once your nodes have served, and no quota on a server that asked your node for a job in the last 7 days.
 
 If you are not a member yet, you can still use the network: you are served whenever a server is
 idle, and a server started with `--open` serves you like a member. To become a member, ask a
 member to invite your Ethereum address, then link this node to that address in the dashboard
-("Link wallet" or `bitllm account link`). You do not need a wallet to use the network, only an
+("Link wallet" or `bitllm account link`). Linking is public, see [Accounts](#accounts). You do not
+need a wallet to use the network, only an
 address if you want an invite or a quota.
 
 A member is the root account or anyone a member invited. Once your nodes have served a job you
-have 10 invites for good. Owners can set a daily quota per member (`--free-daily`); contributors
-(nodes served in the last 7 days) are exempt. A root can revoke an account, which also removes
-everyone it invited (they can be invited again by someone else). Invites are signed with an
-Ethereum account and gossiped; every node computes the same member set, so there is no
-membership server. Servers look up the requesting node's account through its claim (below).
+have 10 invites for good. That limit reads public receipts, which are self-reported. Owners can set
+a daily quota per member (`--free-daily`). Quota exemption does not read public receipts. It comes
+from what a server has seen itself: your node did a job that server asked for within the last 7
+days. A server that never asks peers for jobs exempts nobody.
+
+A root can revoke an account (`bitllm invite --revoke`). That account and everyone it invited drop
+to the uninvited tier, so they can still get idle slots. Everyone it invited can be invited again
+by someone else.
+
+Invites are signed with an Ethereum account and gossiped, so there is no membership server. Members
+converge as signed items spread, and nodes can disagree for a while. Servers look up the requesting
+node's account through its claim (below).
 
 ```bash
 bitllm invite 0xADDRESS           # invite with a recovery-words account
@@ -419,6 +462,9 @@ Credits are earned by nodes. To add up the credits of all your machines, link ea
 Ethereum address. It is only a signature (personal_sign): no transaction, no gas, no RPC, nothing
 on chain. A claim is signed by both the owner's wallet and the node's key, so nobody can claim
 your node, and the newest claim per node wins.
+
+**Linking is public.** It publishes this node's id with your wallet address and display name to
+every node on the network. Decide whether you want that before you run these steps:
 
 ```bash
 bitllm account new --name alice     # new 12-word account, links this node
@@ -505,10 +551,10 @@ already streaming through your relay is cut when it goes down, and the user's ag
   request, and another node (the auditor) scores the answer token by token; a peer that keeps
   failing gets no requests for that model for 24 h (`GET /audits` shows the results). The default
   auditor is a node run by us, the maintainers; `--auditor PEER_ID` replaces it and
-  `--auditor none` drops it. Turning it on does not make cheating impossible:
+  `--auditor none` drops it. An audit is a spot check, not a proof:
   - It finds a server running another model, and a coarser quant (Q4 or below) on greedy requests.
-  - It does not find a server that recognizes canaries (the pool is public), a quant swap on
-    sampled requests only, or a light fine-tune swap such as official weights for heretic.
+  - It does not find a server that recognizes canaries (the prompts are public in the source), a
+    quant swap on sampled requests only, or a light fine-tune swap such as official weights for heretic.
   - An auditor can lie: pass a cheater, or make up bad scores for an honest server. A shuffled
     control catches only an auditor that passes everything. Trusting the seed means trusting us.
   - A server and an auditor run by the same person can pass each other. Nodes of the same claimed
@@ -518,8 +564,8 @@ already streaming through your relay is cut when it goes down, and the user's ag
   Numbers and details: [docs/audit.md](docs/audit.md).
 - `--upnp` (on by default) asks your router to forward the p2p port.
 - **IPv6 exposes the p2p port.** With a public IPv6 address and a router that lets inbound IPv6
-  through, anyone on the internet can reach port 4001 (the p2p port, never the gateway on 7778,
-  which only listens on 127.0.0.1). That is how peers get direct connections, but if you do not
+  through, anyone on the internet can reach port 4001 (the p2p port, not the gateway on 7778,
+  which listens only on 127.0.0.1 by default). That is how peers get direct connections, but if you do not
   want an open port on that machine, start with `--ipv6=false` to listen on IPv4 only. The cost:
   IPv6-only peers can no longer dial you directly, so more of your traffic goes through relays and
   may be slower. On IPv4 nothing changes.

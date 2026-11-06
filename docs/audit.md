@@ -7,6 +7,9 @@ in the announce, which older nodes ignore). A node that turns on neither `--audi
 `--audit-serve` behaves exactly as before: it sends no canaries, scores nothing, and announces the
 same as v0.1.
 
+An audit is a spot check, not a proof. The canary prompts are public in the source, so a host could
+recognise them. See [what it catches, and what it does not](#what-it-catches-and-what-it-does-not).
+
 ```bash
 bitllm --audit                           # check the peers that answer you
 bitllm --audit --auditor 12D3KooW...     # prefer an auditor you trust (repeatable)
@@ -111,9 +114,9 @@ Catches:
   numbers), and a stated weights hash that differs from the record.
 
 Does not catch:
-- **A server that recognizes canaries** and answers them with the real model. The pool is public
-  (`internal/assets/canaries.txt`) and canaries ask for 256 tokens at most, so a determined cheater can spot many
-  of them. Copying your sampling settings and streaming makes it harder, not impossible.
+- **A server that recognizes canaries** and answers them with the real model. The prompts are public
+  in the source (`internal/assets/canaries.txt`) and canaries ask for 256 tokens at most, so a host could
+  recognise many of them. Copying your sampling settings and streaming makes it harder, not impossible.
 - **A quant swap on sampled requests only**: under sampling a Q4-level swap does not move z enough.
 - **A fine-tune swap** such as official weights for heretic: only 2 of 40 greedy and 7 of 40 sampled
   canaries were bad, so a round rarely ends in a fail.
