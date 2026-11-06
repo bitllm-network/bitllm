@@ -41,8 +41,9 @@ Four jobs, one binary:
 - **A serving node** is your node plus `--upstream`, pointed at a model server
   you already run. It can be behind NAT: peers reach it through a relay and
   hole punching, so no port forwarding is needed.
-- **A public relay** is a node with inbound TCP and UDP 4001: start it with
-  `--public`. It answers DHT queries and relays for NATed peers, but still
+- **A public relay** is a serving node with inbound TCP and UDP 4001: add
+  `--public`. It must serve a model, because only a serving node announces.
+  It answers DHT queries and relays for NATed peers, but still
   joins the default seeds, so it needs no DNS record. Its announce carries
   `relay=true`; autorelay adds it as a candidate, so a NATed node reserves on
   the seed and on public relays instead of only on the seed.
@@ -308,28 +309,36 @@ A release build checks for a newer release 30 seconds after it starts, and every
 that. When there is one, it downloads the binary for this machine, checks it against the release's
 `SHA256SUMS`, runs it once to confirm the version it reports, and swaps it in. If the node is
 serving, it waits until no job is running and the queue is empty, then restarts itself in place:
-same terminal, same systemd unit, same peer id. It waits as long as that takes, and `GET /status`
-shows `pending_restart: true` in the meantime. On Windows a running `.exe` cannot be replaced, so
-the new binary is installed and used at the next start.
+same terminal, same systemd unit, same peer id. It waits up to 24 hours, then restarts anyway, so one
+stuck client cannot hold an update back forever. `GET /status` shows `pending_restart: true` in the
+meantime. On Windows a running `.exe` cannot be replaced, so the new binary is installed and used at
+the next start.
 
 HTTPS and the checksum catch a corrupted or truncated download. Each release also publishes
 `SHA256SUMS.sig`, a signature over the tag and the checksum file, made with an admin's offline key
-and checked against the public keys built into the binary. For now the result is only reported: a
-release with a missing or wrong signature is logged and still installed. A later release will refuse
-it. `bitllm update` prints the result, and `GET /status` shows it as `signature`: `ok`, `missing`,
-`bad` or `no-keys`.
+and checked against the public keys built into the binary. A release with a missing or wrong
+signature is refused: nothing is downloaded and the running binary stays as it is. `bitllm update`
+prints the result, and `GET /status` shows it as `signature`: `ok`, `missing`, `bad` or `no-keys`.
 
-`--auto-update=false` stays on the version you have. `bitllm update` runs the same check now
-(`--check` only reports), which is also the way to update a node under a supervisor.
-`bitllm update --tag vX.Y.Z` installs that one release through the same checks, which is how to try
-a prerelease, since the regular check skips those. It can also go back to an older release, but a
-running node with auto-update moves forward again unless it is started with `--auto-update=false`.
-The replaced binary stays next to it as `bitllm.prev`, so `mv bitllm.prev bitllm` goes back one
-version.
-Builds from source (`dev`) and CI builds never update themselves. `bitllm --version` prints what
-is running, and `GET /status` shows the last check. The updater writes in the directory that holds
-the binary, so a package-manager install or a read-only mount needs `--auto-update=false`;
-otherwise the node logs the error and keeps running.
+`--auto-update=false` stays on the version you have. `bitllm update` runs the same check now, which
+is also the way to update a node under a supervisor. `--check` only reports, and exits non-zero if
+the signature is not `ok`. `bitllm update --tag vX.Y.Z` installs that one release through the same
+checks, which is how to try a prerelease, since the regular check skips those. It can also go back
+to an older release, but a running node with auto-update moves forward again unless it is started
+with `--auto-update=false`. The replaced binary stays next to it as `bitllm.prev`, so
+`mv bitllm.prev bitllm` goes back one version.
+Builds from source (`dev`) and CI builds never update themselves, and `bitllm update` on one of them
+still requires a signature. `bitllm --version` prints what is running, and `GET /status` shows the
+last check. The updater writes in the directory that holds the binary, so a package-manager install
+or a read-only mount needs `--auto-update=false`; otherwise the node logs the error and keeps running.
+
+A release the node installed by itself has to prove itself: until it has run for 60 seconds with its
+gateway up, each start counts. After three failed starts, the next start puts `bitllm.prev` back and
+restarts into it. That release is not installed again, while a newer one installs as usual.
+`GET /status` shows `rolled_back_from` after such a start, and the failed binary stays as
+`bitllm.failed`. This needs something to start the node again, such as the systemd unit above; in a
+plain terminal the count only moves when you run it again. A node started with
+`--auto-update=false` never swaps its binary by itself.
 
 ### Where things live
 
@@ -342,8 +351,8 @@ directory to start over with a new identity.
 Every job you serve earns credits (prompt tokens / 4 + completion tokens), proven by a receipt:
 the client signs what it received (model, token counts, SHA-256 of the exact response bytes),
 your node checks it against what it sent and countersigns, and the receipt is gossiped to the
-whole network. The client signs with a one-off key per job, so a receipt shows which server did
-the work but not who asked for it. Credits must equal the token formula, and each node accepts at
+whole network. The client signs with a pseudonym, one key per server rotated every 30 days, so a receipt shows which
+server did the work but not who asked for it. That server can link one client's jobs to each other. Credits must equal the token formula, and each node accepts at
 most 120 receipts a minute per server (600 overall) from gossip. Any node can verify both
 signatures and recompute everyone's credits:
 
@@ -444,12 +453,13 @@ A public host that should help but does not need to be a first contact runs as a
 
 ```bash
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. Its
-announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
+It joins the default seeds, answers DHT queries and relays, and needs no `_dnsaddr` record. It must
+serve a model, because only a serving node announces. Its announce carries `relay=true`, so NATed nodes use it as an additional relay; this is how relay
 capacity grows without adding DNS entries. `deploy/gpu-host.sh` with `PUBLIC=1` installs a serving
 node this way.
 
@@ -550,4 +560,5 @@ instructions for AI agents). Brand assets live in
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The dashboard bundles the JetBrains Mono and Arimo fonts under the SIL Open
+Font License 1.1; their notices and license are in [internal/assets/fonts.css](internal/assets/fonts.css).

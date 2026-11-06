@@ -686,7 +686,7 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL=${shq(m)}
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=${shq(m)}
 export CLAUDE_CODE_SUBAGENT_MODEL=${shq(m)}
 claude`,
-  "OpenAI-compatible": m => `# Cline, Continue, OpenCode, Aider, Cursor, any OpenAI client
+  "OpenAI-compatible": m => `# Cline, Continue, OpenCode, Aider, any OpenAI client
 Base URL:  ${base}/v1
 API key:   ${gwKey || "bitllm  (any value)"}
 Model:     ${m}`,

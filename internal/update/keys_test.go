@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // signer is a test admin: a key pair, and signature lines made with it.
@@ -124,10 +125,11 @@ func TestParseKey(t *testing.T) {
 	}
 }
 
-// New takes its default from the release-wide switch.
-func TestNewRequireSignatureDefault(t *testing.T) {
-	if got := New().RequireSignature; got != requireSignature {
-		t.Errorf("New().RequireSignature = %v, want %v", got, requireSignature)
+// Every build enforces signatures, whatever its version: the CLI and the Runner
+// both get their client from New.
+func TestNewRequiresSignatures(t *testing.T) {
+	if !New().RequireSignature {
+		t.Error("New().RequireSignature = false")
 	}
 }
 
@@ -206,9 +208,9 @@ func failingSignatures(tag string, a, b signer) []struct {
 	}
 }
 
-// With signatures not required, a failed check is reported and logged once, and
-// the update goes ahead.
-func TestRunnerWarnModeInstalls(t *testing.T) {
+// A Client built by hand with the switch off only reports a failed check, logged
+// once. No build runs this way, since they all get their client from New.
+func TestRunnerSwitchOffOnlyReports(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
 	}
@@ -221,6 +223,7 @@ func TestRunnerWarnModeInstalls(t *testing.T) {
 			target := filepath.Join(dir, "bitllm")
 			os.WriteFile(target, []byte("old"), 0o755)
 			run := runnerFor(t, r, dir, target)
+			run.Client.RequireSignature = false
 			restarts := 0
 			run.Restart = func(string) error { restarts++; return nil }
 			logs := captureLogs(run)
@@ -230,10 +233,10 @@ func TestRunnerWarnModeInstalls(t *testing.T) {
 			run.once(context.Background())
 
 			if b, _ := os.ReadFile(target); string(b) != string(r.bin) {
-				t.Error("warn mode did not install the release")
+				t.Error("the release was not installed")
 			}
 			if restarts == 0 {
-				t.Error("warn mode did not restart")
+				t.Error("the node did not restart")
 			}
 			if got := run.Status()["signature"]; got != tc.want {
 				t.Errorf("status signature = %v, want %q", got, tc.want)
@@ -245,8 +248,8 @@ func TestRunnerWarnModeInstalls(t *testing.T) {
 	}
 }
 
-// With signatures required, every failed check leaves the running binary alone:
-// nothing is downloaded, swapped or restarted.
+// Every failed check leaves the running binary alone: nothing is downloaded,
+// swapped or restarted, and the node waits for its next regular check.
 func TestRunnerEnforcedRefuses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
@@ -260,7 +263,6 @@ func TestRunnerEnforcedRefuses(t *testing.T) {
 			target := filepath.Join(dir, "bitllm")
 			os.WriteFile(target, []byte("old"), 0o755)
 			run := runnerFor(t, r, dir, target)
-			run.Client.RequireSignature = true
 			run.Restart = func(string) error {
 				t.Error("restarted into a refused release")
 				return nil
@@ -290,6 +292,38 @@ func TestRunnerEnforcedRefuses(t *testing.T) {
 	}
 }
 
+// A refused release waits for the next regular check, with no retry in between.
+func TestRunnerRefusedReleaseDoesNotSpin(t *testing.T) {
+	const tag = "v9.9.9"
+	trust(t, newSigner(t).pub)
+	r := serveRelease(t, tag, script(tag), releaseOpts{})
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.After = time.Millisecond
+	run.Every = time.Hour
+	run.Restart = func(string) error { t.Error("restarted into a refused release"); return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { run.Run(ctx); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for r.sumsHits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // a spin would show here
+	cancel()
+	<-done
+
+	if got := r.sumsHits.Load(); got != 1 {
+		t.Errorf("read the checksum file %d times, want once", got)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "old" {
+		t.Error("the running binary changed")
+	}
+}
+
 func TestRunnerEnforcedInstallsSigned(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
@@ -302,7 +336,6 @@ func TestRunnerEnforcedInstallsSigned(t *testing.T) {
 	target := filepath.Join(dir, "bitllm")
 	os.WriteFile(target, []byte("old"), 0o755)
 	run := runnerFor(t, r, dir, target)
-	run.Client.RequireSignature = true
 	restarts := 0
 	run.Restart = func(string) error { restarts++; return nil }
 	logs := captureLogs(run)
@@ -327,7 +360,6 @@ func TestRunnerEnforcedInstallsSigned(t *testing.T) {
 func TestFetchEnforcedRefuses(t *testing.T) {
 	r := newRelease(t, "v9.9.9", script("v9.9.9"))
 	c := r.client()
-	c.RequireSignature = true
 	for _, sig := range []string{SigMissing, SigBad, SigNoKeys, ""} {
 		rel := Release{Tag: r.tag, Asset: r.asset, Sha256: strings.Repeat("0", 64), Signature: sig}
 		if _, err := c.Fetch(context.Background(), rel, t.TempDir()); err == nil || !strings.Contains(err.Error(), "not installing") {
@@ -349,7 +381,6 @@ func TestRunnerEnforcedDoesNotResumeUnsigned(t *testing.T) {
 	target := filepath.Join(dir, "bitllm")
 	os.WriteFile(target, r.bin, 0o755)
 	run := runnerFor(t, r, dir, target)
-	run.Client.RequireSignature = true
 	st := appliedState(r)
 	st.Signature = SigMissing
 	run.saveState(st)

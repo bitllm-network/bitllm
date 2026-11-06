@@ -32,7 +32,7 @@
 
 - **你的节点**和其他人跑同一个二进制。网关监听 `127.0.0.1:7778`，同时支持 OpenAI 和 Anthropic 格式，agent 把它当成普通 API 用就行。互联网上的机器连不到这个网关。
 - **服务节点**就是你的节点加 `--upstream`，指向你本机已经在跑的模型服务。它可以躲在 NAT 后面：其他节点通过中继加打洞找到它，不需要做端口转发。
-- **公网中继**是有入站 TCP/UDP 4001 的节点，用 `--public` 启动。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
+- **公网中继**是有入站 TCP/UDP 4001 的服务节点，加上 `--public`。它必须服务一个模型，因为只有服务节点才会 announce。它回答 DHT 查询、给 NAT 节点做中继，但仍然从默认 seed 加入，所以不需要 DNS 记录。它的 announce 带 `relay=true`，autorelay 会把它列为候选；NAT 节点会在 seed 和公网中继上都保留位置，而不是全挤在 seed 上。
 - **seed** 既是公网中继，又列在 `_dnsaddr.bootstrap.bitllm.org` 里，并且用 `--dht-server` 独立启动。它是新节点的首次接触点。一个 seed 就够加入；公网中继让中继容量随网络增长。
 
 发现分两步。二进制先解析 `_dnsaddr.bootstrap.bitllm.org` 拿到 seed 地址，之后模型在哪个节点上、怎么连过去、哪些公网节点能做中继，都由 DHT、gossip 和 relay announce 负责。域名解析不到时，它会再试 `boot.bitllm.org` 后备；两个都不通，节点会自己起一个网络，并打印 join code，另一台机器用 `--bootstrap` 接上就行。
@@ -217,11 +217,13 @@ journalctl --user -u bitllm -f      # 日志
 
 ### 更新
 
-发布版启动 30 秒后检查一次新版本，之后每 6 小时一次。有新版就下载对应机器的二进制，核对 release 的 `SHA256SUMS`，跑一次确认它报告的版本，然后替换。如果节点正在服务，会等到没有任务在跑、队列也空了，再原地重启：同一个终端、同一个 systemd 单元、同一个节点 ID。需要等多久就等多久，等待期间 `GET /status` 显示 `pending_restart: true`。Windows 上运行中的 `.exe` 换不掉，所以新二进制装好，下次启动时生效。
+发布版启动 30 秒后检查一次新版本，之后每 6 小时一次。有新版就下载对应机器的二进制，核对 release 的 `SHA256SUMS`，跑一次确认它报告的版本，然后替换。如果节点正在服务，会等到没有任务在跑、队列也空了，再原地重启：同一个终端、同一个 systemd 单元、同一个节点 ID。最多等 24 小时，到时间就直接重启，免得一个卡住的客户端永远挡住更新。等待期间 `GET /status` 显示 `pending_restart: true`。Windows 上运行中的 `.exe` 换不掉，所以新二进制装好，下次启动时生效。
 
-HTTPS 和校验和能挡住损坏或截断的下载。每个 release 还会发布 `SHA256SUMS.sig`，这是对 tag 和校验和文件的签名，用管理员离线保管的密钥生成，并用内置在二进制里的公钥核对。目前结果只做报告：签名缺失或不对的 release 会记一条日志，然后照常安装。后续版本会拒绝安装。`bitllm update` 会打印结果，`GET /status` 里的 `signature` 显示 `ok`、`missing`、`bad` 或 `no-keys`。
+HTTPS 和校验和能挡住损坏或截断的下载。每个 release 还会发布 `SHA256SUMS.sig`，这是对 tag 和校验和文件的签名，用管理员离线保管的密钥生成，并用内置在二进制里的公钥核对。签名缺失或不对的 release 会被拒绝：不下载，正在运行的二进制保持原样。`bitllm update` 会打印结果，`GET /status` 里的 `signature` 显示 `ok`、`missing`、`bad` 或 `no-keys`。
 
-`--auto-update=false` 留在当前版本。`bitllm update` 立刻做同样的检查（`--check` 只报告），也是 supervisor 下更新节点的方式。`bitllm update --tag vX.Y.Z` 用同样的检查安装指定的那个 release，可以用来试 prerelease，因为常规检查会跳过它们。它也能退回旧版本，但开着自动更新运行的节点会再次往前更新，除非用 `--auto-update=false` 启动。被替换的二进制留在旁边叫 `bitllm.prev`，`mv bitllm.prev bitllm` 就回退一个版本。源码构建（`dev`）和 CI 构建不会自更新。`bitllm --version` 打印当前版本，`GET /status` 显示上次检查。更新器要写二进制所在的目录，所以包管理器安装或者只读挂载需要 `--auto-update=false`；否则节点会记一条错误然后继续跑。
+`--auto-update=false` 留在当前版本。`bitllm update` 立刻做同样的检查，也是 supervisor 下更新节点的方式。`--check` 只报告，签名不是 `ok` 时以非零状态退出。`bitllm update --tag vX.Y.Z` 用同样的检查安装指定的那个 release，可以用来试 prerelease，因为常规检查会跳过它们。它也能退回旧版本，但开着自动更新运行的节点会再次往前更新，除非用 `--auto-update=false` 启动。被替换的二进制留在旁边叫 `bitllm.prev`，`mv bitllm.prev bitllm` 就回退一个版本。源码构建（`dev`）和 CI 构建不会自更新，在它们上面跑 `bitllm update` 同样要求签名。`bitllm --version` 打印当前版本，`GET /status` 显示上次检查。更新器要写二进制所在的目录，所以包管理器安装或者只读挂载需要 `--auto-update=false`；否则节点会记一条错误然后继续跑。
+
+节点自己装上的新版本要先证明能用：在它带着 gateway 连续运行满 60 秒之前，每次启动都会计数。三次启动失败后，下一次启动会把 `bitllm.prev` 换回来并重启进去。那个版本不会再被安装，更新的版本照常安装。这次启动之后 `GET /status` 显示 `rolled_back_from`，失败的二进制留在旁边叫 `bitllm.failed`。这要靠有东西重新启动节点，比如上面的 systemd 单元；在普通终端里，只有你再次运行时才会计数。用 `--auto-update=false` 启动的节点不会自己换二进制。
 
 ### 文件都在哪
 
@@ -229,7 +231,7 @@ HTTPS 和校验和能挡住损坏或截断的下载。每个 release 还会发�
 
 ## 服务积分
 
-你每服务一个任务就得到积分（prompt token / 4 + completion token），由一张收据证明：客户端签收它收到的东西（模型、token 数、响应字节的 SHA-256），你的节点核对后副签，收据通过 gossip 广播到全网。客户端每个任务用一个一次性密钥签名，所以收据只显示哪个服务端干了活，不显示谁问的。积分必须等于 token 公式，每个节点每分钟最多接受每个服务端 120 张收据（总共 600 张）。任何节点都能验证两个签名并重新算出每个人的积分：
+你每服务一个任务就得到积分（prompt token / 4 + completion token），由一张收据证明：客户端签收它收到的东西（模型、token 数、响应字节的 SHA-256），你的节点核对后副签，收据通过 gossip 广播到全网。客户端用假名签名：每个服务器一个密钥，每 30 天轮换一次，所以收据显示是哪个服务器做的，但不显示是谁请求的；该服务器能把同一客户端的任务关联起来。积分必须等于 token 公式，每个节点每分钟最多接受每个服务端 120 张收据（总共 600 张）。任何节点都能验证两个签名并重新算出每个人的积分：
 
 ```bash
 curl localhost:7778/credits      # 每个服务节点的积分，来自这个节点见过的所有收据
@@ -300,11 +302,12 @@ bitllm --dht-server --port 4001 \
 
 ```bash
 bitllm --public --port 4001 \
+  --upstream http://localhost:8000/v1 \
   --announce /ip4/203.0.113.11/tcp/4001 \
   --announce /ip4/203.0.113.11/udp/4001/quic-v1
 ```
 
-它从默认 seed 加入，回答 DHT 查询、给 NAT 节点做中继，但不需要 `_dnsaddr` 记录。它的 announce 带 `relay=true`，NAT 节点会把它当中继候选；中继容量就这样随公网节点增长。`deploy/gpu-host.sh` 加 `PUBLIC=1` 就是这种装法。
+它从默认 seed 加入，回答 DHT 查询、给 NAT 节点做中继，但不需要 `_dnsaddr` 记录。它必须服务一个模型，因为只有服务节点才会 announce。它的 announce 带 `relay=true`，NAT 节点会把它当中继候选；中继容量就这样随公网节点增长。`deploy/gpu-host.sh` 加 `PUBLIC=1` 就是这种装法。
 
 开放 TCP 和 UDP 4001。在一台全新的 Ubuntu VM 上，`deploy/bootstrap-vps.sh` 会装好 systemd 单元并打印要发布的 DNS 记录。家里的机器也能做公网中继，用端口转发或者 UPnP；但大多数家用机器只是普通的服务节点：通过 seed 加入，别人通过中继或者打洞找到它。
 
@@ -359,3 +362,5 @@ Bug、修复和小功能都欢迎。[CONTRIBUTING.md](CONTRIBUTING.md) 说明 is
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
+控制台内置 JetBrains Mono 和 Arimo 字体，采用 SIL Open Font License 1.1 许可；版权声明和许可证全文见
+[internal/assets/fonts.css](internal/assets/fonts.css)。

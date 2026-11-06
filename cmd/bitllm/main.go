@@ -335,6 +335,11 @@ func main() {
 	if w := concurrencyWarning(cfg.Concurrency); w != "" {
 		log.Print(w)
 	}
+	// Only the node command gets here, past the subcommands above and --version.
+	// A self-updated release that keeps failing to start goes back from here,
+	// and this call does not return if it restarts into the previous binary.
+	rolledBackFrom := startCheck(cfg.DataDir, *autoUpdate)
+
 	cfg.Upstream = strings.TrimRight(cfg.Upstream, "/")
 	cfg.GatewayKey = strings.TrimSpace(cfg.GatewayKey)
 	cfg.Bootstrap = boot
@@ -422,13 +427,20 @@ func main() {
 	exe, _ := executable()
 	var upd *update.Runner
 	if *autoUpdate && update.IsRelease(node.Version) && exe != "" {
-		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New()}
+		upd = &update.Runner{Current: node.Version, Executable: exe, DataDir: cfg.DataDir, Client: update.New(), RolledBackFrom: rolledBackFrom}
 		cfg.UpdateStatus = upd.Status
+	}
+	// A stop by signal is no failed start, however far the start had come.
+	signalStopped := func() {
+		if upd != nil {
+			upd.Stopped()
+		}
 	}
 	n, err := node.New(ctx, cfg)
 	if err != nil {
 		if ctx.Err() != nil {
-			return // a signal during startup
+			signalStopped()
+			return
 		}
 		log.Fatal(err)
 	}
@@ -473,6 +485,7 @@ func main() {
 		defer close(stopped)
 		log.Printf("stopping: finishing live requests for up to %v (signal again to exit now)", node.Drain)
 		stopUpdates()
+		signalStopped()
 		drain, done := context.WithTimeout(context.Background(), node.Drain)
 		defer done()
 		if err := n.Shutdown(drain, srv); err != nil {
@@ -480,7 +493,12 @@ func main() {
 		}
 		cancel()
 	}) {
+		signalStopped()
 		return
+	}
+	ln, err := net.Listen("tcp", gateway)
+	if err != nil {
+		log.Fatal(err)
 	}
 	if upd != nil {
 		upd.Idle = n.Idle
@@ -489,14 +507,15 @@ func main() {
 			// down first, and a failed exec leaves the node serving.
 			upd.Restart = func(path string) error {
 				log.Printf("update: restarting into %s", path)
-				return update.Restart(path, append([]string{path}, os.Args[1:]...), os.Environ())
+				return restartInto(path)
 			}
 		}
 		go upd.Run(updates)
+		go upd.MarkHealthy(updates) // the gateway is bound, so this start counts from here
 	}
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-	// Shutdown makes ListenAndServe return at once, so wait for the drain.
+	// Shutdown makes Serve return at once, so wait for the drain.
 	<-stopped
 }

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -643,6 +644,7 @@ func (n *Node) announceLoop(ctx context.Context) {
 	var scorable []string
 	probed := false
 	lastModels := time.Time{}
+	capLogged := 0
 	for {
 		// A job in flight already proves the server works, and a server that
 		// handles one request at a time may not answer the probe meanwhile.
@@ -683,6 +685,13 @@ func (n *Node) announceLoop(ctx context.Context) {
 			a.Weights = n.cfg.Weights
 			a.Loc = n.cfg.Location
 		}
+		if total := len(a.Models); total > protocol.MaxAnnounceModels {
+			capAnnounce(&a)
+			if total != capLogged {
+				log.Printf("sharing the first %d of %d models: peers reject a longer announce; pick which with --model", len(a.Models), total)
+				capLogged = total
+			}
+		}
 		n.lastAnn.Store(&a)
 		b, _ := json.Marshal(a)
 		n.topic.Publish(ctx, b)
@@ -691,6 +700,28 @@ func (n *Node) announceLoop(ctx context.Context) {
 			return
 		case <-time.After(n.cfg.AnnounceEvery):
 		}
+	}
+}
+
+// capAnnounce trims a to the most models peers accept, in name order so the
+// choice is stable. Peers reject an announce whole if it lists too many, which
+// would hide the node entirely, or if it mentions a model it does not list.
+func capAnnounce(a *protocol.Announce) {
+	sorted := slices.Sorted(slices.Values(a.Models))
+	a.Models = sorted[:protocol.MaxAnnounceModels]
+	kept := make(map[string]bool, len(a.Models))
+	for _, m := range a.Models {
+		kept[m] = true
+	}
+	a.Audit = slices.DeleteFunc(slices.Clone(a.Audit), func(m string) bool { return !kept[m] })
+	if a.Weights != nil {
+		weights := make(map[string]string, len(a.Weights))
+		for m, h := range a.Weights {
+			if kept[m] {
+				weights[m] = h
+			}
+		}
+		a.Weights = weights
 	}
 }
 
