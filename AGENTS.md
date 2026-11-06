@@ -97,6 +97,6 @@ serves on 127.0.0.1:7778 is `internal/assets/ui.html` and stays here.
 
 ## Testing changes against the live network
 
-`external-test.yml` (manual dispatch) starts a fresh node on a GitHub runner, joins through the
+`external-test.yml` (daily, and on manual dispatch) starts a fresh node on a GitHub runner, joins through the
 default bootstrap seeds, and sends real requests. Run it after anything that touches networking, access or
 the gateway.

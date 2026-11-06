@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"syscall"
 	"testing"
@@ -163,7 +164,7 @@ func TestSwapFallsBackToCopyWhenLinksAreRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 { // Windows has no such bits
 		t.Errorf("previous binary mode = %v, want 0755", fi.Mode().Perm())
 	}
 	wantNoFile(t, PrevPath(dst)+".tmp")
