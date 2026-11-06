@@ -71,9 +71,15 @@ for _ in $(seq 1 50); do curl -sf 127.0.0.1:18900/v1/models > /dev/null && break
 NOWHERE=/ip4/127.0.0.1/tcp/9/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib
 
 start() { # name binary p2p-port gateway-port flags...
-  local name=$1 bin=$2 port=$3 gw=$4; shift 4
+  local name=$1 bin=$2 port=$3 gw=$4 help; shift 4
+  # Into a variable first: with pipefail, grep -q stopping at the first match
+  # can kill the writer and make the whole pipeline look like a failure.
+  help=$("$bin" --help 2>&1 || true)
   # --ipv6 arrived in v0.1.13; older releases listen on IPv6 anyway.
-  "$bin" --help 2>&1 | grep -q -- -ipv6 && set -- --ipv6=false "$@"
+  case "$help" in *-ipv6*) set -- --ipv6=false "$@" ;; esac
+  # --auto-update arrived in v0.3.1. Without it a release build could replace
+  # itself in the middle of this run, and the "old" node would no longer be old.
+  case "$help" in *-auto-update*) set -- --auto-update=false "$@" ;; esac
   "$bin" --data "$work/$name" --port "$port" --gateway "127.0.0.1:$gw" \
     --mdns=false --upnp=false "$@" > "$work/$name.log" 2>&1 &
   pids+=($!)
