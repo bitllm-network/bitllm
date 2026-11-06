@@ -1,30 +1,31 @@
 # Handoff: the first public seed
 
 This is the deployment record for the first seed that does not depend on the
-Mac mini. The seed, its DNS list, the landing site and the map publisher are
-live. What remains is promoting `v0.5.0`, a second seed, the domain move after
-2026-11-10, and the release that drops the old `boot` seed.
+Mac mini. The seed, its DNS list, the landing site, the map publisher and release
+`v0.5.0` are live. The list below is what is not finished.
 
-## Status (2026-11-06, Pacific)
+## Status (2026-11-06 UTC)
 
-Checked at 22:25 PST (06:25 UTC on 2026-11-06).
+Checked at 07:52 UTC on 2026-11-06 (23:52 PST on 2026-11-05).
 
 Done:
 
+- `v0.5.0` is the latest release, with four binaries, `SHA256SUMS` and
+  `SHA256SUMS.sig`. Nodes on it install only a release signed with a key built
+  into the binary. `docs/plan-hardening.md` says what it contains.
+- What was checked on the published release: its binary reports
+  `signature: ok`; a build that had the checks installed it, byte for byte, and
+  refused the unsigned `v0.4.6`; a real `v0.4.6` node updated itself to it in 37
+  seconds, kept its peer id, answered a request and marked itself healthy; the
+  public installers passed on Ubuntu, macOS and Windows.
 - `seed1.bitllm.org` (A, DNS-only) points at `141.148.22.236` and the seed is
-  running. TCP 4001 is open and a libp2p QUIC dial to
-  `/ip4/141.148.22.236/udp/4001/quic-v1/p2p/12D3KooWGU5ZQ8aBeqFsSFXJDPYjuDNdBnf9Cw92kuUwxkLG4RCM`
-  succeeds, so UDP 4001 is open too.
-- `_dnsaddr.bootstrap.bitllm.org` publishes two TXT records for that peer
-  (TCP and QUIC). A fresh `v0.4.6` node joined with only
-  `--bootstrap /dnsaddr/bootstrap.bitllm.org`, connected over QUIC, and
-  completed an inference request through a GPU host.
-- `v0.4.6` is the latest release. It has four binaries and `SHA256SUMS`;
-  `releases/latest` and the installer both point at it.
+  running `v0.4.6`. TCP 4001 and QUIC on UDP 4001 both answer.
+- `_dnsaddr.bootstrap.bitllm.org` publishes two TXT records for that peer (TCP
+  and QUIC).
 - `bitllm.org` and `www.bitllm.org` are served by the `bitllm-landing` Worker
-  from the `Zjj1993` account. `/network.json` answers from KV.
-- The landing page and `/docs/` use the `BitLLM_` wordmark. A push to
-  `landing-page` main deploys from CI: `check` and `deploy` both pass.
+  from the `Zjj1993` account. A push to `landing-page` main deploys from CI. The
+  site and the installers for `v0.5.0` are live, and the installers stop if they
+  cannot check the download.
 - The map no longer depends on this laptop. The `network-map` workflow starts
   a client node, waits for the live announces, and writes one snapshot to KV;
   the landing Worker's five-minute cron dispatches it when the snapshot is
@@ -34,54 +35,109 @@ Done:
 
 What is left, in order:
 
-1. **Get access to `seed1`.** `~/.ssh/bitllm-seed` is not accepted for `ubuntu`
-   or `opc` on `141.148.22.236`. Use the access the seed was set up with, or add
-   the key through the Oracle console. Without it the only DNS seed has no way back
-   from a bad update.
-2. **Back up the seed's identity.** Copy the whole `/var/lib/bitllm` directory off
-   the machine. `identity.key` in it is the peer id that the DNS records name, so
-   losing it means new records and a new peer id. Do this for every seed.
-3. **Promote `v0.5.0` only after `seed1` runs with `--auto-update=false`.**
-   `v0.5.0` requires signed releases and carries the new deploy scripts, and it
-   keeps `boot`. `seed1`'s current unit does not have that flag, so it would
-   replace itself as soon as the release is promoted to `latest`. See "Update
-   `seed1` to the new script" below and [releasing.md](releasing.md).
-4. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
+1. **Confirm `seed1` will not update itself.** This is the urgent one. `v0.5.0`
+   is already `latest`, and `seed1`'s unit as built has no `--auto-update=false`,
+   so unless someone has pinned it, it replaces itself within about seven hours
+   of 07:45 UTC on 2026-11-06. From outside you can only see its version, which
+   was `v0.4.6` at the time above. On the machine:
+   ```sh
+   sudo sed -i 's#^ExecStart=/var/lib/bitllm/bin/bitllm #&--auto-update=false #' /etc/systemd/system/bitllm-boot.service
+   sudo systemctl daemon-reload && sudo systemctl restart bitllm-boot
+   systemctl show -p ExecStart bitllm-boot | grep -- --auto-update=false
+   curl -s 127.0.0.1:7778/status   # answers, with no "update" key
+   ```
+2. **Get access to `seed1` from here.** `~/.ssh/bitllm-seed` is not accepted for
+   `ubuntu` or `opc` on `141.148.22.236`. Use the access the seed was set up with,
+   or add the key through the Oracle console. Without it the only DNS seed has no
+   way back from a bad update, and pinned nodes do not roll back on their own.
+3. **Check the seed's identity backup.** The agent that built it reported a backup
+   but not where. Keep a copy of the whole `/var/lib/bitllm` directory off the
+   machine. `identity.key` in it is the peer id the DNS records name, so losing it
+   means new records and a new peer id. Do this for every seed.
+4. **Move the release signing key off this laptop.** `~/bitllm-release.key` signs
+   every release and is the only key in `internal/update/keys.go`. Keep it offline
+   with a backup. If it is lost, nodes cannot take a signed update, and each one has
+   to be reinstalled by hand. See "Signing keys" in [releasing.md](releasing.md).
+5. **Try the new deploy scripts on a spare VM.** `deploy/bootstrap-vps.sh` and
+   `deploy/gpu-host.sh`, with their hardened systemd units, have tests but have
+   never run as root on a real host.
+6. **Update `seed1` to `v0.5.0` by hand,** after 48 hours on `latest`, so from
+   07:45 UTC on 2026-11-08. See "Update `seed1` to the new script" below. Until
+   the seeds run `v0.5.0`, a `--public` node with no model does not reach NATed
+   nodes as a relay, because older seeds do not forward its announce.
+7. **Upgrade the GPU hosts by hand.** The map shows two serving nodes, on `v0.1.11`
+   and `v0.2.0`, and neither can update itself. They answer fine, but one of them
+   refuses streaming receipts from both `v0.4.6` and `v0.5.0` clients, so it earns
+   no credit for those jobs. Upgrading should clear that; the cause is inferred, not
+   confirmed. See [host-a-gpu.md](host-a-gpu.md).
+8. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
    failure for new joins. See "Second public relay, and a second seed" below. Back
    up its identity too.
-5. **Prepare the new zone, whenever there is time.** Add `bitllm.org` to the
-   BitLLM account, create the `boot` tunnel there, recreate the records, pick
-   the KV namespace and deploy the Worker (steps 1 to 5 under "Moving the
-   domain"). Nothing in this step changes traffic.
-6. **On 2026-11-10, move the domain.** Request the move in `Zjj1993`, accept
-   it in the BitLLM account within five days, point the registration at the
-   new nameserver pair, then verify from an uncached resolver.
-7. **After the switch, repoint the map.** Both repository variables in
-   `bitllm-org/bitllm` and the KV binding in `landing-page/wrangler.jsonc`
-   move to the new account; set `GH_DISPATCH_TOKEN` on the new Worker, since
-   a Worker secret belongs to one script. Confirm `/network.json` is fresh,
-   then leave the old Worker and KV in place for a few days.
-8. **Drop `boot` in the first release after both the move and a live second
-   seed.** Remove the `boot.bitllm.org` literal from `DefaultBootstrap`, update
-   the `--bootstrap` help text, and remove the old tunnel section from
-   `docs/bootstrap.md`. Do this only after `_dnsaddr` answers from the new zone.
-   Stop the tunnel only after clients install that release.
-9. **Later, none of it urgent.**
-   - `GH_DISPATCH_TOKEN` expires 2027-11-06. Rotate it before then.
-   - GitHub's `schedule` trigger never fired here, which is why the Worker
-     cron exists. Check once in a while; if GitHub's cron starts working, the
-     Worker cron can go.
-   - Remove `~/.local/bin/bitllm-network-kv` and its disabled unit if the
-     reference copy is no longer useful.
+9. **Add rulesets to `bitllm-org/bitllm`.** `main` and `v*` tags have none, so
+   nothing stops a force push or a moved tag. Require the `lint`, `build` and `unit`
+   checks, and do not enforce a merge method.
+10. **Prepare the new zone, whenever there is time.** Add `bitllm.org` to the
+    BitLLM account, create the `boot` tunnel there, recreate the records, pick
+    the KV namespace and deploy the Worker (steps 1 to 5 under "Moving the
+    domain"). Nothing in this step changes traffic.
+11. **On 2026-11-10, move the domain.** Request the move in `Zjj1993`, accept
+    it in the BitLLM account within five days, point the registration at the
+    new nameserver pair, then verify from an uncached resolver.
+12. **After the switch, repoint the map.** Both repository variables in
+    `bitllm-org/bitllm` and the KV binding in `landing-page/wrangler.jsonc`
+    move to the new account; set `GH_DISPATCH_TOKEN` on the new Worker, since
+    a Worker secret belongs to one script. Confirm `/network.json` is fresh,
+    then leave the old Worker and KV in place for a few days.
+13. **Drop `boot` in the first release after both the move and a live second
+    seed.** Remove the `boot.bitllm.org` literal from `DefaultBootstrap`, update
+    the `--bootstrap` help text, and remove the old tunnel section from
+    `docs/bootstrap.md`. Do this only after `_dnsaddr` answers from the new zone.
+    Stop the tunnel only after clients install that release.
+
+Not proven yet, because only real use can show it:
+
+- A real failed start rolling back to the previous binary. Tests and a fake release
+  server cover it; no release has actually failed.
+- A self-update on a real Windows or macOS node. The unit tests pass on both, and
+  the installers ran on both, but the update and swap have only run for real on
+  Linux.
+- How the relay limits behave under load: circuits now end at 2 hours or 1 GiB, and
+  gossip and the DHT no longer use relayed connections. A `v0.4.x` client's first
+  cold request through a relay can answer 503 until gossip arrives.
+
+Decide before a public launch:
+
+- **The root account.** Membership rests on one account in `DefaultRoots`, which
+  cannot be revoked or rotated without a release.
+
+Later, none of it urgent:
+
+- `GH_DISPATCH_TOKEN` expires 2027-11-06. Rotate it before then.
+- GitHub's `schedule` trigger never fired here, which is why the Worker cron exists.
+  That also means the daily `external-test` run does not fire, so run it by hand
+  after anything that touches networking. If GitHub's cron starts working, the
+  Worker cron can go.
+- Remove `~/.local/bin/bitllm-network-kv` and its disabled unit if the reference
+  copy is no longer useful.
+- Add a second release key in some later release. A release that adds one is still
+  signed with the current key.
+- Small known gaps in `v0.5.0`: a receipt for a job that ends during shutdown can be
+  lost; a client's own bad request ranks that server lower for a minute; over TCP, a
+  client that hangs up may be noticed only when the next byte is written.
+- Build these only when there is a reason to: order-independent membership, if
+  invites start to disagree between nodes; an invite limit that does not read
+  self-reported receipts, if invite farming appears; gossip peer scoring and slower
+  announces, past about 100 serving nodes; serving priority from the ledger, if
+  servers run short of capacity; shared audit verdicts and varied canaries, if model
+  swapping shows up; a listing filter beyond the `canonical` mark, if fake model
+  names appear.
 
 ## State when you start
 
-- `bitllm` main has the DNS seed list, the public-relay role, the model
-  refresh and the `network-map` workflow. The latest release is **v0.4.6**.
-  There are no open PRs or issues.
-- `landing-page` main is `b663704`; its CI deploy last published Worker
-  deployment `8c2bf622-2e03-478b-90d4-8698ca09e2f4`, and the `check` and
-  `deploy` jobs pass on every push to main.
+- `bitllm` main has everything in `v0.5.0`, the latest release. Releases are made
+  as [releasing.md](releasing.md) describes.
+- `landing-page` main deploys from CI on every push, and its `check` job is required
+  to merge.
 - The landing Worker has the cron `*/5 * * * *` and writes one `cron` key to
   KV per tick with its decision, which is how a silent scheduler shows up.
 - `bitllm-org/bitllm` has repository variables `CLOUDFLARE_ACCOUNT_ID` and
