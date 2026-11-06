@@ -2,7 +2,9 @@
 # way a newcomer (or their agent) would, then starts the node and waits for
 # the local API. The installers follow releases/latest, which skips prereleases,
 # so "released" is the run that tests a new version: it fires when a prerelease
-# is promoted.
+# is promoted. A run for a published prerelease still gets the previous version,
+# so the version check below is skipped for prereleases and manual runs. It runs
+# before the node starts, since a running node may update itself.
 name: install-test
 on:
   workflow_dispatch:
@@ -21,6 +23,14 @@ jobs:
     steps:
       - name: install
         run: curl -fsSL https://bitllm.org/install.sh | sh
+      - name: the installed version is the release tag
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          got=$(~/.local/bin/bitllm --version)
+          echo "$got"
+          test "$got" = "bitllm $TAG"
       - name: start and wait for the API
         run: |
           nohup ~/.local/bin/bitllm --mdns=false --upnp=false > bitllm.log 2>&1 &
@@ -40,6 +50,15 @@ jobs:
       - name: install (PowerShell 7)
         shell: pwsh
         run: irm https://bitllm.org/install.ps1 | iex
+      - name: the installed version is the release tag
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $got = & "$env:LOCALAPPDATA\bitllm\bitllm.exe" --version
+          Write-Output $got
+          if ($got -ne "bitllm $env:TAG") { throw "installed '$got', want 'bitllm $env:TAG'" }
       - name: start and wait for the API
         shell: pwsh
         run: |

@@ -1,5 +1,7 @@
 # Weekly dependency updates. The actions group keeps the workflow versions
 # together; Go major bumps stay separate so they can be reviewed one at a time.
+# Workflows pin actions by commit SHA with the version in a trailing comment.
+# Dependabot updates the SHA and the comment together, so keep them on one line.
 version: 2
 updates:
   - package-ecosystem: github-actions
