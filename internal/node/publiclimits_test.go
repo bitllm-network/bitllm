@@ -86,6 +86,9 @@ func TestRelayResources(t *testing.T) {
 	if rc := relayResources(true, 128); rc.MaxReservations != 128 || rc.MaxReservationsPerIP != 128 {
 		t.Fatalf("behind a proxy: %+v", rc)
 	}
+	if rc := relayResources(false, 128); rc.Limit == nil || rc.Limit.Duration != 2*time.Hour || rc.Limit.Data != 1<<30 || rc.MaxCircuits != 64 {
+		t.Fatalf("circuit limits: %+v", rc)
+	}
 }
 
 // TestPublicNodeLimitsInForce: a public node starts with the limits for this

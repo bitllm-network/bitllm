@@ -251,7 +251,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
 		// Public nodes relay for NATed ones until hole punching upgrades the link.
-		// Inference streams are long, so the relay must not cut them off.
+		// Inference streams are long, so the limits are far above one answer.
 		libp2p.EnableRelayService(relay.WithResources(relayResources(cfg.RelayBehindProxy, reservations))),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
@@ -482,14 +482,31 @@ func (n *Node) Link(owner, name string, t int64, ownerSig string) (*account.Clai
 	return c, nil
 }
 
-// relayResources: no per-circuit time or byte limit (inference streams are
-// long), but bounded slots so a public bootstrap is not an open-ended relay.
+// A relayed connection may run this long and carry this much in each direction.
+// Far above any one answer, so long answers finish, and a relay stays bounded.
+// Over the limit the relay resets it and the next request opens another.
+const (
+	relayCircuitDuration = 2 * time.Hour
+	relayCircuitData     = 1 << 30
+)
+
+// relayResources: bounded circuits and slots, so a public bootstrap is not an
+// open-ended relay.
+//
+// Any limit marks a relayed connection as limited on both ends, and libp2p then
+// opens a stream on it only if the caller allows that. Inference, receipts, sync
+// (in every release), hello, identify and hole punching do. Gossip and the DHT do
+// not, so they use direct connections: every node has one to its seed, and only
+// public nodes are DHT servers. A stream opened without the option waits for a
+// direct connection, which is what hello does on releases from v0.3.0 to v0.4.6;
+// those clients then wait for the next announce instead.
+//
 // The default cap of 8 reservations per source IP is the only sybil guard on a
 // public-IP relay, but behind a tunnel every peer arrives from 127.0.0.1, so
 // there it would let only 8 NATed nodes in the whole network be reachable.
 func relayResources(behindProxy bool, reservations int) relay.Resources {
 	rc := relay.DefaultResources()
-	rc.Limit = nil
+	rc.Limit = &relay.RelayLimit{Duration: relayCircuitDuration, Data: relayCircuitData}
 	rc.MaxReservations = reservations // NATed peers that can be reached through us
 	rc.MaxCircuits = 64               // open relayed connections per peer
 	if behindProxy {
@@ -830,7 +847,8 @@ func (n *Node) findModelPeers(ctx context.Context, model string) {
 func (n *Node) hello(ctx context.Context, p peer.ID) {
 	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	s, err := n.host.NewStream(hctx, p, protocol.HelloProto)
+	// The provider is often NATed, so this may be a limited relayed connection.
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(hctx, "hello"), p, protocol.HelloProto)
 	if err != nil {
 		return
 	}
