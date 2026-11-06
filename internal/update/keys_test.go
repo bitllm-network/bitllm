@@ -339,6 +339,28 @@ func TestFetchEnforcedRefuses(t *testing.T) {
 	}
 }
 
+// An enforcing build does not restart into a binary an older state let through.
+func TestRunnerEnforcedDoesNotResumeUnsigned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Client.RequireSignature = true
+	st := appliedState(r)
+	st.Signature = SigMissing
+	run.saveState(st)
+	run.Restart = func(string) error {
+		t.Error("restarted into an unsigned release")
+		return nil
+	}
+
+	run.once(context.Background())
+}
+
 // The result is kept with the check, so a cached check and a new process still
 // report it.
 func TestRunnerSignatureSurvivesCachedCheck(t *testing.T) {

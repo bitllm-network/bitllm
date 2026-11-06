@@ -425,10 +425,9 @@ type Runner struct {
 
 	After    time.Duration // first check after start; 0 = 30s
 	Every    time.Duration // between checks; 0 = 6h
-	WaitIdle time.Duration // how long to wait for an idle node; 0 = 30m
 	Poll     time.Duration // idle poll interval; 0 = 5s
 	CacheFor time.Duration // skip the network if checked recently; 0 = 10m
-	Timeout  time.Duration // one check and download; 0 = 30m
+	Timeout  time.Duration // one check and download, not the wait after it; 0 = 30m
 
 	warned string // the tag whose signature result was last logged; only the Run goroutine uses it
 
@@ -437,6 +436,7 @@ type Runner struct {
 	latest    string
 	applied   string
 	signature string
+	pending   bool
 }
 
 // Status is what GET /status shows about updates. Empty before the first
@@ -457,6 +457,9 @@ func (r *Runner) Status() map[string]any {
 	if r.signature != "" {
 		out["signature"] = r.signature
 	}
+	if r.pending {
+		out["pending_restart"] = true
+	}
 	return out
 }
 
@@ -465,6 +468,12 @@ func (r *Runner) publish(st state) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.checked, r.latest, r.applied, r.signature = st.Checked, st.Latest, st.Applied, st.Signature
+}
+
+func (r *Runner) setPending(pending bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending = pending
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -487,13 +496,6 @@ func (r *Runner) every() time.Duration {
 		return r.Every
 	}
 	return 6 * time.Hour
-}
-
-func (r *Runner) waitIdle() time.Duration {
-	if r.WaitIdle > 0 {
-		return r.WaitIdle
-	}
-	return 30 * time.Minute
 }
 
 func (r *Runner) poll() time.Duration {
@@ -546,68 +548,97 @@ func jitter(d time.Duration) time.Duration {
 }
 
 // once does one check and, if there is a newer release, installs it and
-// restarts when the node is idle. Any failure leaves the running binary
-// alone and is logged once.
+// restarts when the node is idle. Any failure leaves the running binary alone
+// and is logged once.
 func (r *Runner) once(ctx context.Context) {
 	if !IsRelease(r.Current) {
 		return
 	}
-	// A slow link may need minutes for the binary; a stuck one must not pin
-	// this goroutine for the life of the node.
+	if tag := r.install(ctx); tag != "" {
+		r.restartWhenIdle(ctx, tag)
+	}
+}
+
+// install brings the file on disk to the newest release and returns the tag a
+// restart would move this node to, or "" when there is none. A slow link may
+// need minutes for the binary; a stuck one must not pin this goroutine for the
+// life of the node, so this phase has a deadline.
+func (r *Runner) install(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
 	st := r.loadState()
+	checkFailed := false
 	// A state file from a build older than signatures has a tag and no result
 	// for it, so it cannot stand in for a check.
 	if st.Checked.IsZero() || time.Since(st.Checked) >= r.cacheFor() || (st.Latest != "" && st.Signature == "") {
 		rel, err := r.Client.Latest(ctx)
 		st.Checked = time.Now()
 		if err != nil {
-			r.saveState(st)
-			r.publish(st)
+			checkFailed = true
 			r.logf("update: %v", err)
-			return
+		} else {
+			st.Latest, st.Asset, st.Sha256, st.Signature = rel.Tag, rel.Asset, rel.Sha256, rel.Signature
+			if Newer(rel.Tag, r.Current) {
+				r.logf("update: %s is available (running %s)", rel.Tag, r.Current)
+			}
 		}
-		st.Latest, st.Asset, st.Sha256, st.Signature = rel.Tag, rel.Asset, rel.Sha256, rel.Signature
 		r.saveState(st)
-		if Newer(rel.Tag, r.Current) {
-			r.logf("update: %s is available (running %s)", rel.Tag, r.Current)
-		}
 	}
 	r.publish(st)
-	if st.Latest == "" || !Newer(st.Latest, r.Current) || st.Applied == st.Latest {
-		return
+	if st.Latest == "" || !Newer(st.Latest, r.Current) {
+		return ""
+	}
+	// Without a fresh answer nothing new is downloaded, but a release already
+	// on disk needs no network.
+	if checkFailed && st.Applied != st.Latest {
+		return ""
 	}
 	if !r.signatureAllows(st.Latest, st.Signature) {
-		return
+		return ""
+	}
+	if st.Applied == st.Latest {
+		// Restart only into a file that really is this release. Otherwise the
+		// new process would see the same state and restart again.
+		err := runsAs(ctx, r.Executable, st.Latest)
+		if err == nil {
+			if r.Restart != nil {
+				r.logf("update: %s is installed, restarting when idle", st.Latest)
+			}
+			return st.Latest
+		}
+		if ctx.Err() != nil {
+			return ""
+		}
+		r.logf("update: the installed binary is not %s (%v), installing it again", st.Latest, err)
+		st.Applied = ""
+		r.saveState(st)
+		r.publish(st)
+		r.setPending(false)
+		if checkFailed {
+			return ""
+		}
 	}
 
 	rel := Release{Tag: st.Latest, Asset: st.Asset, Sha256: st.Sha256, Signature: st.Signature}
 	path, err := r.Client.Fetch(ctx, rel, filepath.Dir(r.Executable))
 	if err != nil {
 		r.logf("update: %v", err)
-		return
+		return ""
 	}
 	if err := Swap(path, r.Executable); err != nil {
 		os.Remove(path)
 		r.logf("update: cannot replace %s: %v", r.Executable, err)
-		return
+		return ""
 	}
 	st.Applied = st.Latest
 	r.saveState(st)
 	r.publish(st)
 	if r.Restart == nil {
 		r.logf("update: %s installed, restart the node to use it", st.Latest)
-		return
+	} else {
+		r.logf("update: %s installed, restarting when idle", st.Latest)
 	}
-	r.logf("update: %s installed, restarting when idle", st.Latest)
-	if !r.idleWithin(ctx) {
-		r.logf("update: node is still busy, the next start uses %s", st.Latest)
-		return
-	}
-	if err := r.Restart(r.Executable); err != nil {
-		r.logf("update: restart: %v (the next start uses %s)", err, st.Latest)
-	}
+	return st.Latest
 }
 
 // signatureAllows reports whether a release with this signature result may
@@ -628,25 +659,31 @@ func (r *Runner) signatureAllows(tag, sig string) bool {
 	return err == nil
 }
 
-// idleWithin waits for the node to serve nothing, up to WaitIdle.
-func (r *Runner) idleWithin(ctx context.Context) bool {
-	if r.Idle == nil {
-		return true
+// restartWhenIdle waits as long as it takes for the node to serve nothing,
+// until ctx ends, then restarts into the installed binary. A failed restart
+// is logged and left for the next regular check to try again.
+func (r *Runner) restartWhenIdle(ctx context.Context, tag string) {
+	r.setPending(true)
+	if r.Restart == nil || !r.waitForIdle(ctx) {
+		return
 	}
-	deadline := time.Now().Add(r.waitIdle())
-	for {
-		if r.Idle() {
+	if err := r.Restart(r.Executable); err != nil {
+		r.logf("update: restart: %v (trying again at the next check, the next start uses %s)", err, tag)
+	}
+}
+
+// waitForIdle polls until the node serves nothing. False means ctx ended.
+func (r *Runner) waitForIdle(ctx context.Context) bool {
+	for ctx.Err() == nil {
+		if r.Idle == nil || r.Idle() {
 			return true
-		}
-		if time.Now().After(deadline) {
-			return false
 		}
 		select {
 		case <-ctx.Done():
-			return false
 		case <-time.After(r.poll()):
 		}
 	}
+	return false
 }
 
 // state is what survives a restart: when we last looked, what we saw, and

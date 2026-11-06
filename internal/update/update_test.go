@@ -306,7 +306,6 @@ func runnerFor(t *testing.T, r *release, dir, target string) *Runner {
 		DataDir:    dir,
 		Client:     r.client(),
 		Poll:       time.Millisecond,
-		WaitIdle:   2 * time.Second,
 		CacheFor:   time.Minute,
 		Logf:       t.Logf,
 	}
@@ -369,6 +368,8 @@ func TestRunnerUpdatesWhenIdle(t *testing.T) {
 	}
 }
 
+// While the node stays busy the new binary is in place and nothing restarts,
+// for as long as it lasts: only the end of the node stops the wait.
 func TestRunnerUpdatesButKeepsServing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the test binary is a shell script")
@@ -378,17 +379,97 @@ func TestRunnerUpdatesButKeepsServing(t *testing.T) {
 	target := filepath.Join(dir, "bitllm")
 	os.WriteFile(target, []byte("old"), 0o755)
 	run := runnerFor(t, r, dir, target)
-	run.WaitIdle = 20 * time.Millisecond
-	run.Idle = func() bool { return false }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	run.Idle = func() bool {
+		if polls++; polls == 100 {
+			cancel() // the node shuts down, still busy
+		}
+		return false
+	}
 	run.Restart = func(string) error {
 		t.Error("restarted while busy")
 		return nil
 	}
 
-	run.once(context.Background())
+	run.once(ctx)
+
+	if polls < 100 {
+		t.Errorf("stopped waiting after %d polls, while still busy", polls)
+	}
 
 	if b, _ := os.ReadFile(target); string(b) != string(script("v9.9.9")) {
 		t.Errorf("target = %q, want the new release in place for the next start", b)
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+}
+
+// The deadline on a check and download does not apply to the wait after it.
+func TestRunnerBusyPastTheDeadlineRestartsOnceIdle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Timeout = 2 * time.Second
+	var busySince time.Time
+	sawPending := false
+	run.Idle = func() bool {
+		if busySince.IsZero() {
+			busySince = time.Now()
+		}
+		if run.Status()["pending_restart"] == true {
+			sawPending = true
+		}
+		return time.Since(busySince) > run.Timeout+200*time.Millisecond
+	}
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return nil }
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if !sawPending {
+		t.Error("status did not show pending_restart during the wait")
+	}
+}
+
+// Where the platform cannot restart in place the binary is installed and the
+// node carries on, without waiting and without repeating itself.
+func TestRunnerWithoutRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Idle = func() bool { return false }
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+	run.once(context.Background())
+
+	if b, _ := os.ReadFile(target); string(b) != string(script("v9.9.9")) {
+		t.Errorf("target = %q, want the new release", b)
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+	if n := logs.count("restart the node"); n != 1 {
+		t.Errorf("logged the restart hint %d times, want once: %v", n, logs.all())
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
 	}
 }
 
@@ -401,6 +482,224 @@ func appliedState(r *release) state {
 		Sha256:    fmt.Sprintf("%x", sha256.Sum256(r.bin)),
 		Signature: SigOK,
 		Applied:   r.tag,
+	}
+}
+
+// A node that was installed but never restarted picks the wait up again,
+// without downloading anything.
+func TestRunnerResumesWhenAlreadyApplied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	var calls atomic.Int32
+	run.Idle = func() bool { return calls.Add(1) >= 3 }
+	restarts := 0
+	run.Restart = func(path string) error {
+		if path != target {
+			t.Errorf("restarted into %q, want %q", path, target)
+		}
+		restarts++
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if calls.Load() < 3 {
+		t.Errorf("restarted after %d idle checks, without waiting for idle", calls.Load())
+	}
+	if r.assetHits.Load() != 0 {
+		t.Errorf("downloaded %d times, want none", r.assetHits.Load())
+	}
+}
+
+// A release already on disk does not need the release page to be up.
+func TestRunnerResumesWithoutTheNetwork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	st := appliedState(r)
+	st.Checked = time.Now().Add(-time.Hour)
+	run.saveState(st)
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return nil }
+	r.server.Close()
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+}
+
+// Nothing resumes once the node already runs that release, or a later one.
+func TestRunnerDoesNotResumeWhenCurrent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, r.bin, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Current = "v9.9.9"
+	run.saveState(appliedState(r))
+	run.Restart = func(string) error {
+		t.Error("restarted a node that is already current")
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if st := run.Status(); st["pending_restart"] != nil {
+		t.Errorf("status = %v, want no pending_restart", st)
+	}
+}
+
+// A binary replaced by hand is not the release the state names. Restarting
+// into it would start the same check over, so it is fetched again instead.
+func TestRunnerHandReplacedBinaryIsFetchedAgain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, script("v0.3.0"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	restarts := 0
+	run.Restart = func(path string) error {
+		restarts++
+		if err := runsAs(context.Background(), path, "v9.9.9"); err != nil {
+			t.Errorf("restarted into the wrong binary: %v", err)
+		}
+		return nil
+	}
+
+	run.once(context.Background())
+
+	if restarts != 1 {
+		t.Errorf("restarted %d times, want once", restarts)
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
+	}
+	if got := run.loadState().Applied; got != "v9.9.9" {
+		t.Errorf("state applied = %q, want v9.9.9", got)
+	}
+}
+
+// When it cannot be fetched again, the node stays where it is, with no restart
+// now or at the next check.
+func TestRunnerHandReplacedBinaryDoesNotLoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	own := script("v0.3.0")
+	os.WriteFile(target, own, 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.saveState(appliedState(r))
+	run.Restart = func(string) error {
+		t.Error("restarted into a binary that is not the release")
+		return nil
+	}
+	r.server.Close()
+
+	run.once(context.Background())
+	run.once(context.Background())
+
+	if got := run.loadState().Applied; got != "" {
+		t.Errorf("state applied = %q, want it cleared", got)
+	}
+	if st := run.Status(); st["applied"] != nil || st["pending_restart"] != nil {
+		t.Errorf("status = %v, want no applied and no pending_restart", st)
+	}
+	if b, _ := os.ReadFile(target); string(b) != string(own) {
+		t.Error("the binary changed")
+	}
+}
+
+// A restart that fails is tried again at the next regular check, once per
+// check, and not in a loop.
+func TestRunnerFailedRestartWaitsForTheNextCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.Idle = func() bool { return true }
+	restarts := 0
+	run.Restart = func(string) error { restarts++; return fmt.Errorf("exec failed") }
+	logs := captureLogs(run)
+
+	run.once(context.Background())
+	if restarts != 1 {
+		t.Fatalf("restarted %d times in one check, want once", restarts)
+	}
+	if n := logs.count("exec failed"); n != 1 {
+		t.Errorf("logged the failure %d times, want once: %v", n, logs.all())
+	}
+	if st := run.Status(); st["pending_restart"] != true {
+		t.Errorf("status = %v, want pending_restart", st)
+	}
+
+	run.once(context.Background())
+	if restarts != 2 {
+		t.Errorf("restarted %d times after a second check, want 2", restarts)
+	}
+	if r.assetHits.Load() != 1 {
+		t.Errorf("downloaded %d times, want once", r.assetHits.Load())
+	}
+}
+
+func TestRunnerFailedRestartDoesNotSpin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test binary is a shell script")
+	}
+	r := newRelease(t, "v9.9.9", script("v9.9.9"))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bitllm")
+	os.WriteFile(target, []byte("old"), 0o755)
+	run := runnerFor(t, r, dir, target)
+	run.After = time.Millisecond
+	run.Every = time.Hour
+	run.Idle = func() bool { return true }
+	var restarts atomic.Int32
+	run.Restart = func(string) error { restarts.Add(1); return fmt.Errorf("exec failed") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { run.Run(ctx); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for restarts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // Poll is 1 ms, so a spin would show here
+	cancel()
+	<-done
+
+	if got := restarts.Load(); got != 1 {
+		t.Errorf("restarted %d times, want once until the next check", got)
 	}
 }
 
