@@ -9,10 +9,11 @@ import (
 )
 
 // TrustedKeys are the base64 ed25519 public keys a release may be signed with,
-// one per admin; a signature from any of them is enough. Empty for now: the
-// admins' public keys go here before a tag, and `go run ./scripts/sign
-// check-keys` fails until they do.
-var TrustedKeys = []string{}
+// one per admin; a signature from any of them is enough. `go run ./scripts/sign
+// check-keys` runs before every tag and fails if this list has no usable key.
+var TrustedKeys = []string{
+	"YKS4w2KYPryPWZ33AmwYQx88FGXEcb8L0git04mjQqQ=",
+}
 
 // requireSignature is whether a release has to be signed to be installed. This
 // release checks and reports only; the next one turns it on. See
