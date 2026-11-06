@@ -359,3 +359,5 @@ Bug、修复和小功能都欢迎。[CONTRIBUTING.md](CONTRIBUTING.md) 说明 is
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
+控制台内置 JetBrains Mono 和 Arimo 字体，采用 SIL Open Font License 1.1 许可；版权声明和许可证全文见
+[internal/assets/fonts.css](internal/assets/fonts.css)。
