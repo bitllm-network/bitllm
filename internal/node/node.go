@@ -45,6 +45,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multihash"
+	"github.com/pbnjay/memory"
 )
 
 const (
@@ -148,6 +149,7 @@ type Node struct {
 	mu    sync.Mutex
 	peers map[peer.ID]*peerInfo
 
+	limits     *publicLimits   // in force on a public node, nil on any other
 	ctx        context.Context // the node's lifetime, for work started outside any loop
 	relayFinds relayLookups    // DHT lookups of announced relays
 
@@ -238,8 +240,11 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	// node that discovered its models keeps re-reading them from upstream.
 	n.cfg.ModelsFixed = n.cfg.ModelsFixed || len(cfg.Models) > 0
 	mode := dht.ModeAutoServer
+	reservations := defaultReservations
 	if public {
 		mode = dht.ModeServer
+		limits := limitsForMemory(memory.TotalMemory())
+		n.limits, reservations = &limits, limits.Reservations
 	}
 	opts := []libp2p.Option{
 		libp2p.Identity(key),
@@ -247,13 +252,16 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		libp2p.EnableHolePunching(),
 		// Public nodes relay for NATed ones until hole punching upgrades the link.
 		// Inference streams are long, so the relay must not cut them off.
-		libp2p.EnableRelayService(relay.WithResources(relayResources(cfg.RelayBehindProxy))),
+		libp2p.EnableRelayService(relay.WithResources(relayResources(cfg.RelayBehindProxy, reservations))),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
 			n.dht, err = dht.New(h, dht.Mode(mode), dht.ProtocolPrefix("/bitllm"),
 				dht.BootstrapPeers(bootstrap...))
 			return n.dht, err
 		}),
+	}
+	if n.limits != nil {
+		opts = append(opts, n.limits.options()...)
 	}
 	if len(cfg.Listen) > 0 {
 		opts = append(opts, libp2p.ListenAddrStrings(cfg.Listen...))
@@ -479,11 +487,11 @@ func (n *Node) Link(owner, name string, t int64, ownerSig string) (*account.Clai
 // The default cap of 8 reservations per source IP is the only sybil guard on a
 // public-IP relay, but behind a tunnel every peer arrives from 127.0.0.1, so
 // there it would let only 8 NATed nodes in the whole network be reachable.
-func relayResources(behindProxy bool) relay.Resources {
+func relayResources(behindProxy bool, reservations int) relay.Resources {
 	rc := relay.DefaultResources()
 	rc.Limit = nil
-	rc.MaxReservations = 1024 // NATed peers that can be reached through us
-	rc.MaxCircuits = 64       // open relayed connections per peer
+	rc.MaxReservations = reservations // NATed peers that can be reached through us
+	rc.MaxCircuits = 64               // open relayed connections per peer
 	if behindProxy {
 		rc.MaxReservationsPerIP = rc.MaxReservations
 	}

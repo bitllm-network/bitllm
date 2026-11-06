@@ -277,6 +277,9 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 	if n.cfg.UpdateStatus != nil {
 		out["update"] = n.cfg.UpdateStatus()
 	}
+	if n.limits != nil {
+		out["limits"] = n.limits
+	}
 	if e := n.announceErr.Load(); e != nil && *e != "" {
 		out["announce_error"] = *e
 	}
