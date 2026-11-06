@@ -541,4 +541,5 @@ instructions for AI agents). Brand assets live in
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The dashboard bundles the JetBrains Mono and Arimo fonts under the SIL Open
+Font License 1.1; their notices and license are in [internal/assets/fonts.css](internal/assets/fonts.css).
