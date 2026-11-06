@@ -6,7 +6,7 @@ Mac mini. The seed, its DNS list, the landing site, the map publisher and releas
 
 ## Status (2026-11-06 UTC)
 
-Checked at 07:52 UTC on 2026-11-06 (23:52 PST on 2026-11-05).
+Checked at 08:10 UTC on 2026-11-06 (00:10 PST).
 
 Done:
 
@@ -18,8 +18,17 @@ Done:
   refused the unsigned `v0.4.6`; a real `v0.4.6` node updated itself to it in 37
   seconds, kept its peer id, answered a request and marked itself healthy; the
   public installers passed on Ubuntu, macOS and Windows.
-- `seed1.bitllm.org` (A, DNS-only) points at `141.148.22.236` and the seed is
-  running `v0.4.6`. TCP 4001 and QUIC on UDP 4001 both answer.
+- `seed1.bitllm.org` (A, DNS-only) points at `141.148.22.236`. TCP 4001 and QUIC on
+  UDP 4001 both answer. It runs `v0.4.6`, byte for byte the release, with
+  `--auto-update=false`, so it updates only by hand. The new `bootstrap-vps.sh` ran
+  there at 07:47 UTC: `/etc/bitllm/seed.env` and the sandboxed unit with its memory
+  limit are in place, and it serves normally under them.
+- `ssh -i ~/.ssh/bitllm-seed ubuntu@141.148.22.236` works from this laptop, with sudo.
+- `bitllm-org/bitllm` has rulesets: `main` cannot be force pushed or deleted, by
+  anyone; `main` requires `lint`, `build`, `staticcheck` and the three `unit` checks;
+  `v*` tags cannot be moved or deleted. Admins can bypass the last two, which is how
+  a docs commit goes straight to `main` and how a failed tag gets redone. No merge
+  method is enforced.
 - `_dnsaddr.bootstrap.bitllm.org` publishes two TXT records for that peer (TCP
   and QUIC).
 - `bitllm.org` and `www.bitllm.org` are served by the `bitllm-landing` Worker
@@ -35,60 +44,44 @@ Done:
 
 What is left, in order:
 
-1. **Confirm `seed1` will not update itself.** This is the urgent one. `v0.5.0`
-   is already `latest`, and `seed1`'s unit as built has no `--auto-update=false`,
-   so unless someone has pinned it, it replaces itself within about seven hours
-   of 07:45 UTC on 2026-11-06. From outside you can only see its version, which
-   was `v0.4.6` at the time above. On the machine:
-   ```sh
-   sudo sed -i 's#^ExecStart=/var/lib/bitllm/bin/bitllm #&--auto-update=false #' /etc/systemd/system/bitllm-boot.service
-   sudo systemctl daemon-reload && sudo systemctl restart bitllm-boot
-   systemctl show -p ExecStart bitllm-boot | grep -- --auto-update=false
-   curl -s 127.0.0.1:7778/status   # answers, with no "update" key
-   ```
-2. **Get access to `seed1` from here.** `~/.ssh/bitllm-seed` is not accepted for
-   `ubuntu` or `opc` on `141.148.22.236`. Use the access the seed was set up with,
-   or add the key through the Oracle console. Without it the only DNS seed has no
-   way back from a bad update, and pinned nodes do not roll back on their own.
-3. **Check the seed's identity backup.** The agent that built it reported a backup
-   but not where. Keep a copy of the whole `/var/lib/bitllm` directory off the
-   machine. `identity.key` in it is the peer id the DNS records name, so losing it
-   means new records and a new peer id. Do this for every seed.
-4. **Move the release signing key off this laptop.** `~/bitllm-release.key` signs
+1. **Check the seed's identity backup.** The agent that built it reported a backup
+   but not where, and nothing on the machine shows one. Keep a copy of the whole
+   `/var/lib/bitllm` directory off the machine. `identity.key` in it is the peer id
+   the DNS records name, so losing it means new records and a new peer id. Do this
+   for every seed.
+2. **Move the release signing key off this laptop.** `~/bitllm-release.key` signs
    every release and is the only key in `internal/update/keys.go`. Keep it offline
    with a backup. If it is lost, nodes cannot take a signed update, and each one has
    to be reinstalled by hand. See "Signing keys" in [releasing.md](releasing.md).
-5. **Try the new deploy scripts on a spare VM.** `deploy/bootstrap-vps.sh` and
-   `deploy/gpu-host.sh`, with their hardened systemd units, have tests but have
-   never run as root on a real host.
-6. **Update `seed1` to `v0.5.0` by hand,** after 48 hours on `latest`, so from
-   07:45 UTC on 2026-11-08. See "Update `seed1` to the new script" below. Until
-   the seeds run `v0.5.0`, a `--public` node with no model does not reach NATed
-   nodes as a relay, because older seeds do not forward its announce.
-7. **Upgrade the GPU hosts by hand.** The map shows two serving nodes, on `v0.1.11`
+3. **Update `seed1` to `v0.5.0` by hand,** after 48 hours on `latest`, so from
+   07:45 UTC on 2026-11-08. Run `sudo bash bootstrap-vps.sh v0.5.0` on it; the script
+   keeps its other settings. Pinned nodes do not roll back on their own, so keep the
+   SSH session open and read the log. Until the seeds run `v0.5.0`, a `--public` node
+   with no model does not reach NATed nodes as a relay, because older seeds do not
+   forward its announce.
+4. **Upgrade the GPU hosts by hand.** The map shows two serving nodes, on `v0.1.11`
    and `v0.2.0`, and neither can update itself. They answer fine, but one of them
    refuses streaming receipts from both `v0.4.6` and `v0.5.0` clients, so it earns
    no credit for those jobs. Upgrading should clear that; the cause is inferred, not
-   confirmed. See [host-a-gpu.md](host-a-gpu.md).
-8. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
+   confirmed. `deploy/gpu-host.sh` and its sandboxed unit have tests but have not run
+   on a real host yet, so try the first one with care. See
+   [host-a-gpu.md](host-a-gpu.md).
+5. **Add a second seed.** Only `seed1` is in DNS, so it is a single point of
    failure for new joins. See "Second public relay, and a second seed" below. Back
    up its identity too.
-9. **Add rulesets to `bitllm-org/bitllm`.** `main` and `v*` tags have none, so
-   nothing stops a force push or a moved tag. Require the `lint`, `build` and `unit`
-   checks, and do not enforce a merge method.
-10. **Prepare the new zone, whenever there is time.** Add `bitllm.org` to the
+6. **Prepare the new zone, whenever there is time.** Add `bitllm.org` to the
     BitLLM account, create the `boot` tunnel there, recreate the records, pick
     the KV namespace and deploy the Worker (steps 1 to 5 under "Moving the
     domain"). Nothing in this step changes traffic.
-11. **On 2026-11-10, move the domain.** Request the move in `Zjj1993`, accept
+7. **On 2026-11-10, move the domain.** Request the move in `Zjj1993`, accept
     it in the BitLLM account within five days, point the registration at the
     new nameserver pair, then verify from an uncached resolver.
-12. **After the switch, repoint the map.** Both repository variables in
+8. **After the switch, repoint the map.** Both repository variables in
     `bitllm-org/bitllm` and the KV binding in `landing-page/wrangler.jsonc`
     move to the new account; set `GH_DISPATCH_TOKEN` on the new Worker, since
     a Worker secret belongs to one script. Confirm `/network.json` is fresh,
     then leave the old Worker and KV in place for a few days.
-13. **Drop `boot` in the first release after both the move and a live second
+9. **Drop `boot` in the first release after both the move and a live second
     seed.** Remove the `boot.bitllm.org` literal from `DefaultBootstrap`, update
     the `--bootstrap` help text, and remove the old tunnel section from
     `docs/bootstrap.md`. Do this only after `_dnsaddr` answers from the new zone.
@@ -158,9 +151,8 @@ Later, none of it urgent:
   create a new one.
 - `seed1.bitllm.org` is an **A record, DNS-only**, pointing at
   `141.148.22.236` (Oracle `VM.Standard.E2.1.Micro`, 1 GB RAM + 2 GB swap).
-  Ingress for TCP 4001 and UDP 4001 is open in the VCN. SSH is open, but the
-  `bitllm-seed` key is not installed for `ubuntu` or `opc`; the map uploader
-  no longer depends on that access.
+  Ingress for TCP 4001 and UDP 4001 is open in the VCN, and SSH works with the
+  `bitllm-seed` key for `ubuntu`.
 - `_dnsaddr.bootstrap.bitllm.org` carries two TXT records (TCP and QUIC) for
   the seed's peer id `12D3KooWGU5ZQ8aBeqFsSFXJDPYjuDNdBnf9Cw92kuUwxkLG4RCM`.
   Only `seed1` is published.
@@ -229,12 +221,11 @@ A rerun is safe. The script saves its three arguments in `/etc/bitllm/seed.env`
 and reuses them for any argument you leave out, so a rerun keeps the hostname and
 the seed it joins. Pass an argument to change it, or `""` to clear it.
 
-### Update `seed1` to the new script
+### Update `seed1`
 
-`seed1` was installed by an older script. Its unit has no `--auto-update=false`,
-and it has no `/etc/bitllm/seed.env`. The new script will not guess, and stops
-unless it gets all three arguments the first time. This must happen before
-`v0.5.0` is promoted, so the seed stays on `v0.4.6` when the release goes out:
+`seed1` already runs the new script, so its settings are in `/etc/bitllm/seed.env`
+and a version is all a rerun needs. It went on like this, because the first run of
+the new script has to be given all three arguments:
 
 ```sh
 curl -fsSL -o bootstrap-vps.sh \
@@ -243,13 +234,10 @@ sudo bash bootstrap-vps.sh v0.4.6 seed1.bitllm.org \
   /dns4/boot.bitllm.org/tcp/443/wss/p2p/12D3KooWQEQQJo9RgXGDnioD3zK5JyP7QenbY7pGdLk6rhP24rib
 ```
 
-The new unit also adds systemd sandboxing and a memory limit, which have not yet
-run on a real host. Try the script on a spare VM or on the second seed first if
-you can, keep an SSH session open, and read `journalctl -u bitllm-boot -n 50`
-afterwards. If the node fails to start, remove the line it trips on from the unit,
-then `systemctl daemon-reload` and `systemctl restart bitllm-boot`.
-
-After 48 hours on `latest`, move it with `sudo bash bootstrap-vps.sh v0.5.0`.
+After 48 hours on `latest`, move it with `sudo bash bootstrap-vps.sh v0.5.0`. Keep an
+SSH session open, and read `journalctl -u bitllm-boot -n 50` afterwards. If the node
+fails to start, remove the line it trips on from the unit, then
+`systemctl daemon-reload` and `systemctl restart bitllm-boot`.
 
 Check locally:
 
