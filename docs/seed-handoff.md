@@ -321,7 +321,7 @@ The uploader is now the workflow `.github/workflows/network-map.yml` in
 4. Run `scripts/network-kv.sh ... once`.
 
 One publish is one write. With the Worker's five-minute cron as the only
-trigger that is about 96 publishes a day, plus the cron's own probe key every
+trigger that is about 72 publishes a day, plus the cron's own probe key every
 five minutes, so the project sits near 400 of the free tier's 1,000 a day. The
 value holds counts per model and per cell, with no peer ids or addresses.
 
